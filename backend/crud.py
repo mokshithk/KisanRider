@@ -22,6 +22,8 @@ from sqlalchemy import cast
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
+from datetime import datetime
+
 import models
 import schemas
 
@@ -217,3 +219,54 @@ def get_nearby_produce_requests(
         )
         for row in rows
     ]
+
+
+# ---------------------------------------------------------------------------
+# Trip CRUD
+# ---------------------------------------------------------------------------
+
+def accept_produce_request(db: Session, request_id: UUID, rider_id: UUID) -> models.Trip:
+    """
+    A rider accepts a PENDING produce request, creating a Trip and flipping
+    the request's status to 'ACCEPTED'.
+
+    Note on layering: like the rest of this module, domain-level failures
+    (not found / already taken) are raised as ValueError rather than
+    HTTPException — crud.py stays framework-agnostic and main.py is
+    responsible for translating these into HTTP responses (it already does
+    this for every other endpoint via `except (SQLAlchemyError, ValueError)`).
+
+    `with_for_update()` row-locks the ProduceRequest row for the duration of
+    this transaction, so two riders hitting this endpoint for the same
+    request concurrently can't both succeed — the second one blocks until
+    the first commits, then re-reads status as 'ACCEPTED' and is correctly
+    rejected instead of racing past the check.
+    """
+    try:
+        pr = (
+            db.query(models.ProduceRequest)
+            .filter(models.ProduceRequest.id == request_id)
+            .with_for_update()
+            .first()
+        )
+
+        if not pr or pr.status != "PENDING":
+            raise ValueError("Produce request unavailable or already accepted")
+
+        pr.status = "ACCEPTED"
+
+        db_trip = models.Trip(
+            produce_request_id=request_id,
+            rider_id=rider_id,
+            status="ACCEPTED",
+        )
+        db.add(db_trip)
+        db.commit()
+        db.refresh(db_trip)
+        return db_trip
+    except ValueError:
+        db.rollback()
+        raise
+    except SQLAlchemyError:
+        db.rollback()
+        raise

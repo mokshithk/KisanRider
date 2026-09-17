@@ -10,7 +10,7 @@ ProduceRequestResponse. That's why ProduceRequestResponse has no
 """
 
 from datetime import datetime
-from typing import Literal
+from typing import Literal, Optional
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -74,3 +74,26 @@ class ProduceRequestResponse(BaseModel):
 class NearbyProduceRequestResponse(ProduceRequestResponse):
     """Adds computed distance for the /produce-requests/nearby endpoint."""
     distance_km: float = Field(..., description="Great-circle distance from the query point")
+
+
+# ---------------------------------------------------------------------------
+# Trip schemas
+# ---------------------------------------------------------------------------
+
+TripStatus = Literal["ACCEPTED", "PICKED_UP", "DELIVERED", "CANCELLED"]
+
+
+class TripCreate(BaseModel):
+    produce_request_id: UUID
+    rider_id: UUID
+
+
+class TripResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    produce_request_id: UUID
+    rider_id: UUID
+    status: TripStatus
+    created_at: datetime
+    completed_at: Optional[datetime] = None

@@ -99,3 +99,34 @@ def get_produce_request(request_id: UUID, db: Session = Depends(get_db)):
     if not result:
         raise HTTPException(status_code=404, detail="Produce request not found")
     return result
+
+
+# ---------------------------------------------------------------------------
+# Trips
+# ---------------------------------------------------------------------------
+
+@app.post("/trips/accept", response_model=schemas.TripResponse, status_code=201)
+def accept_trip(
+    request_id: UUID = Query(..., description="ID of the produce request being accepted"),
+    rider_id: UUID = Query(
+        ...,
+        description="TODO: derive this from an authenticated session/JWT once auth is added; "
+        "accepted as a query param for now.",
+    ),
+    db: Session = Depends(get_db),
+):
+    """
+    A rider accepts a PENDING produce request, creating a Trip and moving
+    the request to 'ACCEPTED'. Fails with 400 if the request doesn't exist
+    or is no longer PENDING (already accepted/cancelled/etc).
+    """
+    rider = crud.get_user_by_id(db, rider_id)
+    if not rider:
+        raise HTTPException(status_code=404, detail="Rider not found")
+    if rider.role != "RIDER":
+        raise HTTPException(status_code=400, detail="Only users with role RIDER can accept produce requests")
+
+    try:
+        return crud.accept_produce_request(db, request_id, rider_id)
+    except (SQLAlchemyError, ValueError) as e:
+        raise HTTPException(status_code=400, detail=str(e))
