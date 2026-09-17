@@ -11,12 +11,12 @@ Spatial notes:
   used efficiently by ST_DWithin.
 """
 
-from typing import Optional
+from typing import List, Optional
 from uuid import UUID
 
-from geoalchemy2 import Geography
+from geoalchemy2 import Geography, Geometry
 from geoalchemy2.elements import WKTElement
-from geoalchemy2.functions import ST_Distance, ST_DWithin
+from geoalchemy2.functions import ST_DWithin, ST_Distance, ST_MakePoint, ST_SetSRID, ST_X, ST_Y
 from geoalchemy2.shape import to_shape
 from sqlalchemy import cast
 from sqlalchemy.exc import SQLAlchemyError
@@ -59,8 +59,19 @@ def create_user(db: Session, user_schema: schemas.UserCreate) -> models.User:
 # ---------------------------------------------------------------------------
 
 def _to_response(pr: models.ProduceRequest) -> schemas.ProduceRequestResponse:
-    """Convert an ORM row (with a WKBElement geometry) into the API schema."""
-    point = to_shape(pr.pickup_location)  # shapely Point; .x = lng, .y = lat
+    """
+    Convert an ORM row (with a WKBElement geometry) into the API schema.
+
+    Used for READ paths (get-by-id, nearby search) where we have no other
+    source for latitude/longitude and must decode the stored geometry.
+    Wrapped so a malformed/NULL geometry surfaces as a ValueError, which
+    main.py maps to a clean 400 instead of an unhandled 500.
+    """
+    try:
+        point = to_shape(pr.pickup_location)  # shapely Point; .x = lng, .y = lat
+    except Exception as e:
+        raise ValueError(f"Could not decode stored geometry for produce request {pr.id}: {e}") from e
+
     return schemas.ProduceRequestResponse(
         id=pr.id,
         farmer_id=pr.farmer_id,
@@ -79,10 +90,24 @@ def create_produce_request(
     request_schema: schemas.ProduceRequestCreate,
     farmer_id: UUID,
 ) -> schemas.ProduceRequestResponse:
-    point_wkt = WKTElement(
-        f"POINT({request_schema.longitude} {request_schema.latitude})",
-        srid=4326,
-    )
+    """
+    Insert a produce request.
+
+    Deliberately does NOT call `_to_response()` / `to_shape()` on the
+    freshly-inserted row: we already have validated latitude/longitude on
+    `request_schema`, and re-decoding the WKB the DB just handed back on
+    `db.refresh()` is unnecessary round-tripping that's a common source of
+    silent 500s (hex-WKB vs WKBElement edge cases). The write path trusts
+    the input it just persisted; only read paths decode geometry.
+    """
+    try:
+        point_wkt = WKTElement(
+            f"POINT({request_schema.longitude} {request_schema.latitude})",
+            srid=4326,
+        )
+    except Exception as e:
+        raise ValueError(f"Invalid coordinates ({request_schema.latitude}, {request_schema.longitude}): {e}") from e
+
     db_request = models.ProduceRequest(
         farmer_id=farmer_id,
         crop_type=request_schema.crop_type,
@@ -91,14 +116,26 @@ def create_produce_request(
         pickup_location=point_wkt,
         status="PENDING",
     )
+
     try:
         db.add(db_request)
         db.commit()
         db.refresh(db_request)
-        return _to_response(db_request)
     except SQLAlchemyError:
         db.rollback()
         raise
+
+    return schemas.ProduceRequestResponse(
+        id=db_request.id,
+        farmer_id=db_request.farmer_id,
+        crop_type=db_request.crop_type,
+        crate_count=db_request.crate_count,
+        weight_kg=float(db_request.weight_kg),
+        latitude=request_schema.latitude,
+        longitude=request_schema.longitude,
+        status=db_request.status,
+        created_at=db_request.created_at,
+    )
 
 
 def get_produce_request_by_id(db: Session, request_id: UUID) -> Optional[schemas.ProduceRequestResponse]:
@@ -113,36 +150,70 @@ def get_nearby_produce_requests(
     radius_km: float,
     status_filter: Optional[str] = "PENDING",
     limit: int = 50,
-) -> list[schemas.NearbyProduceRequestResponse]:
+) -> List[schemas.NearbyProduceRequestResponse]:
     """
     Find produce requests within `radius_km` of (lat, lng), nearest first.
 
-    Casts both the stored point and the query point to `geography` so
-    ST_DWithin/ST_Distance operate in meters over a real ellipsoidal model,
-    not raw lat/lng degrees.
+    This selects plain scalar columns (id, crop_type, ..., latitude,
+    longitude, distance_km) instead of full ProduceRequest ORM entities.
+    latitude/longitude are computed by PostGIS itself via ST_Y/ST_X, so the
+    driver never hands a WKBElement back to Python at all — the class of
+    bug that caused the previous 500 (Pydantic trying to serialize a raw
+    binary geometry object) is structurally impossible here.
+
+    Distance math uses ::geography casts so ST_DWithin/ST_Distance operate
+    in real meters over the WGS84 spheroid, not raw lat/lng degrees; ST_Y/
+    ST_X use plain ::geometry, matching how the column is actually stored.
     """
-    query_point = WKTElement(f"POINT({lng} {lat})", srid=4326)
+    pr = models.ProduceRequest
+
+    query_point = ST_SetSRID(ST_MakePoint(lng, lat), 4326)
     query_point_geog = cast(query_point, Geography)
-    stored_point_geog = cast(models.ProduceRequest.pickup_location, Geography)
+    stored_geog = cast(pr.pickup_location, Geography)
+    stored_geom = cast(pr.pickup_location, Geometry)
 
-    distance_m = ST_Distance(stored_point_geog, query_point_geog)
+    distance_km = (ST_Distance(stored_geog, query_point_geog) / 1000.0).label("distance_km")
+    latitude_col = ST_Y(stored_geom).label("latitude")
+    longitude_col = ST_X(stored_geom).label("longitude")
 
-    query = db.query(models.ProduceRequest, distance_m.label("distance_m")).filter(
-        ST_DWithin(stored_point_geog, query_point_geog, radius_km * 1000)
+    query = (
+        db.query(
+            pr.id,
+            pr.farmer_id,
+            pr.crop_type,
+            pr.crate_count,
+            pr.weight_kg,
+            pr.status,
+            pr.created_at,
+            latitude_col,
+            longitude_col,
+            distance_km,
+        )
+        .filter(ST_DWithin(stored_geog, query_point_geog, radius_km * 1000))
     )
 
     if status_filter:
-        query = query.filter(models.ProduceRequest.status == status_filter)
+        query = query.filter(pr.status == status_filter)
 
-    query = query.order_by(distance_m.asc()).limit(limit)
+    query = query.order_by(distance_km.asc()).limit(limit)
 
-    results: list[schemas.NearbyProduceRequestResponse] = []
-    for pr, distance_m_value in query.all():
-        base = _to_response(pr)
-        results.append(
-            schemas.NearbyProduceRequestResponse(
-                **base.model_dump(),
-                distance_km=round(distance_m_value / 1000, 3),
-            )
+    try:
+        rows = query.all()
+    except SQLAlchemyError:
+        raise
+
+    return [
+        schemas.NearbyProduceRequestResponse(
+            id=row.id,
+            farmer_id=row.farmer_id,
+            crop_type=row.crop_type,
+            crate_count=row.crate_count,
+            weight_kg=float(row.weight_kg),
+            latitude=row.latitude,
+            longitude=row.longitude,
+            status=row.status,
+            created_at=row.created_at,
+            distance_km=round(row.distance_km, 3),
         )
-    return results
+        for row in rows
+    ]
