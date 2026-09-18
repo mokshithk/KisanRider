@@ -13,7 +13,9 @@ from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
+import auth
 import crud
+import models
 import schemas
 from database import get_db
 
@@ -56,22 +58,12 @@ def register_user(user: schemas.UserCreate, db: Session = Depends(get_db)):
 @app.post("/produce-requests/", response_model=schemas.ProduceRequestResponse, status_code=201)
 def create_produce_request(
     request: schemas.ProduceRequestCreate,
-    farmer_id: UUID = Query(
-        ...,
-        description="TODO: derive this from an authenticated session/JWT once auth is added; "
-        "accepted as a query param for now.",
-    ),
+    current_user: models.User = Depends(auth.require_role("FARMER")),
     db: Session = Depends(get_db),
 ):
-    """Create a produce pickup request tied to a farmer, storing a PostGIS point."""
-    farmer = crud.get_user_by_id(db, farmer_id)
-    if not farmer:
-        raise HTTPException(status_code=404, detail="Farmer not found")
-    if farmer.role != "FARMER":
-        raise HTTPException(status_code=400, detail="Only users with role FARMER can create produce requests")
-
+    """Create a produce pickup request tied to the authenticated farmer, storing a PostGIS point."""
     try:
-        return crud.create_produce_request(db, request, farmer_id)
+        return crud.create_produce_request(db, request, current_user.id)
     except (SQLAlchemyError, ValueError) as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -101,6 +93,22 @@ def get_produce_request(request_id: UUID, db: Session = Depends(get_db)):
     return result
 
 
+@app.get("/produce-requests/farmer/me", response_model=List[schemas.FarmerProduceRequestResponse])
+def get_my_produce_requests(
+    current_user: models.User = Depends(auth.require_role("FARMER")),
+    db: Session = Depends(get_db),
+):
+    """
+    All of the authenticated farmer's produce requests, newest first, each
+    including the assigned rider and trip status once a rider has accepted
+    it (null while still PENDING).
+    """
+    try:
+        return crud.get_produce_requests_for_farmer(db, current_user.id)
+    except (SQLAlchemyError, ValueError) as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
 # ---------------------------------------------------------------------------
 # Trips
 # ---------------------------------------------------------------------------
@@ -108,26 +116,17 @@ def get_produce_request(request_id: UUID, db: Session = Depends(get_db)):
 @app.post("/trips/accept", response_model=schemas.TripResponse, status_code=201)
 def accept_trip(
     request_id: UUID = Query(..., description="ID of the produce request being accepted"),
-    rider_id: UUID = Query(
-        ...,
-        description="TODO: derive this from an authenticated session/JWT once auth is added; "
-        "accepted as a query param for now.",
-    ),
+    current_user: models.User = Depends(auth.require_role("RIDER")),
     db: Session = Depends(get_db),
 ):
     """
-    A rider accepts a PENDING produce request, creating a Trip and moving
-    the request to 'ACCEPTED'. Fails with 400 if the request doesn't exist
-    or is no longer PENDING (already accepted/cancelled/etc).
+    The authenticated rider accepts a PENDING produce request, creating a
+    Trip and moving the request to 'ACCEPTED'. Fails with 400 if the
+    request doesn't exist or is no longer PENDING (already accepted/
+    cancelled/etc).
     """
-    rider = crud.get_user_by_id(db, rider_id)
-    if not rider:
-        raise HTTPException(status_code=404, detail="Rider not found")
-    if rider.role != "RIDER":
-        raise HTTPException(status_code=400, detail="Only users with role RIDER can accept produce requests")
-
     try:
-        return crud.accept_produce_request(db, request_id, rider_id)
+        return crud.accept_produce_request(db, request_id, current_user.id)
     except (SQLAlchemyError, ValueError) as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -152,15 +151,16 @@ def update_trip_status(trip_id: UUID, body: schemas.TripStatusUpdate, db: Sessio
 
 @app.get("/trips/active", response_model=schemas.ActiveTripResponse)
 def get_active_trip(
-    rider_id: UUID = Query(..., description="Rider to look up the current active trip for"),
+    current_user: models.User = Depends(auth.require_role("RIDER")),
     db: Session = Depends(get_db),
 ):
     """
-    Return the rider's current active trip (status ACCEPTED or PICKED_UP),
-    including the pickup coordinates and crop details of the associated
-    produce request. 404 if the rider has no active trip right now.
+    Return the authenticated rider's current active trip (status ACCEPTED
+    or PICKED_UP), including the pickup coordinates and crop details of the
+    associated produce request. 404 if the rider has no active trip right
+    now.
     """
-    trip = crud.get_active_trip_for_rider(db, rider_id)
+    trip = crud.get_active_trip_for_rider(db, current_user.id)
     if not trip:
         raise HTTPException(status_code=404, detail="No active trip found for this rider")
 

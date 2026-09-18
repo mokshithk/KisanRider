@@ -145,6 +145,59 @@ def get_produce_request_by_id(db: Session, request_id: UUID) -> Optional[schemas
     return _to_response(pr) if pr else None
 
 
+def _to_farmer_response(pr: models.ProduceRequest) -> schemas.FarmerProduceRequestResponse:
+    """
+    Extend `_to_response()` with the request's trip (if any) and that
+    trip's rider, for the farmer tracking feed. Reuses `_to_response()`
+    rather than re-decoding the geometry, so there's one place that turns
+    a WKBElement into lat/lng.
+    """
+    base = _to_response(pr)
+
+    trip_summary = None
+    if pr.trip:
+        rider_summary = (
+            schemas.RiderSummary(
+                id=pr.trip.rider.id,
+                full_name=pr.trip.rider.full_name,
+                phone=pr.trip.rider.phone,
+            )
+            if pr.trip.rider
+            else None
+        )
+        trip_summary = schemas.TripSummary(
+            id=pr.trip.id,
+            status=pr.trip.status,
+            created_at=pr.trip.created_at,
+            completed_at=pr.trip.completed_at,
+            rider=rider_summary,
+        )
+
+    return schemas.FarmerProduceRequestResponse(**base.model_dump(), trip=trip_summary)
+
+
+def get_produce_requests_for_farmer(
+    db: Session, farmer_id: UUID
+) -> List[schemas.FarmerProduceRequestResponse]:
+    """
+    All produce requests a farmer has created, newest first, each carrying
+    its trip (rider + status) if one has been accepted.
+
+    `joinedload` on `ProduceRequest.trip` and `Trip.rider` fetches both in
+    the same query (two LEFT JOINs) rather than issuing a follow-up query
+    per row (the classic N+1) — `trip` is nullable so this has to be a LEFT
+    JOIN, which `joinedload` handles correctly for a to-one relationship.
+    """
+    requests = (
+        db.query(models.ProduceRequest)
+        .options(joinedload(models.ProduceRequest.trip).joinedload(models.Trip.rider))
+        .filter(models.ProduceRequest.farmer_id == farmer_id)
+        .order_by(models.ProduceRequest.created_at.desc())
+        .all()
+    )
+    return [_to_farmer_response(pr) for pr in requests]
+
+
 def get_nearby_produce_requests(
     db: Session,
     lat: float,

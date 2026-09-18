@@ -121,3 +121,41 @@ class ActiveTripResponse(TripResponse):
     """
 
     produce_request: ProduceRequestResponse
+
+
+# ---------------------------------------------------------------------------
+# Farmer produce-request tracking feed
+# ---------------------------------------------------------------------------
+
+class RiderSummary(BaseModel):
+    """Minimal rider identity shown to a farmer once their request is picked up."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    full_name: str
+    phone: str
+
+
+class TripSummary(BaseModel):
+    """Trip status/timing, nested under a farmer's produce request view."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    status: TripStatus
+    created_at: datetime
+    completed_at: Optional[datetime] = None
+    rider: Optional[RiderSummary] = None
+
+
+class FarmerProduceRequestResponse(ProduceRequestResponse):
+    """
+    Response for GET /produce-requests/farmer/{farmer_id}.
+
+    `trip` is None while the request is still PENDING (no rider has
+    accepted it yet); once a rider accepts, it carries that rider's
+    identity plus the trip's own status/timestamps.
+    """
+
+    trip: Optional[TripSummary] = None
