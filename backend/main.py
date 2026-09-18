@@ -148,3 +148,33 @@ def update_trip_status(trip_id: UUID, body: schemas.TripStatusUpdate, db: Sessio
     if not result:
         raise HTTPException(status_code=404, detail="Trip not found")
     return result
+
+
+@app.get("/trips/active", response_model=schemas.ActiveTripResponse)
+def get_active_trip(
+    rider_id: UUID = Query(..., description="Rider to look up the current active trip for"),
+    db: Session = Depends(get_db),
+):
+    """
+    Return the rider's current active trip (status ACCEPTED or PICKED_UP),
+    including the pickup coordinates and crop details of the associated
+    produce request. 404 if the rider has no active trip right now.
+    """
+    trip = crud.get_active_trip_for_rider(db, rider_id)
+    if not trip:
+        raise HTTPException(status_code=404, detail="No active trip found for this rider")
+
+    try:
+        produce_request = crud._to_response(trip.produce_request)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    return schemas.ActiveTripResponse(
+        id=trip.id,
+        produce_request_id=trip.produce_request_id,
+        rider_id=trip.rider_id,
+        status=trip.status,
+        created_at=trip.created_at,
+        completed_at=trip.completed_at,
+        produce_request=produce_request,
+    )

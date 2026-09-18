@@ -20,7 +20,7 @@ from geoalchemy2.functions import ST_DWithin, ST_Distance, ST_MakePoint, ST_SetS
 from geoalchemy2.shape import to_shape
 from sqlalchemy import cast
 from sqlalchemy.exc import SQLAlchemyError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from datetime import datetime
 
@@ -332,3 +332,34 @@ def update_trip_status(db: Session, trip_id: UUID, status: str) -> Optional[mode
     except SQLAlchemyError:
         db.rollback()
         raise
+
+
+def get_active_trip_for_rider(db: Session, rider_id: UUID) -> Optional[models.Trip]:
+    """
+    Return the rider's current active trip (status ACCEPTED or PICKED_UP),
+    with its ProduceRequest eager-loaded via a single joined query.
+
+    Returns the raw ORM Trip (with `.produce_request` populated), not a
+    Pydantic schema — main.py is responsible for assembling the
+    ActiveTripResponse, since that requires decoding the ProduceRequest's
+    PostGIS geometry into plain lat/lng the same way `_to_response()`
+    already does for every other read path. Keeping that decoding logic in
+    one place (rather than duplicating it here) avoids the two implementations
+    drifting apart.
+
+    A rider should have at most one row matching this filter in normal
+    operation (accept_produce_request/update_trip_status don't let a second
+    trip become ACCEPTED/PICKED_UP for the same rider), but `.first()` is
+    used defensively rather than `.one()` so a data anomaly surfaces as
+    "return the most relevant trip" instead of a 500.
+    """
+    return (
+        db.query(models.Trip)
+        .options(joinedload(models.Trip.produce_request))
+        .filter(
+            models.Trip.rider_id == rider_id,
+            models.Trip.status.in_(("ACCEPTED", "PICKED_UP")),
+        )
+        .order_by(models.Trip.created_at.desc())
+        .first()
+    )

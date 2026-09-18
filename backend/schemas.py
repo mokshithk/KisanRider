@@ -110,3 +110,14 @@ class TripStatusUpdate(BaseModel):
     """
 
     status: Literal["PICKED_UP", "DELIVERED", "CANCELLED"]
+
+
+class ActiveTripResponse(TripResponse):
+    """
+    Response for GET /trips/active. Adds the associated produce request
+    (crop details + pickup coordinates) so a rider's app doesn't need a
+    second round-trip to /produce-requests/{id} just to know where to go
+    and what to pick up.
+    """
+
+    produce_request: ProduceRequestResponse
