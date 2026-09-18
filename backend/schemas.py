@@ -97,3 +97,16 @@ class TripResponse(BaseModel):
     status: TripStatus
     created_at: datetime
     completed_at: Optional[datetime] = None
+
+
+class TripStatusUpdate(BaseModel):
+    """
+    Body for PATCH /trips/{trip_id}/status.
+
+    'ACCEPTED' is deliberately excluded here — a trip starts in that state
+    via POST /trips/accept and is never transitioned back into it, so this
+    is a Literal of only the three valid forward targets. FastAPI/Pydantic
+    reject anything else with a 422 before it ever reaches crud.py.
+    """
+
+    status: Literal["PICKED_UP", "DELIVERED", "CANCELLED"]

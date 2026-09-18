@@ -130,3 +130,21 @@ def accept_trip(
         return crud.accept_produce_request(db, request_id, rider_id)
     except (SQLAlchemyError, ValueError) as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.patch("/trips/{trip_id}/status", response_model=schemas.TripResponse)
+def update_trip_status(trip_id: UUID, body: schemas.TripStatusUpdate, db: Session = Depends(get_db)):
+    """
+    Transition a trip to PICKED_UP, DELIVERED, or CANCELLED.
+
+    Transitioning to DELIVERED also marks the underlying produce request as
+    COMPLETED. Trips already in a terminal state (DELIVERED/CANCELLED)
+    reject further updates with a 400.
+    """
+    try:
+        result = crud.update_trip_status(db, trip_id, body.status)
+    except (SQLAlchemyError, ValueError) as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if not result:
+        raise HTTPException(status_code=404, detail="Trip not found")
+    return result

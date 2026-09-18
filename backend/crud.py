@@ -270,3 +270,65 @@ def accept_produce_request(db: Session, request_id: UUID, rider_id: UUID) -> mod
     except SQLAlchemyError:
         db.rollback()
         raise
+
+
+def update_trip_status(db: Session, trip_id: UUID, status: str) -> Optional[models.Trip]:
+    """
+    Transition a Trip to a new status ('PICKED_UP', 'DELIVERED', or
+    'CANCELLED' — enforced upstream by schemas.TripStatusUpdate).
+
+    Returns None if the trip doesn't exist, so main.py can raise a 404 the
+    same way it already does for get_produce_request_by_id. Everything else
+    (terminal-state guard) is a domain error raised as ValueError, which
+    main.py maps to 400 — same layering as accept_produce_request.
+
+    On transition to 'DELIVERED': stamps `completed_at` and also marks the
+    linked ProduceRequest as 'COMPLETED', since a delivered trip means the
+    produce has reached its destination. On 'CANCELLED': also stamps
+    `completed_at` (CANCELLED is terminal) but leaves the ProduceRequest
+    status untouched — reopening it for another rider is a separate concern
+    this endpoint doesn't own.
+
+    Both the Trip and its ProduceRequest are row-locked for the duration of
+    the transaction, consistent with accept_produce_request, so a status
+    update can't race another writer touching the same rows.
+    """
+    try:
+        trip = (
+            db.query(models.Trip)
+            .filter(models.Trip.id == trip_id)
+            .with_for_update()
+            .first()
+        )
+
+        if not trip:
+            return None
+
+        if trip.status in ("DELIVERED", "CANCELLED"):
+            raise ValueError(f"Trip is already in a terminal state ({trip.status}) and cannot be updated")
+
+        if status == "DELIVERED":
+            trip.completed_at = datetime.utcnow()
+
+            pr = (
+                db.query(models.ProduceRequest)
+                .filter(models.ProduceRequest.id == trip.produce_request_id)
+                .with_for_update()
+                .first()
+            )
+            if pr:
+                pr.status = "COMPLETED"
+        elif status == "CANCELLED":
+            trip.completed_at = datetime.utcnow()
+
+        trip.status = status
+
+        db.commit()
+        db.refresh(trip)
+        return trip
+    except ValueError:
+        db.rollback()
+        raise
+    except SQLAlchemyError:
+        db.rollback()
+        raise
