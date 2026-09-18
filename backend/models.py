@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime
-from sqlalchemy import Column, String, Integer, Numeric, DateTime, ForeignKey, func
+from sqlalchemy import Column, String, Integer, Numeric, DateTime, Float, ForeignKey, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from geoalchemy2 import Geometry
@@ -61,6 +61,7 @@ class Trip(Base):
     produce_request = relationship("ProduceRequest", back_populates="trip", foreign_keys=[produce_request_id])
     rider = relationship("User", back_populates="trips", foreign_keys=[rider_id])
     crate_scans = relationship("CrateScan", back_populates="trip", foreign_keys="CrateScan.trip_id")
+    settlement = relationship("Settlement", uselist=False, back_populates="trip")
 
 
 class CrateScan(Base):
@@ -81,3 +82,26 @@ class CrateScan(Base):
 
     trip = relationship("Trip", back_populates="crate_scans", foreign_keys=[trip_id])
     scanned_by = relationship("User", foreign_keys=[scanned_by_id])
+
+
+class Settlement(Base):
+    """
+    The rider payout for one completed (DELIVERED) trip. One-to-one with
+    Trip — `trip_id` is unique, so a second settlement attempt on the same
+    trip is a DB-level conflict, not just an application-level check.
+
+    total_payout = base_fare + distance_fare + weight_surcharge
+    """
+
+    __tablename__ = "settlements"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    trip_id = Column(UUID(as_uuid=True), ForeignKey("trips.id", ondelete="CASCADE"), unique=True, nullable=False)
+    base_fare = Column(Float, nullable=False, default=50.0)
+    distance_fare = Column(Float, nullable=False)
+    weight_surcharge = Column(Float, nullable=False)
+    total_payout = Column(Float, nullable=False)
+    status = Column(String(20), nullable=False, default="PENDING")
+    created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
+
+    trip = relationship("Trip", back_populates="settlement")

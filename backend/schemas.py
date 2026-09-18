@@ -180,3 +180,25 @@ class CrateScanResponse(BaseModel):
     scan_type: Literal["PICKUP", "DELIVERY"]
     qr_code: str
     scanned_at: datetime
+
+
+# ---------------------------------------------------------------------------
+# Settlement schemas
+# ---------------------------------------------------------------------------
+
+class SettlementCreate(BaseModel):
+    trip_id: UUID
+    distance_km: float = Field(..., gt=0, description="Distance covered for this trip, in kilometers")
+
+
+class SettlementResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    trip_id: UUID
+    base_fare: float
+    distance_fare: float
+    weight_surcharge: float
+    total_payout: float
+    status: Literal["PENDING", "PAID"]
+    created_at: datetime

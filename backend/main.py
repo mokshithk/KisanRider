@@ -273,3 +273,27 @@ def create_crate_scan(
     if not result:
         raise HTTPException(status_code=404, detail="Trip not found")
     return result
+
+
+# ---------------------------------------------------------------------------
+# Settlements
+# ---------------------------------------------------------------------------
+
+@app.post("/settlements/", response_model=schemas.SettlementResponse, status_code=201)
+def create_settlement(
+    settlement_in: schemas.SettlementCreate,
+    current_user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Create the payout settlement for a DELIVERED trip: base fare + distance
+    fare + weight surcharge. 404 if the trip doesn't exist; 400 if it isn't
+    DELIVERED yet or already has a settlement.
+    """
+    try:
+        result = crud.create_settlement(db, settlement_in)
+    except (SQLAlchemyError, ValueError) as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if not result:
+        raise HTTPException(status_code=404, detail="Trip not found")
+    return result

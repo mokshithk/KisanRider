@@ -457,3 +457,79 @@ def create_crate_scan(
     except SQLAlchemyError:
         db.rollback()
         raise
+
+
+# ---------------------------------------------------------------------------
+# Settlement CRUD
+# ---------------------------------------------------------------------------
+
+def create_settlement(
+    db: Session, settlement_in: schemas.SettlementCreate
+) -> Optional[models.Settlement]:
+    """
+    Create the payout settlement for a completed trip.
+
+    total_payout = base_fare (Rs 50) + distance_fare (distance_km * Rs 15)
+                   + weight_surcharge (Rs 2 per kg over 50kg, 0 below that)
+
+    Returns None if `trip_id` doesn't exist (main.py -> 404). Raises
+    ValueError (main.py -> 400) for domain errors: trip isn't DELIVERED yet,
+    or a settlement already exists for this trip — the latter is also
+    enforced at the DB level via `trip_id`'s unique constraint, so this
+    check is a friendlier error message, not the only thing standing
+    between two concurrent requests and a race (see note below).
+    """
+    trip = (
+        db.query(models.Trip)
+        .options(joinedload(models.Trip.produce_request))
+        .filter(models.Trip.id == settlement_in.trip_id)
+        .first()
+    )
+    if not trip:
+        return None
+
+    if trip.status != "DELIVERED":
+        raise ValueError(
+            f"Trip must be DELIVERED before it can be settled (current status: {trip.status})"
+        )
+
+    existing = (
+        db.query(models.Settlement.id).filter(models.Settlement.trip_id == trip.id).first()
+    )
+    if existing:
+        raise ValueError("A settlement already exists for this trip")
+
+    weight_kg = (
+        float(trip.produce_request.weight_kg)
+        if trip.produce_request and trip.produce_request.weight_kg is not None
+        else 0.0
+    )
+
+    base_fare = 50.0
+    distance_fare = settlement_in.distance_km * 15.0
+    weight_surcharge = max(0.0, weight_kg - 50.0) * 2.0
+    total_payout = base_fare + distance_fare + weight_surcharge
+
+    db_settlement = models.Settlement(
+        trip_id=trip.id,
+        base_fare=base_fare,
+        distance_fare=distance_fare,
+        weight_surcharge=weight_surcharge,
+        total_payout=total_payout,
+        status="PENDING",
+    )
+
+    try:
+        db.add(db_settlement)
+        db.commit()
+        db.refresh(db_settlement)
+        return db_settlement
+    except SQLAlchemyError:
+        # Covers the concurrent-request race the `existing` check above
+        # can't fully close: if two requests for the same trip both pass
+        # that check before either commits, the second commit here hits
+        # the DB's unique constraint on trip_id and raises IntegrityError
+        # (a subclass of SQLAlchemyError) instead of silently creating a
+        # duplicate payout.
+        db.rollback()
+        raise
