@@ -60,3 +60,24 @@ class Trip(Base):
 
     produce_request = relationship("ProduceRequest", back_populates="trip", foreign_keys=[produce_request_id])
     rider = relationship("User", back_populates="trips", foreign_keys=[rider_id])
+    crate_scans = relationship("CrateScan", back_populates="trip", foreign_keys="CrateScan.trip_id")
+
+
+class CrateScan(Base):
+    """
+    A single QR-code scan verifying crates at pickup or delivery. A trip
+    typically has (at least) one PICKUP scan and one DELIVERY scan, each
+    tied to whichever authenticated user performed the scan.
+    """
+
+    __tablename__ = "crate_scans"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    trip_id = Column(UUID(as_uuid=True), ForeignKey("trips.id", ondelete="CASCADE"), nullable=False)
+    scanned_by_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    scan_type = Column(String(20), nullable=False)
+    qr_code = Column(String(255), nullable=False)
+    scanned_at = Column(DateTime(timezone=True), default=datetime.utcnow)
+
+    trip = relationship("Trip", back_populates="crate_scans", foreign_keys=[trip_id])
+    scanned_by = relationship("User", foreign_keys=[scanned_by_id])

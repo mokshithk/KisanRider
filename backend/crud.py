@@ -278,6 +278,11 @@ def get_nearby_produce_requests(
 # Trip CRUD
 # ---------------------------------------------------------------------------
 
+def get_trip_by_id(db: Session, trip_id: UUID) -> Optional[models.Trip]:
+    """Plain lookup, used by main.py to check trip ownership before allowing a status update."""
+    return db.query(models.Trip).filter(models.Trip.id == trip_id).first()
+
+
 def accept_produce_request(db: Session, request_id: UUID, rider_id: UUID) -> models.Trip:
     """
     A rider accepts a PENDING produce request, creating a Trip and flipping
@@ -416,3 +421,39 @@ def get_active_trip_for_rider(db: Session, rider_id: UUID) -> Optional[models.Tr
         .order_by(models.Trip.created_at.desc())
         .first()
     )
+
+
+# ---------------------------------------------------------------------------
+# CrateScan CRUD
+# ---------------------------------------------------------------------------
+
+def create_crate_scan(
+    db: Session, scan_data: schemas.CrateScanCreate, user_id: UUID
+) -> Optional[models.CrateScan]:
+    """
+    Record a crate QR-code scan (PICKUP or DELIVERY) against a trip.
+
+    Returns None if `trip_id` doesn't exist, so main.py can raise the 404 —
+    same layering convention as get_produce_request_by_id/update_trip_status:
+    crud.py signals "not found" via None and domain errors via ValueError,
+    and main.py owns the HTTP status mapping.
+    """
+    trip_exists = db.query(models.Trip.id).filter(models.Trip.id == scan_data.trip_id).first()
+    if not trip_exists:
+        return None
+
+    db_scan = models.CrateScan(
+        trip_id=scan_data.trip_id,
+        scanned_by_id=user_id,
+        scan_type=scan_data.scan_type,
+        qr_code=scan_data.qr_code,
+    )
+
+    try:
+        db.add(db_scan)
+        db.commit()
+        db.refresh(db_scan)
+        return db_scan
+    except SQLAlchemyError:
+        db.rollback()
+        raise

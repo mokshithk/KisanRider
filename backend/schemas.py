@@ -159,3 +159,24 @@ class FarmerProduceRequestResponse(ProduceRequestResponse):
     """
 
     trip: Optional[TripSummary] = None
+
+
+# ---------------------------------------------------------------------------
+# CrateScan schemas
+# ---------------------------------------------------------------------------
+
+class CrateScanCreate(BaseModel):
+    trip_id: UUID
+    scan_type: Literal["PICKUP", "DELIVERY"]
+    qr_code: str = Field(..., min_length=1, max_length=255)
+
+
+class CrateScanResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    trip_id: UUID
+    scanned_by_id: UUID
+    scan_type: Literal["PICKUP", "DELIVERY"]
+    qr_code: str
+    scanned_at: datetime

@@ -5,6 +5,7 @@ Merge the endpoints below into your existing main.py (keep your current
 /db-check endpoint as-is — it's reproduced here only for completeness).
 """
 
+from contextlib import asynccontextmanager
 from typing import List
 from uuid import UUID
 
@@ -17,9 +18,36 @@ import auth
 import crud
 import models
 import schemas
-from database import get_db
+from database import engine, get_db
 
-app = FastAPI(title="KisanRider API")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """
+    Create any tables defined in models.py that don't exist yet in Postgres
+    (e.g. crate_scans) on startup.
+
+    create_all() only issues CREATE TABLE IF NOT EXISTS for tables it
+    doesn't find — it never touches a table that already exists, so it
+    won't add/drop/alter a column on your existing users/produce_requests/
+    trips tables no matter how their models.py definition has drifted from
+    the live schema. That's exactly why the CrateScan model added a couple
+    of rounds ago never actually created crate_scans in Postgres: nothing
+    had called create_all() since that model was added, so every insert
+    into it 500'd with "relation crate_scans does not exist" — the bare,
+    non-JSON error body you're seeing is Postgres's error escaping past
+    every try/except in crud.py/main.py, none of which catch a missing-
+    table error specifically.
+
+    For anything beyond "table doesn't exist yet" — an actual schema
+    change to a column that already exists — create_all() does nothing;
+    you'd need a real migration tool (Alembic) or a manual SQL script.
+    """
+    models.Base.metadata.create_all(bind=engine)
+    yield
+
+
+app = FastAPI(title="KisanRider API", lifespan=lifespan)
 
 
 # ---------------------------------------------------------------------------
@@ -33,6 +61,38 @@ def db_check(db: Session = Depends(get_db)):
         return {"database": "Connected", "postgis_version": result[0]}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Database connection failed: {str(e)}")
+
+
+# ---------------------------------------------------------------------------
+# Dev-only auth (local testing in Swagger UI)
+# ---------------------------------------------------------------------------
+
+@app.post("/auth/dev-token")
+def issue_dev_token(
+    user_id: UUID = Query(..., description="Existing user to mint a test token for"),
+    db: Session = Depends(get_db),
+):
+    """
+    Mint a short-lived access token for an existing user, for exercising
+    protected endpoints from Swagger UI without going through Supabase Auth.
+
+    404s in production (ENVIRONMENT=production) rather than merely
+    rejecting the token mint — DEV_MODE is checked before touching the DB
+    at all, so this route has zero attack surface once deployed for real:
+    it behaves as if it doesn't exist. It's a complete auth bypass by
+    design (any real user_id in, a valid token for that user out, no
+    password), which is exactly why it can't be reachable outside
+    development.
+    """
+    if not auth.DEV_MODE:
+        raise HTTPException(status_code=404, detail="Not found")
+
+    user = crud.get_user_by_id(db, user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    token = auth.create_dev_token(user_id)
+    return {"access_token": token, "token_type": "bearer"}
 
 
 # ---------------------------------------------------------------------------
@@ -132,14 +192,28 @@ def accept_trip(
 
 
 @app.patch("/trips/{trip_id}/status", response_model=schemas.TripResponse)
-def update_trip_status(trip_id: UUID, body: schemas.TripStatusUpdate, db: Session = Depends(get_db)):
+def update_trip_status(
+    trip_id: UUID,
+    body: schemas.TripStatusUpdate,
+    current_user: models.User = Depends(auth.require_role("RIDER")),
+    db: Session = Depends(get_db),
+):
     """
-    Transition a trip to PICKED_UP, DELIVERED, or CANCELLED.
+    Transition a trip to PICKED_UP, DELIVERED, or CANCELLED. Only the rider
+    assigned to the trip may update it — any other authenticated rider gets
+    403, which is why we fetch the trip first rather than letting
+    crud.update_trip_status run unconditionally.
 
     Transitioning to DELIVERED also marks the underlying produce request as
     COMPLETED. Trips already in a terminal state (DELIVERED/CANCELLED)
     reject further updates with a 400.
     """
+    trip = crud.get_trip_by_id(db, trip_id)
+    if not trip:
+        raise HTTPException(status_code=404, detail="Trip not found")
+    if trip.rider_id != current_user.id:
+        raise HTTPException(status_code=403, detail="You are not the rider assigned to this trip")
+
     try:
         result = crud.update_trip_status(db, trip_id, body.status)
     except (SQLAlchemyError, ValueError) as e:
@@ -178,3 +252,24 @@ def get_active_trip(
         completed_at=trip.completed_at,
         produce_request=produce_request,
     )
+
+
+# ---------------------------------------------------------------------------
+# Crate Scans
+# ---------------------------------------------------------------------------
+
+@app.post("/crate-scans/", response_model=schemas.CrateScanResponse, status_code=201)
+def create_crate_scan(
+    scan: schemas.CrateScanCreate,
+    current_user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Record a PICKUP or DELIVERY crate QR-code scan against a trip, logged
+    under whichever authenticated user (farmer or rider) performed it.
+    404s if the trip doesn't exist.
+    """
+    result = crud.create_crate_scan(db, scan, current_user.id)
+    if not result:
+        raise HTTPException(status_code=404, detail="Trip not found")
+    return result
