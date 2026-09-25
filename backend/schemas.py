@@ -97,3 +97,125 @@ class TripResponse(BaseModel):
     status: TripStatus
     created_at: datetime
     completed_at: Optional[datetime] = None
+
+
+class TripStatusUpdate(BaseModel):
+    """
+    Body for PATCH /trips/{trip_id}/status.
+
+    'ACCEPTED' is deliberately excluded here — a trip starts in that state
+    via POST /trips/accept and is never transitioned back into it, so this
+    is a Literal of only the three valid forward targets. FastAPI/Pydantic
+    reject anything else with a 422 before it ever reaches crud.py.
+    """
+
+    status: Literal["PICKED_UP", "DELIVERED", "CANCELLED"]
+
+
+class ActiveTripResponse(TripResponse):
+    """
+    Response for GET /trips/active. Adds the associated produce request
+    (crop details + pickup coordinates) so a rider's app doesn't need a
+    second round-trip to /produce-requests/{id} just to know where to go
+    and what to pick up.
+    """
+
+    produce_request: ProduceRequestResponse
+
+
+# ---------------------------------------------------------------------------
+# Farmer produce-request tracking feed
+# ---------------------------------------------------------------------------
+
+class RiderSummary(BaseModel):
+    """Minimal rider identity shown to a farmer once their request is picked up."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    full_name: str
+    phone: str
+
+
+class TripSummary(BaseModel):
+    """Trip status/timing, nested under a farmer's produce request view."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    status: TripStatus
+    created_at: datetime
+    completed_at: Optional[datetime] = None
+    rider: Optional[RiderSummary] = None
+
+
+class FarmerProduceRequestResponse(ProduceRequestResponse):
+    """
+    Response for GET /produce-requests/farmer/{farmer_id}.
+
+    `trip` is None while the request is still PENDING (no rider has
+    accepted it yet); once a rider accepts, it carries that rider's
+    identity plus the trip's own status/timestamps.
+    """
+
+    trip: Optional[TripSummary] = None
+
+
+# ---------------------------------------------------------------------------
+# CrateScan schemas
+# ---------------------------------------------------------------------------
+
+class CrateScanCreate(BaseModel):
+    trip_id: UUID
+    scan_type: Literal["PICKUP", "DELIVERY"]
+    qr_code: str = Field(..., min_length=1, max_length=255)
+
+
+class CrateScanResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    trip_id: UUID
+    scanned_by_id: UUID
+    scan_type: Literal["PICKUP", "DELIVERY"]
+    qr_code: str
+    scanned_at: datetime
+
+
+# ---------------------------------------------------------------------------
+# Settlement schemas
+# ---------------------------------------------------------------------------
+
+class SettlementCreate(BaseModel):
+    trip_id: UUID
+    distance_km: float = Field(..., gt=0, description="Distance covered for this trip, in kilometers")
+
+
+class SettlementResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    trip_id: UUID
+    base_fare: float
+    distance_fare: float
+    weight_surcharge: float
+    total_payout: float
+    status: Literal["PENDING", "PAID"]
+    created_at: datetime
+
+
+# ---------------------------------------------------------------------------
+# Admin analytics + photo upload schemas
+# ---------------------------------------------------------------------------
+
+class AdminStatsResponse(BaseModel):
+    total_users: int
+    total_farmers: int
+    total_riders: int
+    total_trips: int
+    completed_trips: int
+    total_payout_volume: float
+
+
+class PhotoUploadResponse(BaseModel):
+    image_url: str

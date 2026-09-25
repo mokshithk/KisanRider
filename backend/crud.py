@@ -18,9 +18,9 @@ from geoalchemy2 import Geography, Geometry
 from geoalchemy2.elements import WKTElement
 from geoalchemy2.functions import ST_DWithin, ST_Distance, ST_MakePoint, ST_SetSRID, ST_X, ST_Y
 from geoalchemy2.shape import to_shape
-from sqlalchemy import cast
+from sqlalchemy import cast, func
 from sqlalchemy.exc import SQLAlchemyError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from datetime import datetime
 
@@ -145,6 +145,59 @@ def get_produce_request_by_id(db: Session, request_id: UUID) -> Optional[schemas
     return _to_response(pr) if pr else None
 
 
+def _to_farmer_response(pr: models.ProduceRequest) -> schemas.FarmerProduceRequestResponse:
+    """
+    Extend `_to_response()` with the request's trip (if any) and that
+    trip's rider, for the farmer tracking feed. Reuses `_to_response()`
+    rather than re-decoding the geometry, so there's one place that turns
+    a WKBElement into lat/lng.
+    """
+    base = _to_response(pr)
+
+    trip_summary = None
+    if pr.trip:
+        rider_summary = (
+            schemas.RiderSummary(
+                id=pr.trip.rider.id,
+                full_name=pr.trip.rider.full_name,
+                phone=pr.trip.rider.phone,
+            )
+            if pr.trip.rider
+            else None
+        )
+        trip_summary = schemas.TripSummary(
+            id=pr.trip.id,
+            status=pr.trip.status,
+            created_at=pr.trip.created_at,
+            completed_at=pr.trip.completed_at,
+            rider=rider_summary,
+        )
+
+    return schemas.FarmerProduceRequestResponse(**base.model_dump(), trip=trip_summary)
+
+
+def get_produce_requests_for_farmer(
+    db: Session, farmer_id: UUID
+) -> List[schemas.FarmerProduceRequestResponse]:
+    """
+    All produce requests a farmer has created, newest first, each carrying
+    its trip (rider + status) if one has been accepted.
+
+    `joinedload` on `ProduceRequest.trip` and `Trip.rider` fetches both in
+    the same query (two LEFT JOINs) rather than issuing a follow-up query
+    per row (the classic N+1) — `trip` is nullable so this has to be a LEFT
+    JOIN, which `joinedload` handles correctly for a to-one relationship.
+    """
+    requests = (
+        db.query(models.ProduceRequest)
+        .options(joinedload(models.ProduceRequest.trip).joinedload(models.Trip.rider))
+        .filter(models.ProduceRequest.farmer_id == farmer_id)
+        .order_by(models.ProduceRequest.created_at.desc())
+        .all()
+    )
+    return [_to_farmer_response(pr) for pr in requests]
+
+
 def get_nearby_produce_requests(
     db: Session,
     lat: float,
@@ -225,6 +278,11 @@ def get_nearby_produce_requests(
 # Trip CRUD
 # ---------------------------------------------------------------------------
 
+def get_trip_by_id(db: Session, trip_id: UUID) -> Optional[models.Trip]:
+    """Plain lookup, used by main.py to check trip ownership before allowing a status update."""
+    return db.query(models.Trip).filter(models.Trip.id == trip_id).first()
+
+
 def accept_produce_request(db: Session, request_id: UUID, rider_id: UUID) -> models.Trip:
     """
     A rider accepts a PENDING produce request, creating a Trip and flipping
@@ -270,3 +328,260 @@ def accept_produce_request(db: Session, request_id: UUID, rider_id: UUID) -> mod
     except SQLAlchemyError:
         db.rollback()
         raise
+
+
+def update_trip_status(db: Session, trip_id: UUID, status: str) -> Optional[models.Trip]:
+    """
+    Transition a Trip to a new status ('PICKED_UP', 'DELIVERED', or
+    'CANCELLED' — enforced upstream by schemas.TripStatusUpdate).
+
+    Returns None if the trip doesn't exist, so main.py can raise a 404 the
+    same way it already does for get_produce_request_by_id. Everything else
+    (terminal-state guard) is a domain error raised as ValueError, which
+    main.py maps to 400 — same layering as accept_produce_request.
+
+    On transition to 'DELIVERED': stamps `completed_at` and also marks the
+    linked ProduceRequest as 'COMPLETED', since a delivered trip means the
+    produce has reached its destination. On 'CANCELLED': also stamps
+    `completed_at` (CANCELLED is terminal) but leaves the ProduceRequest
+    status untouched — reopening it for another rider is a separate concern
+    this endpoint doesn't own.
+
+    Both the Trip and its ProduceRequest are row-locked for the duration of
+    the transaction, consistent with accept_produce_request, so a status
+    update can't race another writer touching the same rows.
+    """
+    try:
+        trip = (
+            db.query(models.Trip)
+            .filter(models.Trip.id == trip_id)
+            .with_for_update()
+            .first()
+        )
+
+        if not trip:
+            return None
+
+        if trip.status in ("DELIVERED", "CANCELLED"):
+            raise ValueError(f"Trip is already in a terminal state ({trip.status}) and cannot be updated")
+
+        if status == "DELIVERED":
+            trip.completed_at = datetime.utcnow()
+
+            pr = (
+                db.query(models.ProduceRequest)
+                .filter(models.ProduceRequest.id == trip.produce_request_id)
+                .with_for_update()
+                .first()
+            )
+            if pr:
+                pr.status = "COMPLETED"
+        elif status == "CANCELLED":
+            trip.completed_at = datetime.utcnow()
+
+        trip.status = status
+
+        db.commit()
+        db.refresh(trip)
+        return trip
+    except ValueError:
+        db.rollback()
+        raise
+    except SQLAlchemyError:
+        db.rollback()
+        raise
+
+
+def get_active_trip_for_rider(db: Session, rider_id: UUID) -> Optional[models.Trip]:
+    """
+    Return the rider's current active trip (status ACCEPTED or PICKED_UP),
+    with its ProduceRequest eager-loaded via a single joined query.
+
+    Returns the raw ORM Trip (with `.produce_request` populated), not a
+    Pydantic schema — main.py is responsible for assembling the
+    ActiveTripResponse, since that requires decoding the ProduceRequest's
+    PostGIS geometry into plain lat/lng the same way `_to_response()`
+    already does for every other read path. Keeping that decoding logic in
+    one place (rather than duplicating it here) avoids the two implementations
+    drifting apart.
+
+    A rider should have at most one row matching this filter in normal
+    operation (accept_produce_request/update_trip_status don't let a second
+    trip become ACCEPTED/PICKED_UP for the same rider), but `.first()` is
+    used defensively rather than `.one()` so a data anomaly surfaces as
+    "return the most relevant trip" instead of a 500.
+    """
+    return (
+        db.query(models.Trip)
+        .options(joinedload(models.Trip.produce_request))
+        .filter(
+            models.Trip.rider_id == rider_id,
+            models.Trip.status.in_(("ACCEPTED", "PICKED_UP")),
+        )
+        .order_by(models.Trip.created_at.desc())
+        .first()
+    )
+
+
+# ---------------------------------------------------------------------------
+# CrateScan CRUD
+# ---------------------------------------------------------------------------
+
+def create_crate_scan(
+    db: Session, scan_data: schemas.CrateScanCreate, user_id: UUID
+) -> Optional[models.CrateScan]:
+    """
+    Record a crate QR-code scan (PICKUP or DELIVERY) against a trip.
+
+    Returns None if `trip_id` doesn't exist, so main.py can raise the 404 —
+    same layering convention as get_produce_request_by_id/update_trip_status:
+    crud.py signals "not found" via None and domain errors via ValueError,
+    and main.py owns the HTTP status mapping.
+    """
+    trip_exists = db.query(models.Trip.id).filter(models.Trip.id == scan_data.trip_id).first()
+    if not trip_exists:
+        return None
+
+    db_scan = models.CrateScan(
+        trip_id=scan_data.trip_id,
+        scanned_by_id=user_id,
+        scan_type=scan_data.scan_type,
+        qr_code=scan_data.qr_code,
+    )
+
+    try:
+        db.add(db_scan)
+        db.commit()
+        db.refresh(db_scan)
+        return db_scan
+    except SQLAlchemyError:
+        db.rollback()
+        raise
+
+
+# ---------------------------------------------------------------------------
+# Settlement CRUD
+# ---------------------------------------------------------------------------
+
+def create_settlement(
+    db: Session, settlement_in: schemas.SettlementCreate
+) -> Optional[models.Settlement]:
+    """
+    Create the payout settlement for a completed trip.
+
+    total_payout = base_fare (Rs 50) + distance_fare (distance_km * Rs 15)
+                   + weight_surcharge (Rs 2 per kg over 50kg, 0 below that)
+
+    Returns None if `trip_id` doesn't exist (main.py -> 404). Raises
+    ValueError (main.py -> 400) for domain errors: trip isn't DELIVERED yet,
+    or a settlement already exists for this trip — the latter is also
+    enforced at the DB level via `trip_id`'s unique constraint, so this
+    check is a friendlier error message, not the only thing standing
+    between two concurrent requests and a race (see note below).
+    """
+    trip = (
+        db.query(models.Trip)
+        .options(joinedload(models.Trip.produce_request))
+        .filter(models.Trip.id == settlement_in.trip_id)
+        .first()
+    )
+    if not trip:
+        return None
+
+    if trip.status != "DELIVERED":
+        raise ValueError(
+            f"Trip must be DELIVERED before it can be settled (current status: {trip.status})"
+        )
+
+    existing = (
+        db.query(models.Settlement.id).filter(models.Settlement.trip_id == trip.id).first()
+    )
+    if existing:
+        raise ValueError("A settlement already exists for this trip")
+
+    weight_kg = (
+        float(trip.produce_request.weight_kg)
+        if trip.produce_request and trip.produce_request.weight_kg is not None
+        else 0.0
+    )
+
+    base_fare = 50.0
+    distance_fare = settlement_in.distance_km * 15.0
+    weight_surcharge = max(0.0, weight_kg - 50.0) * 2.0
+    total_payout = base_fare + distance_fare + weight_surcharge
+
+    db_settlement = models.Settlement(
+        trip_id=trip.id,
+        base_fare=base_fare,
+        distance_fare=distance_fare,
+        weight_surcharge=weight_surcharge,
+        total_payout=total_payout,
+        status="PENDING",
+    )
+
+    try:
+        db.add(db_settlement)
+        db.commit()
+        db.refresh(db_settlement)
+        return db_settlement
+    except SQLAlchemyError:
+        # Covers the concurrent-request race the `existing` check above
+        # can't fully close: if two requests for the same trip both pass
+        # that check before either commits, the second commit here hits
+        # the DB's unique constraint on trip_id and raises IntegrityError
+        # (a subclass of SQLAlchemyError) instead of silently creating a
+        # duplicate payout.
+        db.rollback()
+        raise
+
+
+# ---------------------------------------------------------------------------
+# Admin analytics
+# ---------------------------------------------------------------------------
+
+def get_admin_stats(db: Session) -> schemas.AdminStatsResponse:
+    """
+    Platform-wide summary counts. Each is a separate COUNT/SUM query rather
+    than one grouped query, since the underlying tables (users, trips,
+    settlements) aren't related in a way that a single GROUP BY could
+    produce all six numbers from — a users/trips join would double-count
+    trips per farmer/rider, for instance. Six small aggregate queries on
+    indexed columns (id, status, role) is the simpler and cheaper approach
+    here over one convoluted multi-join query.
+    """
+    total_users = db.query(func.count(models.User.id)).scalar() or 0
+    total_farmers = (
+        db.query(func.count(models.User.id)).filter(models.User.role == "FARMER").scalar() or 0
+    )
+    total_riders = (
+        db.query(func.count(models.User.id)).filter(models.User.role == "RIDER").scalar() or 0
+    )
+    total_trips = db.query(func.count(models.Trip.id)).scalar() or 0
+    completed_trips = (
+        db.query(func.count(models.Trip.id)).filter(models.Trip.status == "DELIVERED").scalar() or 0
+    )
+    # coalesce to 0.0 so an empty settlements table returns 0.0 rather than
+    # None (SUM over zero rows is NULL, not 0, in SQL).
+    total_payout_volume = (
+        db.query(func.coalesce(func.sum(models.Settlement.total_payout), 0.0)).scalar() or 0.0
+    )
+
+    return schemas.AdminStatsResponse(
+        total_users=total_users,
+        total_farmers=total_farmers,
+        total_riders=total_riders,
+        total_trips=total_trips,
+        completed_trips=completed_trips,
+        total_payout_volume=float(total_payout_volume),
+    )
+
+
+def get_rider_settlements(db: Session, rider_id: UUID) -> List[models.Settlement]:
+    """All settlements for trips this rider has fulfilled, newest first."""
+    return (
+        db.query(models.Settlement)
+        .join(models.Trip, models.Settlement.trip_id == models.Trip.id)
+        .filter(models.Trip.rider_id == rider_id)
+        .order_by(models.Settlement.created_at.desc())
+        .all()
+    )
