@@ -5,11 +5,14 @@ Merge the endpoints below into your existing main.py (keep your current
 /db-check endpoint as-is — it's reproduced here only for completeness).
 """
 
+import uuid
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import List
 from uuid import UUID
 
-from fastapi import Depends, FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, File, HTTPException, Query, UploadFile
+from fastapi.staticfiles import StaticFiles
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
@@ -19,7 +22,19 @@ import crud
 import models
 import schemas
 from database import engine, get_db
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
+app = FastAPI(title="KisanRider API")
+
+# Allows Flutter Web on any local port to interact with FastAPI
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -48,6 +63,21 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="KisanRider API", lifespan=lifespan)
+
+# Local static storage for delivery photos (see POST /uploads/delivery-photo
+# below). Swap this whole block for real Supabase Storage in production —
+# local disk storage doesn't survive a redeploy on most hosts and doesn't
+# scale past one server instance.
+UPLOAD_DIR = Path("static/uploads")
+UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+app.mount("/static", StaticFiles(directory="static"), name="static")
+
+ALLOWED_UPLOAD_CONTENT_TYPES = {
+    "image/jpeg": ".jpg",
+    "image/png": ".png",
+    "image/webp": ".webp",
+}
+MAX_UPLOAD_BYTES = 10 * 1024 * 1024  # 10 MB
 
 
 # ---------------------------------------------------------------------------
@@ -297,3 +327,81 @@ def create_settlement(
     if not result:
         raise HTTPException(status_code=404, detail="Trip not found")
     return result
+
+
+@app.get("/settlements/me", response_model=List[schemas.SettlementResponse])
+def get_my_settlements(
+    current_user: models.User = Depends(auth.require_role("RIDER")),
+    db: Session = Depends(get_db),
+):
+    """Payout history for the authenticated rider, newest first."""
+    return crud.get_rider_settlements(db, current_user.id)
+
+
+# ---------------------------------------------------------------------------
+# Admin analytics
+# ---------------------------------------------------------------------------
+
+@app.get("/admin/stats/", response_model=schemas.AdminStatsResponse)
+def get_admin_stats(
+    current_user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Platform-wide summary: user/farmer/rider counts, trip counts, and total
+    payout volume.
+
+    NOTE: gated only by auth.get_current_user, exactly as specified — there
+    is no ADMIN role in this codebase yet (only FARMER/RIDER), so right now
+    *any* logged-in farmer or rider can see platform-wide numbers, not just
+    staff. If that's not intended, this needs a real admin role added to
+    users.role and require_role("ADMIN") here instead.
+    """
+    return crud.get_admin_stats(db)
+
+
+# ---------------------------------------------------------------------------
+# Photo uploads
+# ---------------------------------------------------------------------------
+
+@app.post("/uploads/delivery-photo", response_model=schemas.PhotoUploadResponse, status_code=201)
+async def upload_delivery_photo(
+    file: UploadFile = File(...),
+    current_user: models.User = Depends(auth.get_current_user),
+):
+    """
+    Upload a delivery proof-of-photo. Saves to local static storage (see
+    the UPLOAD_DIR/StaticFiles mount near the top of this file) and returns
+    a URL the app can display or attach to a trip/settlement record.
+
+    Auth wasn't specified for this endpoint in the task, but every other
+    write endpoint in this file requires a caller — leaving file upload as
+    the one open door would let anyone fill your disk with arbitrary
+    uploads, so Depends(auth.get_current_user) is applied here too.
+
+    The uploaded filename is never trusted for the saved path (a client
+    could send `../../etc/passwd` as a filename) — the stored name is
+    always a fresh UUID plus an extension this server chose, not anything
+    from the request.
+    """
+    if file.content_type not in ALLOWED_UPLOAD_CONTENT_TYPES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported file type: {file.content_type}. Allowed: "
+            f"{', '.join(sorted(ALLOWED_UPLOAD_CONTENT_TYPES))}",
+        )
+
+    contents = await file.read()
+    if len(contents) > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=400, detail="File too large (max 10 MB)")
+    if not contents:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty")
+
+    extension = ALLOWED_UPLOAD_CONTENT_TYPES[file.content_type]
+    filename = f"{uuid.uuid4()}{extension}"
+    destination = UPLOAD_DIR / filename
+
+    with open(destination, "wb") as f:
+        f.write(contents)
+
+    return schemas.PhotoUploadResponse(image_url=f"/static/uploads/{filename}")

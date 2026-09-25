@@ -18,7 +18,7 @@ from geoalchemy2 import Geography, Geometry
 from geoalchemy2.elements import WKTElement
 from geoalchemy2.functions import ST_DWithin, ST_Distance, ST_MakePoint, ST_SetSRID, ST_X, ST_Y
 from geoalchemy2.shape import to_shape
-from sqlalchemy import cast
+from sqlalchemy import cast, func
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, joinedload
 
@@ -533,3 +533,55 @@ def create_settlement(
         # duplicate payout.
         db.rollback()
         raise
+
+
+# ---------------------------------------------------------------------------
+# Admin analytics
+# ---------------------------------------------------------------------------
+
+def get_admin_stats(db: Session) -> schemas.AdminStatsResponse:
+    """
+    Platform-wide summary counts. Each is a separate COUNT/SUM query rather
+    than one grouped query, since the underlying tables (users, trips,
+    settlements) aren't related in a way that a single GROUP BY could
+    produce all six numbers from — a users/trips join would double-count
+    trips per farmer/rider, for instance. Six small aggregate queries on
+    indexed columns (id, status, role) is the simpler and cheaper approach
+    here over one convoluted multi-join query.
+    """
+    total_users = db.query(func.count(models.User.id)).scalar() or 0
+    total_farmers = (
+        db.query(func.count(models.User.id)).filter(models.User.role == "FARMER").scalar() or 0
+    )
+    total_riders = (
+        db.query(func.count(models.User.id)).filter(models.User.role == "RIDER").scalar() or 0
+    )
+    total_trips = db.query(func.count(models.Trip.id)).scalar() or 0
+    completed_trips = (
+        db.query(func.count(models.Trip.id)).filter(models.Trip.status == "DELIVERED").scalar() or 0
+    )
+    # coalesce to 0.0 so an empty settlements table returns 0.0 rather than
+    # None (SUM over zero rows is NULL, not 0, in SQL).
+    total_payout_volume = (
+        db.query(func.coalesce(func.sum(models.Settlement.total_payout), 0.0)).scalar() or 0.0
+    )
+
+    return schemas.AdminStatsResponse(
+        total_users=total_users,
+        total_farmers=total_farmers,
+        total_riders=total_riders,
+        total_trips=total_trips,
+        completed_trips=completed_trips,
+        total_payout_volume=float(total_payout_volume),
+    )
+
+
+def get_rider_settlements(db: Session, rider_id: UUID) -> List[models.Settlement]:
+    """All settlements for trips this rider has fulfilled, newest first."""
+    return (
+        db.query(models.Settlement)
+        .join(models.Trip, models.Settlement.trip_id == models.Trip.id)
+        .filter(models.Trip.rider_id == rider_id)
+        .order_by(models.Settlement.created_at.desc())
+        .all()
+    )

@@ -202,3 +202,20 @@ class SettlementResponse(BaseModel):
     total_payout: float
     status: Literal["PENDING", "PAID"]
     created_at: datetime
+
+
+# ---------------------------------------------------------------------------
+# Admin analytics + photo upload schemas
+# ---------------------------------------------------------------------------
+
+class AdminStatsResponse(BaseModel):
+    total_users: int
+    total_farmers: int
+    total_riders: int
+    total_trips: int
+    completed_trips: int
+    total_payout_volume: float
+
+
+class PhotoUploadResponse(BaseModel):
+    image_url: str
