@@ -55,6 +55,10 @@ class ProduceRequestCreate(BaseModel):
     weight_kg: float = Field(..., gt=0, description="Total weight in kilograms")
     latitude: float = Field(..., ge=-90, le=90)
     longitude: float = Field(..., ge=-180, le=180)
+    # <-- NEW: free-text dropoff address/landmark for MVP.
+    dropoff_location: Optional[str] = Field(
+        None, max_length=255, description="Free-text dropoff address/landmark (MVP)"
+    )
 
 
 class ProduceRequestResponse(BaseModel):
@@ -67,6 +71,7 @@ class ProduceRequestResponse(BaseModel):
     weight_kg: float
     latitude: float
     longitude: float
+    dropoff_location: Optional[str] = None  # <-- NEW
     status: str
     created_at: datetime
 
@@ -151,7 +156,7 @@ class TripSummary(BaseModel):
 
 class FarmerProduceRequestResponse(ProduceRequestResponse):
     """
-    Response for GET /produce-requests/farmer/{farmer_id}.
+    Response for GET /produce-requests/farmer/me.
 
     `trip` is None while the request is still PENDING (no rider has
     accepted it yet); once a rider accepts, it carries that rider's

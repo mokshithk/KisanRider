@@ -82,6 +82,7 @@ def _to_response(pr: models.ProduceRequest) -> schemas.ProduceRequestResponse:
         weight_kg=float(pr.weight_kg),
         latitude=point.y,
         longitude=point.x,
+        dropoff_location=pr.dropoff_location,  # <-- NEW
         status=pr.status,
         created_at=pr.created_at,
     )
@@ -116,6 +117,7 @@ def create_produce_request(
         crate_count=request_schema.crate_count,
         weight_kg=request_schema.weight_kg,
         pickup_location=point_wkt,
+        dropoff_location=request_schema.dropoff_location,  # <-- NEW
         status="PENDING",
     )
 
@@ -135,6 +137,7 @@ def create_produce_request(
         weight_kg=float(db_request.weight_kg),
         latitude=request_schema.latitude,
         longitude=request_schema.longitude,
+        dropoff_location=db_request.dropoff_location,  # <-- NEW
         status=db_request.status,
         created_at=db_request.created_at,
     )
@@ -198,6 +201,26 @@ def get_produce_requests_for_farmer(
     return [_to_farmer_response(pr) for pr in requests]
 
 
+# <-- NEW: flat MVP list for GET /trips/me
+def get_farmer_produce_requests(
+    db: Session, farmer_id: UUID
+) -> List[schemas.ProduceRequestResponse]:
+    """
+    All produce requests created by `farmer_id`, newest first.
+
+    Flat list of ProduceRequestResponse (no trip/rider nesting) — the MVP
+    view used by GET /trips/me. Reuses `_to_response()` so the geometry ->
+    lat/lng decoding stays in one place.
+    """
+    rows = (
+        db.query(models.ProduceRequest)
+        .filter(models.ProduceRequest.farmer_id == farmer_id)
+        .order_by(models.ProduceRequest.created_at.desc())
+        .all()
+    )
+    return [_to_response(pr) for pr in rows]
+
+
 def get_nearby_produce_requests(
     db: Session,
     lat: float,
@@ -240,6 +263,7 @@ def get_nearby_produce_requests(
             pr.weight_kg,
             pr.status,
             pr.created_at,
+            pr.dropoff_location,  # <-- NEW: selected scalar, no WKB decode needed
             latitude_col,
             longitude_col,
             distance_km,
@@ -266,6 +290,7 @@ def get_nearby_produce_requests(
             weight_kg=float(row.weight_kg),
             latitude=row.latitude,
             longitude=row.longitude,
+            dropoff_location=row.dropoff_location,  # <-- NEW
             status=row.status,
             created_at=row.created_at,
             distance_km=round(row.distance_km, 3),
