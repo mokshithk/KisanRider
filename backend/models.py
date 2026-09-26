@@ -30,7 +30,13 @@ class ProduceRequest(Base):
     crate_count = Column(Integer, nullable=False)
     weight_kg = Column(Numeric(10, 2))
     pickup_location = Column(Geometry("POINT", srid=4326), nullable=False)
-    dropoff_location = Column(String(255), nullable=True)  # <-- NEW: free-text dropoff (MVP)
+    dropoff_location = Column(String(255), nullable=True)  # free-text dropoff (MVP)
+    # Mandi dropoff coordinates captured from the district/mandi picker.
+    # Plain floats, not PostGIS — we don't do spatial queries on dropoff, so
+    # a geometry column would be overkill. Nullable because a farmer can
+    # submit with only a text dropoff location.
+    dropoff_lat = Column(Float, nullable=True)
+    dropoff_lng = Column(Float, nullable=True)
     status = Column(String(20), default="PENDING")
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 

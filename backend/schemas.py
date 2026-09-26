@@ -55,10 +55,13 @@ class ProduceRequestCreate(BaseModel):
     weight_kg: float = Field(..., gt=0, description="Total weight in kilograms")
     latitude: float = Field(..., ge=-90, le=90)
     longitude: float = Field(..., ge=-180, le=180)
-    # <-- NEW: free-text dropoff address/landmark for MVP.
     dropoff_location: Optional[str] = Field(
         None, max_length=255, description="Free-text dropoff address/landmark (MVP)"
     )
+    # Mandi coordinates from the district/mandi picker. Optional — a farmer
+    # can still submit with only a text dropoff_location.
+    dropoff_lat: Optional[float] = Field(None, ge=-90, le=90)
+    dropoff_lng: Optional[float] = Field(None, ge=-180, le=180)
 
 
 class ProduceRequestResponse(BaseModel):
@@ -71,7 +74,9 @@ class ProduceRequestResponse(BaseModel):
     weight_kg: float
     latitude: float
     longitude: float
-    dropoff_location: Optional[str] = None  # <-- NEW
+    dropoff_location: Optional[str] = None
+    dropoff_lat: Optional[float] = None
+    dropoff_lng: Optional[float] = None
     status: str
     created_at: datetime
 

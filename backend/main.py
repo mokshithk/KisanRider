@@ -5,12 +5,16 @@ Merge the endpoints below into your existing main.py (keep your current
 /db-check endpoint as-is — it's reproduced here only for completeness).
 """
 
+import asyncio
+import math
+import time
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import List
 from uuid import UUID
 
+import httpx
 from fastapi import Depends, FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import text
@@ -91,6 +95,237 @@ def db_check(db: Session = Depends(get_db)):
         return {"database": "Connected", "postgis_version": result[0]}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Database connection failed: {str(e)}")
+
+
+# ---------------------------------------------------------------------------
+# Mandi search (OpenStreetMap Overpass API — no API key required)
+# ---------------------------------------------------------------------------
+
+# District centers used as the search anchor. Overpass's bbox filter needs
+# coordinates, not a place name, so we anchor on the district HQ. ~30km
+# half-width covers each district without bleeding into neighbors. Add
+# entries here when you add districts to the Flutter dropdown.
+# District centers used as the search anchor. Overpass's bbox filter needs
+# coordinates, not a place name, so we anchor on the district HQ. 30km
+# half-width covers most districts; the four largest (Belagavi, Uttara
+# Kannada, Kalaburagi, Ballari) are big enough that a mandi near their
+# outer edge may fall outside — bump `radius_km` in search_mandis() or add
+# secondary centers for those if that becomes a problem.
+_DISTRICT_CENTERS: dict[str, tuple[float, float]] = {
+    "Bagalkot":           (16.1817, 75.6958),
+    "Ballari":            (15.1394, 76.9214),
+    "Belagavi":           (15.8497, 74.4977),
+    "Bengaluru Rural":    (13.1500, 77.4000),
+    "Bengaluru Urban":    (12.9716, 77.5946),
+    "Bidar":              (17.9104, 77.5199),
+    "Chamarajanagar":     (11.9261, 76.9437),
+    "Chikkaballapura":    (13.4355, 77.7315),
+    "Chikkamagaluru":     (13.3161, 75.7720),
+    "Chitradurga":        (14.2251, 76.3980),
+    "Dakshina Kannada":   (12.9141, 74.8560),
+    "Davanagere":         (14.4644, 75.9218),
+    "Dharwad":            (15.4589, 75.0078),
+    "Gadag":              (15.4166, 75.6167),
+    "Hassan":             (13.0071, 76.0962),
+    "Haveri":             (14.7935, 75.4040),
+    "Kalaburagi":         (17.3297, 76.8343),
+    "Kodagu":             (12.4244, 75.7382),
+    "Kolar":              (13.1362, 78.1291),
+    "Koppal":             (15.3510, 76.1550),
+    "Mandya":             (12.5223, 76.8954),
+    "Mysuru":             (12.2958, 76.6394),
+    "Raichur":            (16.2076, 77.3463),
+    "Ramanagara":         (12.7216, 77.2801),
+    "Shivamogga":         (13.9299, 75.5681),
+    "Tumakuru":           (13.3392, 77.1140),
+    "Udupi":              (13.3409, 74.7421),
+    "Uttara Kannada":     (14.8050, 74.6300),
+    "Vijayapura":         (16.8302, 75.7100),
+    "Yadgir":             (16.7700, 77.1400),
+    "Vijayanagara":       (15.2689, 76.3909),
+}
+
+# Multiple Overpass mirrors. The public main instance is frequently
+# overloaded and returns 504s; falling through to a second mirror usually
+# succeeds. Order matters — cheapest/most-reliable first.
+_OVERPASS_MIRRORS = [
+    "https://overpass-api.de/api/interpreter",
+    "https://overpass.kumi.systems/api/interpreter",
+    "https://overpass.private.coffee/api/interpreter",
+]
+_OVERPASS_USER_AGENT = "KisanRiderApp/1.0"
+
+# Simple in-process cache: district (lowercased) -> (timestamp, mandis).
+# Mandi locations don't change often; a 1-hour TTL keeps repeated dropdown
+# selections from hammering Overpass. Multi-worker deploy: each worker gets
+# its own cache — fine for MVP, swap for Redis if you scale out.
+_MANDI_CACHE: dict[str, tuple[float, list[dict]]] = {}
+_MANDI_CACHE_TTL = 3600  # seconds
+
+# Terms that show up in OSM's Kannada/Hindi naming and can slip past even a
+# word-boundary regex on some spellings. Belt-and-braces on top of the
+# `\b(APMC|Mandi)\b` filter: drop anything whose name or address still
+# contains one of these.
+_MANDI_BLACKLIST = [
+    "mandir", "mandira", "temple", "vidya", "kalamandir",
+    "showroom", "school", "college", "church", "hospital",
+]
+
+
+def _bbox_around(lat: float, lng: float, radius_km: float) -> tuple[float, float, float, float]:
+    """
+    Return (south, west, north, east) for a square bounding box with the
+    given half-width in kilometers, centered on (lat, lng).
+
+    Overpass's bbox filter is dramatically cheaper than `around:` — the
+    latter has to compute great-circle distance for every candidate element
+    on the planet, while the former is a spatial-index range scan.
+    """
+    lat_delta = radius_km / 111.0
+    lng_delta = radius_km / (111.0 * math.cos(math.radians(lat)))
+    return (lat - lat_delta, lng - lng_delta, lat + lat_delta, lng + lng_delta)
+
+
+@app.get("/mandis/search")
+async def search_mandis(
+    district: str = Query(..., min_length=1, max_length=80,
+                          description="District name, e.g. 'Kolar'"),
+):
+    """
+    Find APMC mandis / market yards in a district via OpenStreetMap's
+    Overpass API (free, no API key).
+
+    Why Overpass, not Nominatim: Nominatim is a *forward geocoder*
+    (text -> one best-matching place) and does not index "APMC yard" as a
+    category — free-form queries like "APMC market yard Kolar Karnataka"
+    legitimately return zero hits even when the yard exists in OSM. Overpass
+    is a *POI query engine*: it returns every element matching an OSM tag
+    inside a geographic region, which is exactly what "list mandis in this
+    district" needs.
+
+    Noise filtering (two layers, both required):
+      1. The Overpass `name` regex uses word boundaries — `\\b(APMC|Mandi)\\b`
+         — so "Mandikallu" (village) and "Ranga Mandira" (theatre) don't
+         substring-match "Mandi".
+      2. Any remaining result whose name or address contains a term from
+         _MANDI_BLACKLIST (temple/mandir/school/showroom/hospital...) is
+         dropped before returning.
+
+    Response shape is unchanged, so the Flutter client needs no update:
+        {
+          "district": "Kolar",
+          "mandis": [ { "name", "address", "lat", "lng" }, ... ]
+        }
+    """
+    district_clean = district.strip()
+    center = _DISTRICT_CENTERS.get(district_clean)
+    if center is None:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown district: {district_clean}",
+        )
+
+    # Cache hit?
+    cache_key = district_clean.lower()
+    now = time.time()
+    cached = _MANDI_CACHE.get(cache_key)
+    if cached and (now - cached[0]) < _MANDI_CACHE_TTL:
+        return {"district": district_clean, "mandis": cached[1]}
+
+    lat, lng = center
+    south, west, north, east = _bbox_around(lat, lng, radius_km=30.0)
+    bbox = f"{south},{west},{north},{east}"
+
+    # `nwr` = node+way+relation shorthand. Word-boundary regex so "Mandi"
+    # only matches as a whole word. `out center tags;` puts a usable
+    # centroid on ways and relations.
+    overpass_query = f"""
+    [out:json][timeout:60];
+    (
+      nwr["amenity"="marketplace"]({bbox});
+      nwr["name"~"\\b(APMC|Mandi)\\b",i]({bbox});
+    );
+    out center tags;
+    """
+
+    raw: dict | None = None
+    last_error: str | None = None
+    async with httpx.AsyncClient(timeout=90.0) as client:
+        for mirror in _OVERPASS_MIRRORS:
+            try:
+                resp = await client.post(
+                    mirror,
+                    data={"data": overpass_query},
+                    headers={"User-Agent": _OVERPASS_USER_AGENT},
+                )
+                resp.raise_for_status()
+                raw = resp.json()
+                break
+            except httpx.HTTPError as e:
+                last_error = f"{mirror}: {e}"
+                continue
+
+    if raw is None:
+        raise HTTPException(
+            status_code=502,
+            detail=f"All Overpass mirrors failed. Last error: {last_error}",
+        )
+
+    mandis: list[dict] = []
+    for el in raw.get("elements", []):
+        tags = el.get("tags", {}) or {}
+        name = tags.get("name") or tags.get("name:en")
+        if not name:
+            continue
+
+        # Overpass returns lat/lon directly on nodes; ways and relations
+        # have their centroid under `center` because of `out center`.
+        if el.get("type") == "node":
+            el_lat = el.get("lat")
+            el_lng = el.get("lon")
+        else:
+            c = el.get("center") or {}
+            el_lat = c.get("lat")
+            el_lng = c.get("lon")
+
+        if el_lat is None or el_lng is None:
+            continue
+
+        addr_parts = [
+            tags.get("addr:street"),
+            tags.get("addr:city"),
+            tags.get("addr:district"),
+            tags.get("addr:state"),
+        ]
+        address = ", ".join(p for p in addr_parts if p) or name
+
+        # Second-layer noise filter. Covers both the name and address, so a
+        # stray "Sri Vidya Mandir APMC Road" still gets dropped.
+        haystack = f"{name} {address}".lower()
+        if any(term in haystack for term in _MANDI_BLACKLIST):
+            continue
+
+        mandis.append({
+            "name": name,
+            "address": address,
+            "lat": float(el_lat),
+            "lng": float(el_lng),
+        })
+
+    # Dedupe on (name, rounded coords) — same yard often appears as a node
+    # plus the way/relation enclosing it.
+    seen = set()
+    unique: list[dict] = []
+    for m in mandis:
+        key = (m["name"], round(m["lat"], 4), round(m["lng"], 4))
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(m)
+
+    _MANDI_CACHE[cache_key] = (now, unique)
+
+    return {"district": district_clean, "mandis": unique}
 
 
 # ---------------------------------------------------------------------------
@@ -203,9 +438,9 @@ def get_my_produce_requests(
 # Trips
 # ---------------------------------------------------------------------------
 
-# <-- NEW: MVP alias — creates a ProduceRequest, not a Trip.
-# Semantically duplicates POST /produce-requests/; kept because it was
-# requested. A Trip row only exists once a rider accepts via /trips/accept.
+# MVP alias — creates a ProduceRequest, not a Trip. Semantically duplicates
+# POST /produce-requests/; kept because it was requested. A Trip row only
+# exists once a rider accepts via /trips/accept.
 @app.post("/trips/", response_model=schemas.ProduceRequestResponse, status_code=201)
 def create_trip_request(
     request: schemas.ProduceRequestCreate,
@@ -226,7 +461,7 @@ def create_trip_request(
         raise HTTPException(status_code=400, detail=str(e))
 
 
-# <-- NEW: flat MVP list of the farmer's own produce requests.
+# Flat MVP list of the farmer's own produce requests.
 @app.get("/trips/me", response_model=List[schemas.ProduceRequestResponse])
 def get_my_trip_requests(
     current_user: models.User = Depends(auth.require_role("FARMER")),
@@ -294,35 +529,29 @@ def update_trip_status(
     return result
 
 
-@app.get("/trips/active", response_model=schemas.ActiveTripResponse)
-def get_active_trip(
+@app.get("/trips/active", response_model=List[schemas.ActiveTripResponse])
+def get_active_trips(
     current_user: models.User = Depends(auth.require_role("RIDER")),
     db: Session = Depends(get_db),
 ):
     """
-    Return the authenticated rider's current active trip (status ACCEPTED
-    or PICKED_UP), including the pickup coordinates and crop details of the
-    associated produce request. 404 if the rider has no active trip right
-    now.
+    All of the authenticated rider's currently active trips (status ACCEPTED
+    or PICKED_UP), newest first. Returns an empty list (200) when the rider
+    has no active trips — no more 404 on the happy empty case.
     """
-    trip = crud.get_active_trip_for_rider(db, current_user.id)
-    if not trip:
-        raise HTTPException(status_code=404, detail="No active trip found for this rider")
-
-    try:
-        produce_request = crud._to_response(trip.produce_request)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-    return schemas.ActiveTripResponse(
-        id=trip.id,
-        produce_request_id=trip.produce_request_id,
-        rider_id=trip.rider_id,
-        status=trip.status,
-        created_at=trip.created_at,
-        completed_at=trip.completed_at,
-        produce_request=produce_request,
-    )
+    trips = crud.get_active_trips_for_rider(db, current_user.id)
+    return [
+        schemas.ActiveTripResponse(
+            id=t.id,
+            produce_request_id=t.produce_request_id,
+            rider_id=t.rider_id,
+            status=t.status,
+            created_at=t.created_at,
+            completed_at=t.completed_at,
+            produce_request=crud._to_response(t.produce_request),
+        )
+        for t in trips
+    ]
 
 
 # ---------------------------------------------------------------------------
