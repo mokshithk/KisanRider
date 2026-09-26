@@ -17,66 +17,52 @@ const String _kApiBaseUrl = 'http://127.0.0.1:8000';
 /// Rough weight estimate the backend needs but the form doesn't collect.
 const double _kKgPerCrate = 25.0;
 
-/// Mock pickup coordinates (Kolar-area) — swap for a real geolocation
-/// lookup once the pickup-location UI is decided.
+/// Mock pickup coordinates (Kolar-area) — the farmer's own field isn't
+/// captured yet, so pickup stays hard-coded for MVP. Dropoff comes from the
+/// mandi the farmer picks in the form.
 const double _kMockPickupLat = 13.1362;
 const double _kMockPickupLng = 78.1291;
 
-// ---------------------------------------------------------------------------
-// Models
-// ---------------------------------------------------------------------------
+/// Fixed list of districts for the dropdown. Extend as coverage grows.
+const List<String> _kDistricts = [
+  'Bagalkot',
+  'Ballari',
+  'Belagavi',
+  'Bengaluru Rural',
+  'Bengaluru Urban',
+  'Bidar',
+  'Chamarajanagar',
+  'Chikkaballapura',
+  'Chikkamagaluru',
+  'Chitradurga',
+  'Dakshina Kannada',
+  'Davanagere',
+  'Dharwad',
+  'Gadag',
+  'Hassan',
+  'Haveri',
+  'Kalaburagi',
+  'Kodagu',
+  'Kolar',
+  'Koppal',
+  'Mandya',
+  'Mysuru',
+  'Raichur',
+  'Ramanagara',
+  'Shivamogga',
+  'Tumakuru',
+  'Udupi',
+  'Uttara Kannada',
+  'Vijayapura',
+  'Yadgir',
+  'Vijayanagara',
+];
 
-/// A single produce request as returned by
-/// `GET /produce-requests/farmer/me`.
-class ProduceRequestItem {
-  ProduceRequestItem({
-    required this.id,
-    required this.cropName,
-    required this.crateCount,
-    required this.dropoffLocation,
-    required this.status,
-    this.riderName,
-  });
-
-  factory ProduceRequestItem.fromJson(Map<String, dynamic> json) {
-    final trip = json['trip'] as Map<String, dynamic>?;
-    final rider = trip?['rider'] as Map<String, dynamic>?;
-    return ProduceRequestItem(
-      id: (json['id'] ?? '').toString(),
-      cropName: (json['crop_type'] ?? '') as String,
-      crateCount: ((json['crate_count'] ?? 0) as num).toInt(),
-      dropoffLocation: (json['dropoff_location'] ?? '') as String? ?? '',
-      status: (json['status'] ?? 'PENDING') as String,
-      riderName: rider?['full_name'] as String?,
-    );
-  }
-
-  final String id;
-  final String cropName;
-  final int crateCount;
-  final String dropoffLocation;
-  final String status;
-  final String? riderName;
-
-  bool get hasRider => riderName != null && riderName!.isNotEmpty;
-}
-
-/// What the "+ New Request" form collects. Mapped into the API payload
-/// inside [_FarmerDashboardState._submitNewRequest].
-class _NewRequestFormData {
-  _NewRequestFormData({
-    required this.cropName,
-    required this.crateCount,
-    required this.dropoffLocation,
-  });
-
-  final String cropName;
-  final int crateCount;
-  final String dropoffLocation;
-}
+/// Brand color used across the farmer-side UI.
+const Color _kFarmerGreen = Color(0xFF2E7D32);
 
 // ---------------------------------------------------------------------------
-// Dashboard
+// Root dashboard with bottom navigation
 // ---------------------------------------------------------------------------
 
 class FarmerDashboard extends StatefulWidget {
@@ -87,155 +73,19 @@ class FarmerDashboard extends StatefulWidget {
 }
 
 class _FarmerDashboardState extends State<FarmerDashboard> {
-  static const Color _farmerGreen = Color(0xFF2E7D32);
+  int _currentIndex = 0;
 
-  final List<ProduceRequestItem> _requests = [];
+  static const List<String> _titles = [
+    'KisanRider',
+    'Book Transport',
+    'My Orders',
+    'Account',
+  ];
 
-  bool _isLoading = true;
-  String? _error;
-
-  @override
-  void initState() {
-    super.initState();
-    // Safe to touch Provider/context only after the first frame.
-    WidgetsBinding.instance.addPostFrameCallback((_) => _fetchRequests());
+  void _goToTab(int index) {
+    if (index == _currentIndex) return;
+    setState(() => _currentIndex = index);
   }
-
-  // -------------------------------------------------------------------------
-  // Networking
-  // -------------------------------------------------------------------------
-
-  Map<String, String> _authHeaders(AuthProvider auth, {bool json = false}) {
-    final headers = <String, String>{
-      'Authorization': 'Bearer ${auth.token}',
-      'Accept': 'application/json',
-    };
-    if (json) headers['Content-Type'] = 'application/json';
-    return headers;
-  }
-
-  Future<void> _fetchRequests() async {
-    final auth = Provider.of<AuthProvider>(context, listen: false);
-    if (auth.token == null) {
-      setState(() {
-        _isLoading = false;
-        _error = 'Not signed in.';
-      });
-      return;
-    }
-
-    setState(() {
-      _isLoading = true;
-      _error = null;
-    });
-
-    try {
-      final response = await http.get(
-        Uri.parse('$_kApiBaseUrl/produce-requests/farmer/me'),
-        headers: _authHeaders(auth),
-      );
-
-      if (!mounted) return;
-
-      if (response.statusCode == 200) {
-        final List<dynamic> decoded = jsonDecode(response.body) as List<dynamic>;
-        setState(() {
-          _requests
-            ..clear()
-            ..addAll(
-              decoded.map(
-                (e) => ProduceRequestItem.fromJson(e as Map<String, dynamic>),
-              ),
-            );
-          _isLoading = false;
-        });
-      } else {
-        setState(() {
-          _error = _extractError(response) ??
-              'Failed to load requests (HTTP ${response.statusCode}).';
-          _isLoading = false;
-        });
-      }
-    } catch (e) {
-      if (!mounted) return;
-      setState(() {
-        _error = 'Network error: $e';
-        _isLoading = false;
-      });
-    }
-  }
-
-  /// POSTs a new produce request. Returns `true` only on HTTP 201.
-  /// Also refetches the list so the new row appears immediately.
-  Future<bool> _submitNewRequest(_NewRequestFormData data) async {
-    final auth = Provider.of<AuthProvider>(context, listen: false);
-    if (auth.token == null) return false;
-
-    try {
-      final response = await http.post(
-        Uri.parse('$_kApiBaseUrl/produce-requests/'),
-        headers: _authHeaders(auth, json: true),
-        body: jsonEncode({
-          'crop_type': data.cropName,
-          'crate_count': data.crateCount,
-          'weight_kg': data.crateCount * _kKgPerCrate,
-          'latitude': _kMockPickupLat,
-          'longitude': _kMockPickupLng,
-          'dropoff_location': data.dropoffLocation,
-        }),
-      );
-
-      if (response.statusCode == 201) {
-        await _fetchRequests();
-        return true;
-      }
-      return false;
-    } catch (_) {
-      return false;
-    }
-  }
-
-  /// FastAPI errors come back as `{"detail": "..."}` — surface that string
-  /// when present so the user sees the real reason, not just the status code.
-  String? _extractError(http.Response response) {
-    try {
-      final body = jsonDecode(response.body);
-      if (body is Map && body['detail'] != null) {
-        return body['detail'].toString();
-      }
-    } catch (_) {
-      // Body wasn't JSON; fall through.
-    }
-    return null;
-  }
-
-  // -------------------------------------------------------------------------
-  // Sheet flow
-  // -------------------------------------------------------------------------
-
-  Future<void> _openNewRequestSheet() async {
-    final created = await showModalBottomSheet<bool>(
-      context: context,
-      isScrollControlled: true,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-      ),
-      builder: (context) => _NewRequestSheet(onSubmit: _submitNewRequest),
-    );
-
-    if (created == true && mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Request posted.'),
-          backgroundColor: _farmerGreen,
-        ),
-      );
-    }
-  }
-
-  // -------------------------------------------------------------------------
-  // Build
-  // -------------------------------------------------------------------------
 
   @override
   Widget build(BuildContext context) {
@@ -243,15 +93,10 @@ class _FarmerDashboardState extends State<FarmerDashboard> {
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Farmer Dashboard'),
-        backgroundColor: _farmerGreen,
+        title: Text(_titles[_currentIndex]),
+        backgroundColor: _kFarmerGreen,
         foregroundColor: Colors.white,
         actions: [
-          IconButton(
-            tooltip: 'Refresh',
-            icon: const Icon(Icons.refresh),
-            onPressed: _isLoading ? null : _fetchRequests,
-          ),
           IconButton(
             tooltip: 'Logout',
             icon: const Icon(Icons.logout),
@@ -259,141 +104,149 @@ class _FarmerDashboardState extends State<FarmerDashboard> {
           ),
         ],
       ),
-      floatingActionButton: FloatingActionButton.extended(
-        onPressed: _openNewRequestSheet,
-        backgroundColor: _farmerGreen,
-        foregroundColor: Colors.white,
-        icon: const Icon(Icons.add),
-        label: const Text('New Request'),
+      // IndexedStack keeps each tab's state alive across switches, so a
+      // half-filled Book Transport form survives a trip to Home and back.
+      body: IndexedStack(
+        index: _currentIndex,
+        children: [
+          FarmerHomeTab(onBookTransport: () => _goToTab(1)),
+          const FarmerBookTransportTab(),
+          const FarmerOrdersTab(),
+          const FarmerAccountTab(),
+        ],
       ),
-      body: SafeArea(child: _buildBody()),
-    );
-  }
-
-  Widget _buildBody() {
-    if (_isLoading) {
-      return const Center(child: CircularProgressIndicator());
-    }
-
-    if (_error != null) {
-      return _ErrorState(message: _error!, onRetry: _fetchRequests);
-    }
-
-    if (_requests.isEmpty) {
-      return _EmptyState(onCreatePressed: _openNewRequestSheet);
-    }
-
-    return RefreshIndicator(
-      onRefresh: _fetchRequests,
-      color: _farmerGreen,
-      child: ListView.builder(
-        padding: const EdgeInsets.fromLTRB(16, 16, 16, 96),
-        itemCount: _requests.length,
-        itemBuilder: (context, index) =>
-            _ProduceRequestCard(request: _requests[index]),
+      bottomNavigationBar: BottomNavigationBar(
+        currentIndex: _currentIndex,
+        onTap: _goToTab,
+        // Fixed keeps all 4 labels visible regardless of the active tab.
+        type: BottomNavigationBarType.fixed,
+        selectedItemColor: _kFarmerGreen,
+        unselectedItemColor: Colors.grey.shade600,
+        backgroundColor: Colors.white,
+        items: const [
+          BottomNavigationBarItem(
+            icon: Icon(Icons.home),
+            label: 'Home',
+          ),
+          BottomNavigationBarItem(
+            icon: Icon(Icons.add_circle_outline),
+            label: 'Book Transport',
+          ),
+          BottomNavigationBarItem(
+            icon: Icon(Icons.local_shipping),
+            label: 'My Orders',
+          ),
+          BottomNavigationBarItem(
+            icon: Icon(Icons.person),
+            label: 'Account',
+          ),
+        ],
       ),
     );
   }
 }
 
 // ---------------------------------------------------------------------------
-// Body states
+// Tab 0 — Home
 // ---------------------------------------------------------------------------
 
-class _EmptyState extends StatelessWidget {
-  const _EmptyState({required this.onCreatePressed});
+class FarmerHomeTab extends StatelessWidget {
+  const FarmerHomeTab({super.key, required this.onBookTransport});
 
-  final VoidCallback onCreatePressed;
+  /// Switches the parent to the Book Transport tab. Passed down because a
+  /// child widget can't change the parent's _currentIndex directly.
+  final VoidCallback onBookTransport;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final authProvider = Provider.of<AuthProvider>(context);
 
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(32.0),
+    // The API doesn't expose a "get my profile" endpoint yet, so we fall
+    // back to a generic greeting rather than showing a blank name.
+    final greeting = 'Welcome back';
+
+    return SafeArea(
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.fromLTRB(24, 32, 24, 32),
         child: Column(
-          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             Container(
               padding: const EdgeInsets.all(24),
               decoration: BoxDecoration(
-                color: _FarmerDashboardState._farmerGreen.withOpacity(0.08),
+                color: _kFarmerGreen.withOpacity(0.08),
                 shape: BoxShape.circle,
               ),
               child: const Icon(
                 Icons.agriculture_rounded,
-                size: 64,
-                color: _FarmerDashboardState._farmerGreen,
+                size: 72,
+                color: _kFarmerGreen,
               ),
             ),
             const SizedBox(height: 24),
             Text(
-              'No produce requests yet',
-              style: theme.textTheme.titleLarge
-                  ?.copyWith(fontWeight: FontWeight.w600),
+              greeting,
               textAlign: TextAlign.center,
+              style: theme.textTheme.headlineSmall?.copyWith(
+                fontWeight: FontWeight.w600,
+              ),
             ),
             const SizedBox(height: 8),
             Text(
-              'Post your first crop pickup request and a rider '
-              'nearby will pick it up.',
-              style: theme.textTheme.bodyMedium
-                  ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+              'Need to move your produce to the mandi? '
+              'Book a rider in a few taps.',
               textAlign: TextAlign.center,
+              style: theme.textTheme.bodyMedium?.copyWith(
+                color: theme.colorScheme.onSurfaceVariant,
+              ),
             ),
-            const SizedBox(height: 24),
+            const SizedBox(height: 32),
             FilledButton.icon(
-              onPressed: onCreatePressed,
+              onPressed: onBookTransport,
               style: FilledButton.styleFrom(
-                backgroundColor: _FarmerDashboardState._farmerGreen,
+                backgroundColor: _kFarmerGreen,
+                padding: const EdgeInsets.symmetric(vertical: 18),
+                textStyle: const TextStyle(
+                  fontSize: 16,
+                  fontWeight: FontWeight.w600,
+                ),
               ),
               icon: const Icon(Icons.add),
-              label: const Text('Post a Request'),
+              label: const Text('Book Transport'),
             ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _ErrorState extends StatelessWidget {
-  const _ErrorState({required this.message, required this.onRetry});
-
-  final String message;
-  final VoidCallback onRetry;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(32.0),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(Icons.cloud_off_rounded,
-                size: 56, color: theme.colorScheme.error),
-            const SizedBox(height: 16),
+            const SizedBox(height: 40),
+            // Small section explaining what the app does, so a brand-new
+            // farmer isn't dropped into a blank screen with one button.
             Text(
-              'Could not load requests',
-              style: theme.textTheme.titleMedium
-                  ?.copyWith(fontWeight: FontWeight.w600),
+              'How it works',
+              style: theme.textTheme.titleMedium?.copyWith(
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+            const SizedBox(height: 12),
+            const _HowItWorksStep(
+              number: '1',
+              title: 'Post your pickup',
+              body: 'Tell us the crop, crate count, and your district.',
+            ),
+            const _HowItWorksStep(
+              number: '2',
+              title: 'Pick a mandi',
+              body: 'Choose the APMC yard you want the produce delivered to.',
+            ),
+            const _HowItWorksStep(
+              number: '3',
+              title: 'Rider picks up',
+              body: 'A nearby rider accepts and delivers to the mandi.',
             ),
             const SizedBox(height: 8),
             Text(
-              message,
+              'Signed in as ${authProvider.role ?? "FARMER"}',
               textAlign: TextAlign.center,
-              style: theme.textTheme.bodySmall
-                  ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
-            ),
-            const SizedBox(height: 20),
-            OutlinedButton.icon(
-              onPressed: onRetry,
-              icon: const Icon(Icons.refresh),
-              label: const Text('Retry'),
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: theme.colorScheme.onSurfaceVariant,
+              ),
             ),
           ],
         ),
@@ -402,151 +255,94 @@ class _ErrorState extends StatelessWidget {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Cards
-// ---------------------------------------------------------------------------
+class _HowItWorksStep extends StatelessWidget {
+  const _HowItWorksStep({
+    required this.number,
+    required this.title,
+    required this.body,
+  });
 
-class _ProduceRequestCard extends StatelessWidget {
-  const _ProduceRequestCard({required this.request});
-
-  final ProduceRequestItem request;
+  final String number;
+  final String title;
+  final String body;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
 
-    return Card(
-      elevation: 1,
-      margin: const EdgeInsets.only(bottom: 12),
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-      child: Padding(
-        padding: const EdgeInsets.all(16.0),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 16),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            width: 28,
+            height: 28,
+            alignment: Alignment.center,
+            decoration: const BoxDecoration(
+              color: _kFarmerGreen,
+              shape: BoxShape.circle,
+            ),
+            child: Text(
+              number,
+              style: const TextStyle(
+                color: Colors.white,
+                fontWeight: FontWeight.bold,
+                fontSize: 14,
+              ),
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Expanded(
-                  child: Text(
-                    request.cropName,
-                    style: theme.textTheme.titleMedium
-                        ?.copyWith(fontWeight: FontWeight.bold),
+                Text(
+                  title,
+                  style: theme.textTheme.titleSmall?.copyWith(
+                    fontWeight: FontWeight.w600,
                   ),
                 ),
-                const SizedBox(width: 8),
-                _StatusBadge(status: request.status),
+                const SizedBox(height: 2),
+                Text(
+                  body,
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: theme.colorScheme.onSurfaceVariant,
+                  ),
+                ),
               ],
             ),
-            const SizedBox(height: 12),
-            _InfoRow(
-              icon: Icons.inventory_2_outlined,
-              label: '${request.crateCount} crates',
-            ),
-            const SizedBox(height: 6),
-            _InfoRow(
-              icon: Icons.flag_outlined,
-              label: 'Dropoff: '
-                  '${request.dropoffLocation.isEmpty ? "—" : request.dropoffLocation}',
-            ),
-            if (request.hasRider) ...[
-              const SizedBox(height: 6),
-              _InfoRow(
-                icon: Icons.delivery_dining_outlined,
-                label: 'Rider: ${request.riderName}',
-              ),
-            ],
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _InfoRow extends StatelessWidget {
-  const _InfoRow({required this.icon, required this.label});
-
-  final IconData icon;
-  final String label;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    return Row(
-      children: [
-        Icon(icon, size: 18, color: theme.colorScheme.onSurfaceVariant),
-        const SizedBox(width: 8),
-        Expanded(
-          child: Text(label, style: theme.textTheme.bodyMedium),
-        ),
-      ],
-    );
-  }
-}
-
-class _StatusBadge extends StatelessWidget {
-  const _StatusBadge({required this.status});
-
-  final String status;
-
-  /// Maps each backend status to its (fg, bg) pair. Unknown statuses fall
-  /// back to a neutral grey chip rather than crashing the card.
-  static const Map<String, (Color, Color)> _colors = {
-    'PENDING': (Color(0xFFB45309), Color(0x26F59E0B)), // amber
-    'ACCEPTED': (Color(0xFF1D4ED8), Color(0x261D4ED8)), // blue
-    'PICKED_UP': (Color(0xFF6D28D9), Color(0x266D28D9)), // violet
-    'COMPLETED': (Color(0xFF166534), Color(0x2616A34A)), // green
-    'DELIVERED': (Color(0xFF166534), Color(0x2616A34A)), // green
-    'CANCELLED': (Color(0xFF991B1B), Color(0x26DC2626)), // red
-  };
-
-  @override
-  Widget build(BuildContext context) {
-    final (fg, bg) =
-        _colors[status.toUpperCase()] ?? (Colors.black54, Colors.black12);
-
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-      decoration: BoxDecoration(
-        color: bg,
-        borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: fg, width: 1),
-      ),
-      child: Text(
-        status.toUpperCase(),
-        style: TextStyle(
-          color: fg,
-          fontWeight: FontWeight.bold,
-          fontSize: 12,
-          letterSpacing: 0.5,
-        ),
+          ),
+        ],
       ),
     );
   }
 }
 
 // ---------------------------------------------------------------------------
-// New-request bottom sheet
+// Tab 1 — Book Transport (district -> mandi form)
 // ---------------------------------------------------------------------------
 
-/// Bottom-sheet form. Owns its own submitting state and pops with `true`
-/// on success. All networking is delegated to [onSubmit] (which lives on
-/// the dashboard state so the dashboard can trigger a refetch).
-class _NewRequestSheet extends StatefulWidget {
-  const _NewRequestSheet({required this.onSubmit});
-
-  final Future<bool> Function(_NewRequestFormData data) onSubmit;
+class FarmerBookTransportTab extends StatefulWidget {
+  const FarmerBookTransportTab({super.key});
 
   @override
-  State<_NewRequestSheet> createState() => _NewRequestSheetState();
+  State<FarmerBookTransportTab> createState() => _FarmerBookTransportTabState();
 }
 
-class _NewRequestSheetState extends State<_NewRequestSheet> {
+class _FarmerBookTransportTabState extends State<FarmerBookTransportTab> {
   final _formKey = GlobalKey<FormState>();
 
   final TextEditingController _cropController = TextEditingController();
   final TextEditingController _crateCountController = TextEditingController();
-  final TextEditingController _dropoffController = TextEditingController();
+  final TextEditingController _shopController = TextEditingController();
+
+  // District / mandi state.
+  String? _selectedDistrict;
+  List<Map<String, dynamic>> _mandis = [];
+  int? _selectedMandiIndex;
+  bool _isLoadingMandis = false;
+  String? _mandiError;
 
   bool _isSubmitting = false;
   String? _submitError;
@@ -555,69 +351,203 @@ class _NewRequestSheetState extends State<_NewRequestSheet> {
   void dispose() {
     _cropController.dispose();
     _crateCountController.dispose();
-    _dropoffController.dispose();
+    _shopController.dispose();
     super.dispose();
   }
 
+  // -------------------------------------------------------------------------
+  // Auth helper
+  // -------------------------------------------------------------------------
+
+  Map<String, String> _headers(AuthProvider auth, {bool json = false}) {
+    final h = <String, String>{
+      'Authorization': 'Bearer ${auth.token}',
+      'Accept': 'application/json',
+    };
+    if (json) h['Content-Type'] = 'application/json';
+    return h;
+  }
+
+  // -------------------------------------------------------------------------
+  // Mandi lookup
+  // -------------------------------------------------------------------------
+
+  /// Fires when the user picks a district. Clears any prior mandi selection,
+  /// hits the backend `/mandis/search` proxy, and populates the dropdown.
+  Future<void> _onDistrictChanged(String? district) async {
+    if (district == null) return;
+
+    setState(() {
+      _selectedDistrict = district;
+      _mandis = [];
+      _selectedMandiIndex = null;
+      _mandiError = null;
+      _isLoadingMandis = true;
+    });
+
+    try {
+      final uri = Uri.parse('$_kApiBaseUrl/mandis/search')
+          .replace(queryParameters: {'district': district});
+
+      final response = await http.get(
+        uri,
+        headers: const {'Accept': 'application/json'},
+      );
+
+      if (!mounted) return;
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body) as Map<String, dynamic>;
+        final list = (data['mandis'] as List<dynamic>?) ?? const [];
+
+        setState(() {
+          _mandis = list
+              .whereType<Map<String, dynamic>>()
+              .toList(growable: false);
+          _selectedMandiIndex = null;
+          _isLoadingMandis = false;
+
+          if (_mandis.isEmpty) {
+            _mandiError = 'No mandis found for "$district".';
+          }
+        });
+      } else {
+        setState(() {
+          _mandiError = 'Could not load mandis (HTTP ${response.statusCode}).';
+          _isLoadingMandis = false;
+        });
+      }
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _mandiError = 'Network error: $e';
+        _isLoadingMandis = false;
+      });
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // Submit
+  // -------------------------------------------------------------------------
+
   Future<void> _submit() async {
     if (!_formKey.currentState!.validate()) return;
+    if (_selectedMandiIndex == null) return;
+
+    final auth = context.read<AuthProvider>();
+    if (auth.token == null) {
+      setState(() => _submitError = 'Not signed in.');
+      return;
+    }
+
+    final mandi = _mandis[_selectedMandiIndex!];
+    final mandiName = (mandi['name'] ?? '').toString();
+    final shop = _shopController.text.trim();
+    final dropoff = shop.isEmpty ? mandiName : '$mandiName - $shop';
 
     setState(() {
       _isSubmitting = true;
       _submitError = null;
     });
 
-    final data = _NewRequestFormData(
-      cropName: _cropController.text.trim(),
-      crateCount: int.parse(_crateCountController.text.trim()),
-      dropoffLocation: _dropoffController.text.trim(),
-    );
+    try {
+      final response = await http.post(
+        Uri.parse('$_kApiBaseUrl/produce-requests/'),
+        headers: _headers(auth, json: true),
+        body: jsonEncode({
+          'crop_type': _cropController.text.trim(),
+          'crate_count': int.parse(_crateCountController.text.trim()),
+          'weight_kg':
+              int.parse(_crateCountController.text.trim()) * _kKgPerCrate,
+          'latitude': _kMockPickupLat,
+          'longitude': _kMockPickupLng,
+          'dropoff_location': dropoff,
+        }),
+      );
 
-    final ok = await widget.onSubmit(data);
-    if (!mounted) return;
+      if (!mounted) return;
 
-    if (ok) {
-      Navigator.of(context).pop(true);
-    } else {
+      if (response.statusCode == 201) {
+        // Reset the form for the next booking.
+        _cropController.clear();
+        _crateCountController.clear();
+        _shopController.clear();
+        setState(() {
+          _selectedDistrict = null;
+          _mandis = [];
+          _selectedMandiIndex = null;
+          _isSubmitting = false;
+        });
+
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Request posted. A rider will pick it up soon.'),
+            backgroundColor: _kFarmerGreen,
+          ),
+        );
+      } else {
+        setState(() {
+          _isSubmitting = false;
+          _submitError = _extractError(response) ??
+              'Could not post request (HTTP ${response.statusCode}).';
+        });
+      }
+    } catch (e) {
+      if (!mounted) return;
       setState(() {
         _isSubmitting = false;
-        _submitError = 'Could not post request. Check the backend and retry.';
+        _submitError = 'Network error: $e';
       });
     }
   }
 
+  String? _extractError(http.Response response) {
+    try {
+      final body = jsonDecode(response.body);
+      if (body is Map && body['detail'] != null) {
+        return body['detail'].toString();
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  // -------------------------------------------------------------------------
+  // Build
+  // -------------------------------------------------------------------------
+
   @override
   Widget build(BuildContext context) {
-    final bottomInset = MediaQuery.of(context).viewInsets.bottom;
     final theme = Theme.of(context);
 
-    return Padding(
-      padding: EdgeInsets.only(bottom: bottomInset),
+    final mandiDropdownEnabled = !_isSubmitting &&
+        !_isLoadingMandis &&
+        _selectedDistrict != null &&
+        _mandis.isNotEmpty;
+
+    return SafeArea(
       child: SingleChildScrollView(
-        padding: const EdgeInsets.fromLTRB(20, 12, 20, 24),
+        // The Scaffold handles keyboard inset automatically; just pad the
+        // bottom so the last field isn't hidden behind the keyboard.
+        padding: const EdgeInsets.fromLTRB(20, 20, 20, 32),
         child: Form(
           key: _formKey,
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
-            mainAxisSize: MainAxisSize.min,
             children: [
-              Center(
-                child: Container(
-                  width: 40,
-                  height: 4,
-                  margin: const EdgeInsets.only(bottom: 16),
-                  decoration: BoxDecoration(
-                    color: theme.colorScheme.outlineVariant,
-                    borderRadius: BorderRadius.circular(4),
-                  ),
-                ),
-              ),
               Text(
                 'New Produce Request',
                 style: theme.textTheme.titleLarge
                     ?.copyWith(fontWeight: FontWeight.bold),
               ),
-              const SizedBox(height: 20),
+              const SizedBox(height: 4),
+              Text(
+                'Tell us what you\'re sending and where it needs to go.',
+                style: theme.textTheme.bodySmall
+                    ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+              ),
+              const SizedBox(height: 24),
+
+              // ----- Crop name ---------------------------------------------
               TextFormField(
                 controller: _cropController,
                 enabled: !_isSubmitting,
@@ -636,6 +566,8 @@ class _NewRequestSheetState extends State<_NewRequestSheet> {
                 },
               ),
               const SizedBox(height: 16),
+
+              // ----- Crate count -------------------------------------------
               TextFormField(
                 controller: _crateCountController,
                 enabled: !_isSubmitting,
@@ -658,34 +590,103 @@ class _NewRequestSheetState extends State<_NewRequestSheet> {
                 },
               ),
               const SizedBox(height: 16),
+
+              // ----- District dropdown -------------------------------------
+              DropdownButtonFormField<String>(
+                value: _selectedDistrict,
+                isExpanded: true,
+                decoration: const InputDecoration(
+                  labelText: 'District',
+                  border: OutlineInputBorder(),
+                  prefixIcon: Icon(Icons.map_outlined),
+                ),
+                items: _kDistricts
+                    .map((d) => DropdownMenuItem<String>(
+                          value: d,
+                          child: Text(d, overflow: TextOverflow.ellipsis),
+                        ))
+                    .toList(),
+                onChanged: _isSubmitting ? null : _onDistrictChanged,
+                validator: (v) => v == null ? 'Select a district' : null,
+              ),
+              const SizedBox(height: 16),
+
+              // ----- Mandi dropdown ----------------------------------------
+              DropdownButtonFormField<int>(
+                value: _selectedMandiIndex,
+                isExpanded: true,
+                decoration: InputDecoration(
+                  labelText: 'APMC Mandi',
+                  border: const OutlineInputBorder(),
+                  prefixIcon: const Icon(Icons.storefront_outlined),
+                  hintText: _selectedDistrict == null
+                      ? 'Select a district first'
+                      : (_isLoadingMandis
+                          ? 'Loading mandis…'
+                          : 'Select a mandi'),
+                  suffixIcon: _isLoadingMandis
+                      ? const Padding(
+                          padding: EdgeInsets.all(12),
+                          child: SizedBox(
+                            width: 18,
+                            height: 18,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          ),
+                        )
+                      : null,
+                ),
+                items: List<DropdownMenuItem<int>>.generate(
+                  _mandis.length,
+                  (i) => DropdownMenuItem<int>(
+                    value: i,
+                    child: Text(
+                      (_mandis[i]['name'] ?? '').toString(),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                ),
+                onChanged: mandiDropdownEnabled
+                    ? (i) => setState(() => _selectedMandiIndex = i)
+                    : null,
+                validator: (v) => v == null ? 'Select a mandi' : null,
+              ),
+              if (_mandiError != null) ...[
+                const SizedBox(height: 6),
+                Text(
+                  _mandiError!,
+                  style: TextStyle(
+                    color: theme.colorScheme.error,
+                    fontSize: 12,
+                  ),
+                ),
+              ],
+              const SizedBox(height: 16),
+
+              // ----- Shop / stall (optional) -------------------------------
               TextFormField(
-                controller: _dropoffController,
+                controller: _shopController,
                 enabled: !_isSubmitting,
                 decoration: const InputDecoration(
-                  labelText: 'Destination / APMC Hub',
-                  hintText: 'e.g. APMC Yard, Kolar',
+                  labelText: 'Shop / Stall Number (optional)',
+                  hintText: 'e.g. Shop #14, Sri Lakshmi Traders',
                   border: OutlineInputBorder(),
-                  prefixIcon: Icon(Icons.flag_outlined),
+                  prefixIcon: Icon(Icons.store_outlined),
                 ),
-                validator: (value) {
-                  if (value == null || value.trim().isEmpty) {
-                    return 'Destination is required';
-                  }
-                  return null;
-                },
               ),
+
               if (_submitError != null) ...[
                 const SizedBox(height: 12),
                 Text(
                   _submitError!,
-                  style: TextStyle(color: theme.colorScheme.error, fontSize: 13),
+                  style:
+                      TextStyle(color: theme.colorScheme.error, fontSize: 13),
                 ),
               ],
               const SizedBox(height: 24),
               FilledButton(
                 onPressed: _isSubmitting ? null : _submit,
                 style: FilledButton.styleFrom(
-                  backgroundColor: _FarmerDashboardState._farmerGreen,
+                  backgroundColor: _kFarmerGreen,
                   padding: const EdgeInsets.symmetric(vertical: 16),
                 ),
                 child: _isSubmitting
@@ -698,6 +699,110 @@ class _NewRequestSheetState extends State<_NewRequestSheet> {
                         ),
                       )
                     : const Text('Submit Request'),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Tab 2 — My Orders (placeholder)
+// ---------------------------------------------------------------------------
+
+class FarmerOrdersTab extends StatelessWidget {
+  const FarmerOrdersTab({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return SafeArea(
+      child: Center(
+        child: Padding(
+          padding: const EdgeInsets.all(32),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                padding: const EdgeInsets.all(24),
+                decoration: BoxDecoration(
+                  color: _kFarmerGreen.withOpacity(0.08),
+                  shape: BoxShape.circle,
+                ),
+                child: const Icon(
+                  Icons.local_shipping,
+                  size: 64,
+                  color: _kFarmerGreen,
+                ),
+              ),
+              const SizedBox(height: 24),
+              Text(
+                'My Orders & Shipments',
+                style: theme.textTheme.titleLarge
+                    ?.copyWith(fontWeight: FontWeight.w600),
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 8),
+              Text(
+                'Coming Soon',
+                style: theme.textTheme.bodyMedium?.copyWith(
+                  color: theme.colorScheme.onSurfaceVariant,
+                ),
+                textAlign: TextAlign.center,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Tab 3 — Account (placeholder)
+// ---------------------------------------------------------------------------
+
+class FarmerAccountTab extends StatelessWidget {
+  const FarmerAccountTab({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return SafeArea(
+      child: Center(
+        child: Padding(
+          padding: const EdgeInsets.all(32),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                padding: const EdgeInsets.all(24),
+                decoration: BoxDecoration(
+                  color: _kFarmerGreen.withOpacity(0.08),
+                  shape: BoxShape.circle,
+                ),
+                child: const Icon(
+                  Icons.person,
+                  size: 64,
+                  color: _kFarmerGreen,
+                ),
+              ),
+              const SizedBox(height: 24),
+              Text(
+                'Farmer Profile & Mandi Rates',
+                style: theme.textTheme.titleLarge
+                    ?.copyWith(fontWeight: FontWeight.w600),
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 8),
+              Text(
+                'Coming Soon',
+                style: theme.textTheme.bodyMedium?.copyWith(
+                  color: theme.colorScheme.onSurfaceVariant,
+                ),
+                textAlign: TextAlign.center,
               ),
             ],
           ),
