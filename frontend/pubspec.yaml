@@ -36,6 +36,7 @@ dependencies:
   cupertino_icons: ^1.0.8
   dio: ^5.11.1
   flutter_secure_storage: ^11.2.0
+  http: ^1.2.0
   mobile_scanner: ^7.4.2
   image_picker: ^1.2.3
   provider: ^6.1.5+1

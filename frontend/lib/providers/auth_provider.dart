@@ -20,6 +20,7 @@ class AuthProvider extends ChangeNotifier {
   bool _isLoggedIn = false;
   String? _role; // 'FARMER' | 'RIDER'
   String? _userId;
+  String? _token;
   bool _isInitializing = true;
   bool _isLoggingIn = false;
   String? _lastError;
@@ -27,6 +28,7 @@ class AuthProvider extends ChangeNotifier {
   bool get isLoggedIn => _isLoggedIn;
   String? get role => _role;
   String? get userId => _userId;
+  String? get token => _token;
 
   /// True while the provider is checking secure storage for an existing
   /// session on app startup. Useful for showing a splash/loading screen.
@@ -53,12 +55,14 @@ class AuthProvider extends ChangeNotifier {
         _isLoggedIn = true;
         _role = storedRole;
         _userId = storedUserId;
+        _token = token;
       }
     } catch (_) {
       // If secure storage is unreadable, fall back to a logged-out state.
       _isLoggedIn = false;
       _role = null;
       _userId = null;
+      _token = null;
     } finally {
       _isInitializing = false;
       notifyListeners();
@@ -102,6 +106,7 @@ class AuthProvider extends ChangeNotifier {
         _isLoggedIn = true;
         _role = selectedRole;
         _userId = uuid;
+        _token = token;
         _isLoggingIn = false;
         notifyListeners();
         return true;
@@ -152,6 +157,7 @@ class AuthProvider extends ChangeNotifier {
     _isLoggedIn = false;
     _role = null;
     _userId = null;
+    _token = null;
     _lastError = null;
     notifyListeners();
   }

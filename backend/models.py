@@ -30,6 +30,7 @@ class ProduceRequest(Base):
     crate_count = Column(Integer, nullable=False)
     weight_kg = Column(Numeric(10, 2))
     pickup_location = Column(Geometry("POINT", srid=4326), nullable=False)
+    dropoff_location = Column(String(255), nullable=True)  # <-- NEW: free-text dropoff (MVP)
     status = Column(String(20), default="PENDING")
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 

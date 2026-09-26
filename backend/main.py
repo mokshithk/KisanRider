@@ -203,6 +203,47 @@ def get_my_produce_requests(
 # Trips
 # ---------------------------------------------------------------------------
 
+# <-- NEW: MVP alias — creates a ProduceRequest, not a Trip.
+# Semantically duplicates POST /produce-requests/; kept because it was
+# requested. A Trip row only exists once a rider accepts via /trips/accept.
+@app.post("/trips/", response_model=schemas.ProduceRequestResponse, status_code=201)
+def create_trip_request(
+    request: schemas.ProduceRequestCreate,
+    current_user: models.User = Depends(auth.require_role("FARMER")),
+    db: Session = Depends(get_db),
+):
+    """
+    Create a produce pickup request for the authenticated farmer.
+
+    NOTE: despite the URL, this creates a ProduceRequest row (status
+    PENDING), not a Trip. A Trip only comes into existence when a rider
+    accepts. Payload = crop_type, crate_count, weight_kg, latitude,
+    longitude, dropoff_location.
+    """
+    try:
+        return crud.create_produce_request(db, request, current_user.id)
+    except (SQLAlchemyError, ValueError) as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+# <-- NEW: flat MVP list of the farmer's own produce requests.
+@app.get("/trips/me", response_model=List[schemas.ProduceRequestResponse])
+def get_my_trip_requests(
+    current_user: models.User = Depends(auth.require_role("FARMER")),
+    db: Session = Depends(get_db),
+):
+    """
+    All produce requests belonging to the authenticated farmer, newest
+    first. Flat response (no nested trip/rider) — the MVP view. For the
+    richer feed that includes rider + trip status, use
+    GET /produce-requests/farmer/me.
+    """
+    try:
+        return crud.get_farmer_produce_requests(db, current_user.id)
+    except (SQLAlchemyError, ValueError) as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
 @app.post("/trips/accept", response_model=schemas.TripResponse, status_code=201)
 def accept_trip(
     request_id: UUID = Query(..., description="ID of the produce request being accepted"),
