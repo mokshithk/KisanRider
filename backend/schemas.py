@@ -55,10 +55,13 @@ class ProduceRequestCreate(BaseModel):
     weight_kg: float = Field(..., gt=0, description="Total weight in kilograms")
     latitude: float = Field(..., ge=-90, le=90)
     longitude: float = Field(..., ge=-180, le=180)
-    # <-- NEW: free-text dropoff address/landmark for MVP.
     dropoff_location: Optional[str] = Field(
         None, max_length=255, description="Free-text dropoff address/landmark (MVP)"
     )
+    # Mandi coordinates from the district/mandi picker. Optional — a farmer
+    # can still submit with only a text dropoff_location.
+    dropoff_lat: Optional[float] = Field(None, ge=-90, le=90)
+    dropoff_lng: Optional[float] = Field(None, ge=-180, le=180)
 
 
 class ProduceRequestResponse(BaseModel):
@@ -71,7 +74,9 @@ class ProduceRequestResponse(BaseModel):
     weight_kg: float
     latitude: float
     longitude: float
-    dropoff_location: Optional[str] = None  # <-- NEW
+    dropoff_location: Optional[str] = None
+    dropoff_lat: Optional[float] = None
+    dropoff_lng: Optional[float] = None
     status: str
     created_at: datetime
 
@@ -79,6 +84,16 @@ class ProduceRequestResponse(BaseModel):
 class NearbyProduceRequestResponse(ProduceRequestResponse):
     """Adds computed distance for the /produce-requests/nearby endpoint."""
     distance_km: float = Field(..., description="Great-circle distance from the query point")
+
+
+class OtpVerifyRequest(BaseModel):
+    """Body for POST /produce-requests/{request_id}/verify-otp."""
+    otp: str = Field(..., min_length=4, max_length=8)
+
+
+class OtpVerifyResponse(BaseModel):
+    success: bool
+    message: str
 
 
 # ---------------------------------------------------------------------------
@@ -161,9 +176,15 @@ class FarmerProduceRequestResponse(ProduceRequestResponse):
     `trip` is None while the request is still PENDING (no rider has
     accepted it yet); once a rider accepts, it carries that rider's
     identity plus the trip's own status/timestamps.
+
+    `pickup_otp` is only exposed to the farmer who owns the request — never
+    on the rider-facing /produce-requests/nearby or the unauthenticated
+    /produce-requests/{id} endpoints, since a leaked OTP defeats its
+    purpose as a handoff check.
     """
 
     trip: Optional[TripSummary] = None
+    pickup_otp: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------

@@ -11,6 +11,7 @@ Spatial notes:
   used efficiently by ST_DWithin.
 """
 
+import random
 from typing import List, Optional
 from uuid import UUID
 
@@ -82,7 +83,9 @@ def _to_response(pr: models.ProduceRequest) -> schemas.ProduceRequestResponse:
         weight_kg=float(pr.weight_kg),
         latitude=point.y,
         longitude=point.x,
-        dropoff_location=pr.dropoff_location,  # <-- NEW
+        dropoff_location=pr.dropoff_location,
+        dropoff_lat=pr.dropoff_lat,
+        dropoff_lng=pr.dropoff_lng,
         status=pr.status,
         created_at=pr.created_at,
     )
@@ -102,6 +105,10 @@ def create_produce_request(
     `db.refresh()` is unnecessary round-tripping that's a common source of
     silent 500s (hex-WKB vs WKBElement edge cases). The write path trusts
     the input it just persisted; only read paths decode geometry.
+
+    Generates the 4-digit pickup OTP here (not in main.py) because this is
+    where the DB insert happens — putting it in main.py would only move the
+    same logic and require a new parameter on this function's signature.
     """
     try:
         point_wkt = WKTElement(
@@ -111,13 +118,21 @@ def create_produce_request(
     except Exception as e:
         raise ValueError(f"Invalid coordinates ({request_schema.latitude}, {request_schema.longitude}): {e}") from e
 
+    # Handoff code: the farmer reads this to the rider at pickup. Generated
+    # once at creation so it's stable across the request's lifecycle and
+    # visible in the farmer's own /produce-requests/farmer/me feed.
+    pickup_otp = f"{random.randint(1000, 9999)}"
+
     db_request = models.ProduceRequest(
         farmer_id=farmer_id,
         crop_type=request_schema.crop_type,
         crate_count=request_schema.crate_count,
         weight_kg=request_schema.weight_kg,
         pickup_location=point_wkt,
-        dropoff_location=request_schema.dropoff_location,  # <-- NEW
+        dropoff_location=request_schema.dropoff_location,
+        dropoff_lat=request_schema.dropoff_lat,
+        dropoff_lng=request_schema.dropoff_lng,
+        pickup_otp=pickup_otp,
         status="PENDING",
     )
 
@@ -137,7 +152,9 @@ def create_produce_request(
         weight_kg=float(db_request.weight_kg),
         latitude=request_schema.latitude,
         longitude=request_schema.longitude,
-        dropoff_location=db_request.dropoff_location,  # <-- NEW
+        dropoff_location=db_request.dropoff_location,
+        dropoff_lat=db_request.dropoff_lat,
+        dropoff_lng=db_request.dropoff_lng,
         status=db_request.status,
         created_at=db_request.created_at,
     )
@@ -176,7 +193,11 @@ def _to_farmer_response(pr: models.ProduceRequest) -> schemas.FarmerProduceReque
             rider=rider_summary,
         )
 
-    return schemas.FarmerProduceRequestResponse(**base.model_dump(), trip=trip_summary)
+    return schemas.FarmerProduceRequestResponse(
+        **base.model_dump(),
+        trip=trip_summary,
+        pickup_otp=pr.pickup_otp,
+    )
 
 
 def get_produce_requests_for_farmer(
@@ -201,7 +222,6 @@ def get_produce_requests_for_farmer(
     return [_to_farmer_response(pr) for pr in requests]
 
 
-# <-- NEW: flat MVP list for GET /trips/me
 def get_farmer_produce_requests(
     db: Session, farmer_id: UUID
 ) -> List[schemas.ProduceRequestResponse]:
@@ -242,6 +262,9 @@ def get_nearby_produce_requests(
     Distance math uses ::geography casts so ST_DWithin/ST_Distance operate
     in real meters over the WGS84 spheroid, not raw lat/lng degrees; ST_Y/
     ST_X use plain ::geometry, matching how the column is actually stored.
+
+    NOTE: pickup_otp is deliberately NOT selected here — the rider-facing
+    nearby feed must not expose the farmer's handoff code.
     """
     pr = models.ProduceRequest
 
@@ -263,7 +286,9 @@ def get_nearby_produce_requests(
             pr.weight_kg,
             pr.status,
             pr.created_at,
-            pr.dropoff_location,  # <-- NEW: selected scalar, no WKB decode needed
+            pr.dropoff_location,
+            pr.dropoff_lat,
+            pr.dropoff_lng,
             latitude_col,
             longitude_col,
             distance_km,
@@ -290,13 +315,71 @@ def get_nearby_produce_requests(
             weight_kg=float(row.weight_kg),
             latitude=row.latitude,
             longitude=row.longitude,
-            dropoff_location=row.dropoff_location,  # <-- NEW
+            dropoff_location=row.dropoff_location,
+            dropoff_lat=row.dropoff_lat,
+            dropoff_lng=row.dropoff_lng,
             status=row.status,
             created_at=row.created_at,
             distance_km=round(row.distance_km, 3),
         )
         for row in rows
     ]
+
+
+def verify_pickup_otp(
+    db: Session, request_id: UUID, otp: str
+) -> Optional[models.ProduceRequest]:
+    """
+    Pickup-handoff confirmation. Compares the submitted OTP against the one
+    stored on the request and, on a match, flips the request's status to
+    PICKED_UP.
+
+    Returns None if the request doesn't exist (main.py -> 404). Raises
+    ValueError (main.py -> 400) for domain errors: request is in a terminal
+    state, isn't ACCEPTED yet, has no OTP on file, or the submitted code
+    doesn't match.
+
+    Only ACCEPTED requests can be verified — PENDING has no rider yet, and
+    PICKED_UP/COMPLETED/CANCELLED have already moved past the handoff. That
+    guard is what makes this endpoint idempotent-safe: a second submit with
+    the same OTP hits the "not ACCEPTED" branch instead of silently
+    transitioning a delivered request back to PICKED_UP.
+
+    Row-locked with `with_for_update()` so two concurrent verify calls for
+    the same request can't both flip the status.
+    """
+    pr = (
+        db.query(models.ProduceRequest)
+        .filter(models.ProduceRequest.id == request_id)
+        .with_for_update()
+        .first()
+    )
+    if pr is None:
+        return None
+
+    if pr.status in ("COMPLETED", "CANCELLED"):
+        raise ValueError(
+            f"Request is in a terminal state ({pr.status}) and cannot be picked up"
+        )
+
+    if pr.status != "ACCEPTED":
+        raise ValueError(
+            f"Request must be ACCEPTED before OTP verification (current status: {pr.status})"
+        )
+
+    # `pr.pickup_otp` is None for rows created before the column existed —
+    # those can never be verified, which is the safe behavior (fail closed).
+    if not pr.pickup_otp or pr.pickup_otp != otp.strip():
+        raise ValueError("Invalid OTP")
+
+    pr.status = "PICKED_UP"
+    try:
+        db.commit()
+        db.refresh(pr)
+        return pr
+    except SQLAlchemyError:
+        db.rollback()
+        raise
 
 
 # ---------------------------------------------------------------------------
@@ -417,24 +500,14 @@ def update_trip_status(db: Session, trip_id: UUID, status: str) -> Optional[mode
         raise
 
 
-def get_active_trip_for_rider(db: Session, rider_id: UUID) -> Optional[models.Trip]:
+def get_active_trips_for_rider(db: Session, rider_id: UUID) -> List[models.Trip]:
     """
-    Return the rider's current active trip (status ACCEPTED or PICKED_UP),
-    with its ProduceRequest eager-loaded via a single joined query.
+    All of the rider's active trips (status ACCEPTED or PICKED_UP), newest
+    first, each with its ProduceRequest eager-loaded.
 
-    Returns the raw ORM Trip (with `.produce_request` populated), not a
-    Pydantic schema — main.py is responsible for assembling the
-    ActiveTripResponse, since that requires decoding the ProduceRequest's
-    PostGIS geometry into plain lat/lng the same way `_to_response()`
-    already does for every other read path. Keeping that decoding logic in
-    one place (rather than duplicating it here) avoids the two implementations
-    drifting apart.
-
-    A rider should have at most one row matching this filter in normal
-    operation (accept_produce_request/update_trip_status don't let a second
-    trip become ACCEPTED/PICKED_UP for the same rider), but `.first()` is
-    used defensively rather than `.one()` so a data anomaly surfaces as
-    "return the most relevant trip" instead of a 500.
+    A rider can legitimately hold more than one active trip (accepting a
+    second produce request while the first is still in progress), so this
+    returns every match rather than `.first()`.
     """
     return (
         db.query(models.Trip)
@@ -444,7 +517,7 @@ def get_active_trip_for_rider(db: Session, rider_id: UUID) -> Optional[models.Tr
             models.Trip.status.in_(("ACCEPTED", "PICKED_UP")),
         )
         .order_by(models.Trip.created_at.desc())
-        .first()
+        .all()
     )
 
 
