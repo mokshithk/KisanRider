@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import 'package:provider/provider.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -19,6 +20,9 @@ const String _kApiBaseUrl = 'http://127.0.0.1:8000';
 const double _kRiderLat = 13.1362;
 const double _kRiderLng = 78.1291;
 const double _kSearchRadiusKm = 50.0;
+
+/// Brand green used across the rider UI.
+const Color _kRiderGreen = Color(0xFF2E7D32);
 
 // ---------------------------------------------------------------------------
 // Google Maps helper
@@ -52,6 +56,12 @@ Future<void> _launchMaps(BuildContext context, String query) async {
     }
   }
 }
+
+// ---------------------------------------------------------------------------
+// OTP submission result
+// ---------------------------------------------------------------------------
+
+enum _OtpSubmitResult { success, invalidOtp, otherError }
 
 // ---------------------------------------------------------------------------
 // Models
@@ -303,7 +313,7 @@ class _AvailableRequestsTabState extends State<_AvailableRequestsTab>
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
             content: Text('Trip Accepted!'),
-            backgroundColor: Color(0xFF2E7D32),
+            backgroundColor: _kRiderGreen,
           ),
         );
         setState(() {
@@ -489,7 +499,7 @@ class _AvailableRequestCard extends StatelessWidget {
                     : const Icon(Icons.check),
                 label: Text(isAccepting ? 'Accepting…' : 'Accept Request'),
                 style: FilledButton.styleFrom(
-                  backgroundColor: const Color(0xFF2E7D32),
+                  backgroundColor: _kRiderGreen,
                   padding: const EdgeInsets.symmetric(vertical: 14),
                 ),
               ),
@@ -628,7 +638,7 @@ class _ActiveTripsTabState extends State<_ActiveTripsTab>
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text('${trip.produceRequest.cropType} → $newStatus'),
-            backgroundColor: const Color(0xFF2E7D32),
+            backgroundColor: _kRiderGreen,
           ),
         );
         await _fetch();
@@ -653,6 +663,82 @@ class _ActiveTripsTabState extends State<_ActiveTripsTab>
       );
     } finally {
       if (mounted) setState(() => _updatingTripIds.remove(trip.id));
+    }
+  }
+
+  /// Verifies the 4-digit pickup OTP against the backend.
+  ///
+  /// The verify endpoint targets the ProduceRequest id (not the Trip id) —
+  /// `trip.produceRequest.id`. On a successful verify, the ProduceRequest's
+  /// status flips to PICKED_UP on the server, but the Trip status stays
+  /// ACCEPTED (they're independent state machines). Since the rider's card
+  /// reads the Trip status, we follow up with a PATCH to sync the two —
+  /// otherwise the card would still say "ACCEPTED" and the OTP button would
+  /// keep appearing.
+  ///
+  /// If the PATCH fails, we still return success — the OTP was verified,
+  /// which is the essential operation. The user sees the green SnackBar and
+  /// the list refreshes; the card may still show ACCEPTED until the next
+  /// successful status PATCH. Backend-side, folding the trip transition
+  /// into the verify endpoint would remove this two-call dance entirely.
+  Future<_OtpSubmitResult> _submitOtp(ActiveTrip trip, String otp) async {
+    final auth = context.read<AuthProvider>();
+    if (auth.token == null) return _OtpSubmitResult.otherError;
+
+    try {
+      final verifyResp = await http.post(
+        Uri.parse(
+          '$_kApiBaseUrl/produce-requests/${trip.produceRequest.id}/verify-otp',
+        ),
+        headers: _headers(auth, json: true),
+        body: jsonEncode({'otp': otp}),
+      );
+
+      if (verifyResp.statusCode == 400) {
+        return _OtpSubmitResult.invalidOtp;
+      }
+      if (verifyResp.statusCode != 200) {
+        return _OtpSubmitResult.otherError;
+      }
+
+      // OTP verified — now sync the trip status to PICKED_UP so the card
+      // reflects the handoff. Failure here is non-fatal for the OTP flow.
+      try {
+        await http.patch(
+          Uri.parse('$_kApiBaseUrl/trips/${trip.id}/status'),
+          headers: _headers(auth, json: true),
+          body: jsonEncode({'status': 'PICKED_UP'}),
+        );
+      } catch (_) {
+        // Swallowed deliberately — OTP verification already succeeded.
+      }
+
+      return _OtpSubmitResult.success;
+    } catch (_) {
+      return _OtpSubmitResult.otherError;
+    }
+  }
+
+  Future<void> _openOtpDialog(ActiveTrip trip) async {
+    final success = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => _OtpDialog(
+        cropName: trip.produceRequest.cropType,
+        onSubmit: (otp) => _submitOtp(trip, otp),
+      ),
+    );
+
+    if (!mounted) return;
+
+    if (success == true) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('OTP Verified! Order marked as PICKED UP.'),
+          backgroundColor: _kRiderGreen,
+        ),
+      );
+      await _fetch();
     }
   }
 
@@ -709,6 +795,7 @@ class _ActiveTripsTabState extends State<_ActiveTripsTab>
             trip: trip,
             isUpdating: _updatingTripIds.contains(trip.id),
             onUpdateStatus: (newStatus) => _updateStatus(trip, newStatus),
+            onEnterOtp: () => _openOtpDialog(trip),
           );
         },
       ),
@@ -721,11 +808,13 @@ class _ActiveTripCard extends StatelessWidget {
     required this.trip,
     required this.isUpdating,
     required this.onUpdateStatus,
+    required this.onEnterOtp,
   });
 
   final ActiveTrip trip;
   final bool isUpdating;
   final void Function(String newStatus) onUpdateStatus;
+  final VoidCallback onEnterOtp;
 
   @override
   Widget build(BuildContext context) {
@@ -789,10 +878,12 @@ class _ActiveTripCard extends StatelessWidget {
 
   Widget _buildActionButton() {
     if (trip.status == 'ACCEPTED') {
+      // Primary action: verify the 4-digit OTP the farmer reads out. This
+      // is what actually confirms the handoff on the backend.
       return SizedBox(
         width: double.infinity,
         child: FilledButton.icon(
-          onPressed: isUpdating ? null : () => onUpdateStatus('PICKED_UP'),
+          onPressed: isUpdating ? null : onEnterOtp,
           icon: isUpdating
               ? const SizedBox(
                   width: 18,
@@ -802,9 +893,10 @@ class _ActiveTripCard extends StatelessWidget {
                     color: Colors.white,
                   ),
                 )
-              : const Icon(Icons.inventory_2),
-          label: Text(isUpdating ? 'Updating…' : 'Mark Picked Up'),
+              : const Icon(Icons.pin),
+          label: const Text('Enter Pickup OTP'),
           style: FilledButton.styleFrom(
+            backgroundColor: _kRiderGreen,
             padding: const EdgeInsets.symmetric(vertical: 14),
           ),
         ),
@@ -828,7 +920,7 @@ class _ActiveTripCard extends StatelessWidget {
               : const Icon(Icons.check_circle_outline),
           label: Text(isUpdating ? 'Updating…' : 'Mark Delivered'),
           style: FilledButton.styleFrom(
-            backgroundColor: const Color(0xFF2E7D32),
+            backgroundColor: _kRiderGreen,
             padding: const EdgeInsets.symmetric(vertical: 14),
           ),
         ),
@@ -838,6 +930,149 @@ class _ActiveTripCard extends StatelessWidget {
     // Terminal state (shouldn't normally appear here — the endpoint filters
     // to ACCEPTED/PICKED_UP — but render something sane if it does).
     return const SizedBox.shrink();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// OTP verification dialog
+// ---------------------------------------------------------------------------
+
+class _OtpDialog extends StatefulWidget {
+  const _OtpDialog({
+    required this.cropName,
+    required this.onSubmit,
+  });
+
+  final String cropName;
+
+  /// Performs the actual network calls. Returns a result the dialog uses
+  /// to decide whether to close (success) or show an inline error and let
+  /// the rider retry without losing the dialog.
+  final Future<_OtpSubmitResult> Function(String otp) onSubmit;
+
+  @override
+  State<_OtpDialog> createState() => _OtpDialogState();
+}
+
+class _OtpDialogState extends State<_OtpDialog> {
+  final _formKey = GlobalKey<FormState>();
+  final _controller = TextEditingController();
+  bool _isSubmitting = false;
+  String? _error;
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  Future<void> _submit() async {
+    if (!_formKey.currentState!.validate()) return;
+
+    setState(() {
+      _isSubmitting = true;
+      _error = null;
+    });
+
+    final result = await widget.onSubmit(_controller.text.trim());
+    if (!mounted) return;
+
+    if (result == _OtpSubmitResult.success) {
+      Navigator.of(context).pop(true);
+      return;
+    }
+
+    setState(() {
+      _isSubmitting = false;
+      _error = result == _OtpSubmitResult.invalidOtp
+          ? 'Invalid OTP. Please check with the farmer.'
+          : 'Could not verify OTP. Please try again.';
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Enter Pickup OTP'),
+      content: Form(
+        key: _formKey,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            const Text(
+              'Ask the farmer for the 4-digit code shown on their screen.',
+              style: TextStyle(fontSize: 13),
+            ),
+            const SizedBox(height: 16),
+            TextFormField(
+              controller: _controller,
+              enabled: !_isSubmitting,
+              autofocus: true,
+              keyboardType: TextInputType.number,
+              inputFormatters: [
+                FilteringTextInputFormatter.digitsOnly,
+                LengthLimitingTextInputFormatter(4),
+              ],
+              textAlign: TextAlign.center,
+              style: const TextStyle(
+                fontSize: 26,
+                letterSpacing: 8,
+                fontWeight: FontWeight.bold,
+              ),
+              decoration: const InputDecoration(
+                border: OutlineInputBorder(),
+                counterText: '',
+                hintText: '••••',
+              ),
+              validator: (v) {
+                final value = (v ?? '').trim();
+                if (value.isEmpty) return 'Enter the OTP';
+                if (value.length != 4) return 'OTP must be 4 digits';
+                return null;
+              },
+              onFieldSubmitted: (_) {
+                if (!_isSubmitting) _submit();
+              },
+            ),
+            if (_error != null) ...[
+              const SizedBox(height: 10),
+              Text(
+                _error!,
+                style: TextStyle(
+                  color: Theme.of(context).colorScheme.error,
+                  fontSize: 12,
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
+      actionsPadding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+      actions: [
+        TextButton(
+          onPressed: _isSubmitting ? null : () => Navigator.of(context).pop(),
+          child: const Text('Cancel'),
+        ),
+        FilledButton.icon(
+          onPressed: _isSubmitting ? null : _submit,
+          icon: _isSubmitting
+              ? const SizedBox(
+                  width: 16,
+                  height: 16,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2,
+                    color: Colors.white,
+                  ),
+                )
+              : const Icon(Icons.check, size: 18),
+          label: Text(_isSubmitting ? 'Verifying…' : 'Verify & Pick Up'),
+          style: FilledButton.styleFrom(
+            backgroundColor: _kRiderGreen,
+          ),
+        ),
+      ],
+    );
   }
 }
 

@@ -11,6 +11,7 @@ Spatial notes:
   used efficiently by ST_DWithin.
 """
 
+import random
 from typing import List, Optional
 from uuid import UUID
 
@@ -104,6 +105,10 @@ def create_produce_request(
     `db.refresh()` is unnecessary round-tripping that's a common source of
     silent 500s (hex-WKB vs WKBElement edge cases). The write path trusts
     the input it just persisted; only read paths decode geometry.
+
+    Generates the 4-digit pickup OTP here (not in main.py) because this is
+    where the DB insert happens — putting it in main.py would only move the
+    same logic and require a new parameter on this function's signature.
     """
     try:
         point_wkt = WKTElement(
@@ -112,6 +117,11 @@ def create_produce_request(
         )
     except Exception as e:
         raise ValueError(f"Invalid coordinates ({request_schema.latitude}, {request_schema.longitude}): {e}") from e
+
+    # Handoff code: the farmer reads this to the rider at pickup. Generated
+    # once at creation so it's stable across the request's lifecycle and
+    # visible in the farmer's own /produce-requests/farmer/me feed.
+    pickup_otp = f"{random.randint(1000, 9999)}"
 
     db_request = models.ProduceRequest(
         farmer_id=farmer_id,
@@ -122,6 +132,7 @@ def create_produce_request(
         dropoff_location=request_schema.dropoff_location,
         dropoff_lat=request_schema.dropoff_lat,
         dropoff_lng=request_schema.dropoff_lng,
+        pickup_otp=pickup_otp,
         status="PENDING",
     )
 
@@ -182,7 +193,11 @@ def _to_farmer_response(pr: models.ProduceRequest) -> schemas.FarmerProduceReque
             rider=rider_summary,
         )
 
-    return schemas.FarmerProduceRequestResponse(**base.model_dump(), trip=trip_summary)
+    return schemas.FarmerProduceRequestResponse(
+        **base.model_dump(),
+        trip=trip_summary,
+        pickup_otp=pr.pickup_otp,
+    )
 
 
 def get_produce_requests_for_farmer(
@@ -247,6 +262,9 @@ def get_nearby_produce_requests(
     Distance math uses ::geography casts so ST_DWithin/ST_Distance operate
     in real meters over the WGS84 spheroid, not raw lat/lng degrees; ST_Y/
     ST_X use plain ::geometry, matching how the column is actually stored.
+
+    NOTE: pickup_otp is deliberately NOT selected here — the rider-facing
+    nearby feed must not expose the farmer's handoff code.
     """
     pr = models.ProduceRequest
 
@@ -306,6 +324,62 @@ def get_nearby_produce_requests(
         )
         for row in rows
     ]
+
+
+def verify_pickup_otp(
+    db: Session, request_id: UUID, otp: str
+) -> Optional[models.ProduceRequest]:
+    """
+    Pickup-handoff confirmation. Compares the submitted OTP against the one
+    stored on the request and, on a match, flips the request's status to
+    PICKED_UP.
+
+    Returns None if the request doesn't exist (main.py -> 404). Raises
+    ValueError (main.py -> 400) for domain errors: request is in a terminal
+    state, isn't ACCEPTED yet, has no OTP on file, or the submitted code
+    doesn't match.
+
+    Only ACCEPTED requests can be verified — PENDING has no rider yet, and
+    PICKED_UP/COMPLETED/CANCELLED have already moved past the handoff. That
+    guard is what makes this endpoint idempotent-safe: a second submit with
+    the same OTP hits the "not ACCEPTED" branch instead of silently
+    transitioning a delivered request back to PICKED_UP.
+
+    Row-locked with `with_for_update()` so two concurrent verify calls for
+    the same request can't both flip the status.
+    """
+    pr = (
+        db.query(models.ProduceRequest)
+        .filter(models.ProduceRequest.id == request_id)
+        .with_for_update()
+        .first()
+    )
+    if pr is None:
+        return None
+
+    if pr.status in ("COMPLETED", "CANCELLED"):
+        raise ValueError(
+            f"Request is in a terminal state ({pr.status}) and cannot be picked up"
+        )
+
+    if pr.status != "ACCEPTED":
+        raise ValueError(
+            f"Request must be ACCEPTED before OTP verification (current status: {pr.status})"
+        )
+
+    # `pr.pickup_otp` is None for rows created before the column existed —
+    # those can never be verified, which is the safe behavior (fail closed).
+    if not pr.pickup_otp or pr.pickup_otp != otp.strip():
+        raise ValueError("Invalid OTP")
+
+    pr.status = "PICKED_UP"
+    try:
+        db.commit()
+        db.refresh(pr)
+        return pr
+    except SQLAlchemyError:
+        db.rollback()
+        raise
 
 
 # ---------------------------------------------------------------------------

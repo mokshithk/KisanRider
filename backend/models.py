@@ -37,6 +37,11 @@ class ProduceRequest(Base):
     # submit with only a text dropoff location.
     dropoff_lat = Column(Float, nullable=True)
     dropoff_lng = Column(Float, nullable=True)
+    # 4-digit handoff code generated at creation time. The farmer reads it
+    # to the rider at pickup; the rider submits it to /verify-otp to confirm
+    # the handoff. Nullable so rows created before this column existed don't
+    # break the app (verify treats NULL as "no OTP on file" -> reject).
+    pickup_otp = Column(String(4), nullable=True)
     status = Column(String(20), default="PENDING")
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 

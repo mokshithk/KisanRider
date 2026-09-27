@@ -5,7 +5,7 @@ import 'package:http/http.dart' as http;
 import 'package:provider/provider.dart';
 
 import '../providers/auth_provider.dart';
-
+import 'farmer_orders_tab.dart';
 /// Base URL of the FastAPI backend.
 ///
 /// NOTE: `127.0.0.1` only works from Flutter Desktop / Chrome on the same
@@ -111,7 +111,7 @@ class _FarmerDashboardState extends State<FarmerDashboard> {
         children: [
           FarmerHomeTab(onBookTransport: () => _goToTab(1)),
           const FarmerBookTransportTab(),
-          const FarmerOrdersTab(),
+          FarmerOrdersTab(onBookTransport: () => _goToTab(1)),
           const FarmerAccountTab(),
         ],
       ),
@@ -712,53 +712,6 @@ class _FarmerBookTransportTabState extends State<FarmerBookTransportTab> {
 // Tab 2 — My Orders (placeholder)
 // ---------------------------------------------------------------------------
 
-class FarmerOrdersTab extends StatelessWidget {
-  const FarmerOrdersTab({super.key});
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    return SafeArea(
-      child: Center(
-        child: Padding(
-          padding: const EdgeInsets.all(32),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Container(
-                padding: const EdgeInsets.all(24),
-                decoration: BoxDecoration(
-                  color: _kFarmerGreen.withOpacity(0.08),
-                  shape: BoxShape.circle,
-                ),
-                child: const Icon(
-                  Icons.local_shipping,
-                  size: 64,
-                  color: _kFarmerGreen,
-                ),
-              ),
-              const SizedBox(height: 24),
-              Text(
-                'My Orders & Shipments',
-                style: theme.textTheme.titleLarge
-                    ?.copyWith(fontWeight: FontWeight.w600),
-                textAlign: TextAlign.center,
-              ),
-              const SizedBox(height: 8),
-              Text(
-                'Coming Soon',
-                style: theme.textTheme.bodyMedium?.copyWith(
-                  color: theme.colorScheme.onSurfaceVariant,
-                ),
-                textAlign: TextAlign.center,
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
 
 // ---------------------------------------------------------------------------
 // Tab 3 — Account (placeholder)

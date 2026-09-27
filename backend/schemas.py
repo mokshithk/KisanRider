@@ -86,6 +86,16 @@ class NearbyProduceRequestResponse(ProduceRequestResponse):
     distance_km: float = Field(..., description="Great-circle distance from the query point")
 
 
+class OtpVerifyRequest(BaseModel):
+    """Body for POST /produce-requests/{request_id}/verify-otp."""
+    otp: str = Field(..., min_length=4, max_length=8)
+
+
+class OtpVerifyResponse(BaseModel):
+    success: bool
+    message: str
+
+
 # ---------------------------------------------------------------------------
 # Trip schemas
 # ---------------------------------------------------------------------------
@@ -166,9 +176,15 @@ class FarmerProduceRequestResponse(ProduceRequestResponse):
     `trip` is None while the request is still PENDING (no rider has
     accepted it yet); once a rider accepts, it carries that rider's
     identity plus the trip's own status/timestamps.
+
+    `pickup_otp` is only exposed to the farmer who owns the request — never
+    on the rider-facing /produce-requests/nearby or the unauthenticated
+    /produce-requests/{id} endpoints, since a leaked OTP defeats its
+    purpose as a handoff check.
     """
 
     trip: Optional[TripSummary] = None
+    pickup_otp: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
