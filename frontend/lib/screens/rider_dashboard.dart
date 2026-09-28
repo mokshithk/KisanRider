@@ -166,46 +166,91 @@ class ActiveTrip {
 }
 
 // ---------------------------------------------------------------------------
-// Dashboard
+// Dashboard shell — 4-tab bottom navigation
 // ---------------------------------------------------------------------------
 
-class RiderDashboard extends StatelessWidget {
+class RiderDashboard extends StatefulWidget {
   const RiderDashboard({super.key});
 
   @override
+  State<RiderDashboard> createState() => _RiderDashboardState();
+}
+
+class _RiderDashboardState extends State<RiderDashboard> {
+  int _currentIndex = 0;
+
+  static const List<String> _titles = [
+    'Available Requests',
+    'Active Trips',
+    'Earnings',
+    'Account',
+  ];
+
+  void _goToTab(int index) {
+    if (index == _currentIndex) return;
+    setState(() => _currentIndex = index);
+  }
+
+  @override
   Widget build(BuildContext context) {
-    return DefaultTabController(
-      length: 2,
-      child: Scaffold(
-        appBar: AppBar(
-          title: const Text('Rider Dashboard'),
-          bottom: const TabBar(
-            tabs: [
-              Tab(icon: Icon(Icons.list_alt), text: 'Available'),
-              Tab(icon: Icon(Icons.delivery_dining), text: 'Active Trips'),
-            ],
+    return Scaffold(
+      appBar: AppBar(
+        title: Text(_titles[_currentIndex]),
+        backgroundColor: _kRiderGreen,
+        foregroundColor: Colors.white,
+        actions: [
+          IconButton(
+            tooltip: 'Logout',
+            icon: const Icon(Icons.logout),
+            onPressed: () => context.read<AuthProvider>().logout(),
           ),
-          actions: [
-            IconButton(
-              tooltip: 'Logout',
-              icon: const Icon(Icons.logout),
-              onPressed: () => context.read<AuthProvider>().logout(),
-            ),
-          ],
-        ),
-        body: const TabBarView(
-          children: [
-            _AvailableRequestsTab(),
-            _ActiveTripsTab(),
-          ],
-        ),
+        ],
+      ),
+      // IndexedStack keeps every tab's state alive across switches, so a
+      // partially-loaded Available feed or an in-flight OTP dialog survives
+      // a trip to Earnings and back.
+      body: IndexedStack(
+        index: _currentIndex,
+        children: const [
+          _AvailableRequestsTab(),
+          _ActiveTripsTab(),
+          _EarningsTab(),
+          _DriverAccountTab(),
+        ],
+      ),
+      bottomNavigationBar: BottomNavigationBar(
+        currentIndex: _currentIndex,
+        onTap: _goToTab,
+        // Fixed keeps all 4 labels visible regardless of the active tab.
+        type: BottomNavigationBarType.fixed,
+        selectedItemColor: _kRiderGreen,
+        unselectedItemColor: Colors.grey.shade600,
+        backgroundColor: Colors.white,
+        items: const [
+          BottomNavigationBarItem(
+            icon: Icon(Icons.list_alt),
+            label: 'Available',
+          ),
+          BottomNavigationBarItem(
+            icon: Icon(Icons.local_shipping),
+            label: 'Active Trips',
+          ),
+          BottomNavigationBarItem(
+            icon: Icon(Icons.account_balance_wallet),
+            label: 'Earnings',
+          ),
+          BottomNavigationBarItem(
+            icon: Icon(Icons.person),
+            label: 'Account',
+          ),
+        ],
       ),
     );
   }
 }
 
 // ---------------------------------------------------------------------------
-// Tab 1 — Available requests
+// Tab 0 — Available requests
 // ---------------------------------------------------------------------------
 
 class _AvailableRequestsTab extends StatefulWidget {
@@ -512,7 +557,7 @@ class _AvailableRequestCard extends StatelessWidget {
 }
 
 // ---------------------------------------------------------------------------
-// Tab 2 — Active trips (multiple)
+// Tab 1 — Active trips (multiple)
 // ---------------------------------------------------------------------------
 
 class _ActiveTripsTab extends StatefulWidget {
@@ -930,6 +975,617 @@ class _ActiveTripCard extends StatelessWidget {
     // Terminal state (shouldn't normally appear here — the endpoint filters
     // to ACCEPTED/PICKED_UP — but render something sane if it does).
     return const SizedBox.shrink();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Tab 2 — Earnings
+// ---------------------------------------------------------------------------
+
+class _EarningsTab extends StatefulWidget {
+  const _EarningsTab();
+
+  @override
+  State<_EarningsTab> createState() => _EarningsTabState();
+}
+
+class _EarningsTabState extends State<_EarningsTab>
+    with AutomaticKeepAliveClientMixin {
+  List<Map<String, dynamic>> _settlements = [];
+  bool _isLoading = true;
+  String? _error;
+
+  @override
+  bool get wantKeepAlive => true;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) => _fetch());
+  }
+
+  Map<String, String> _headers(AuthProvider auth) {
+    return {
+      'Authorization': 'Bearer ${auth.token}',
+      'Accept': 'application/json',
+    };
+  }
+
+  Future<void> _fetch() async {
+    final auth = context.read<AuthProvider>();
+    if (auth.token == null) {
+      setState(() {
+        _isLoading = false;
+        _error = 'Not signed in.';
+      });
+      return;
+    }
+
+    setState(() {
+      _isLoading = true;
+      _error = null;
+    });
+
+    try {
+      // Payout history for this rider, newest first. The endpoint already
+      // exists — the Earnings tab is a thin view over it. No new backend
+      // work required.
+      final response = await http.get(
+        Uri.parse('$_kApiBaseUrl/settlements/me'),
+        headers: _headers(auth),
+      );
+      if (!mounted) return;
+
+      if (response.statusCode == 200) {
+        final List<dynamic> decoded = jsonDecode(response.body) as List<dynamic>;
+        setState(() {
+          _settlements = decoded
+              .whereType<Map<String, dynamic>>()
+              .toList(growable: false);
+          _isLoading = false;
+        });
+      } else {
+        setState(() {
+          _error = _extractError(response) ??
+              'Failed to load earnings (HTTP ${response.statusCode}).';
+          _isLoading = false;
+        });
+      }
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _error = 'Network error: $e';
+        _isLoading = false;
+      });
+    }
+  }
+
+  String? _extractError(http.Response response) {
+    try {
+      final body = jsonDecode(response.body);
+      if (body is Map && body['detail'] != null) {
+        return body['detail'].toString();
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  /// Sum of total_payout for settlements created today (local time).
+  /// Falls back to 0.0 if timestamps are malformed.
+  double get _todayEarnings {
+    final now = DateTime.now();
+    double sum = 0;
+    for (final s in _settlements) {
+      final raw = s['created_at'];
+      if (raw is String) {
+        final parsed = DateTime.tryParse(raw);
+        if (parsed != null &&
+            parsed.year == now.year &&
+            parsed.month == now.month &&
+            parsed.day == now.day) {
+          sum += ((s['total_payout'] ?? 0) as num).toDouble();
+        }
+      }
+    }
+    return sum;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    super.build(context);
+
+    if (_isLoading) {
+      return const Center(child: CircularProgressIndicator());
+    }
+
+    if (_error != null) {
+      return _ErrorView(message: _error!, onRetry: _fetch);
+    }
+
+    final theme = Theme.of(context);
+
+    return RefreshIndicator(
+      onRefresh: _fetch,
+      color: _kRiderGreen,
+      child: ListView(
+        physics: const AlwaysScrollableScrollPhysics(),
+        padding: const EdgeInsets.all(16),
+        children: [
+          // ----- Today's earnings header -------------------------------
+          Container(
+            padding: const EdgeInsets.all(20),
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: [
+                  _kRiderGreen.withOpacity(0.15),
+                  _kRiderGreen.withOpacity(0.05),
+                ],
+              ),
+              borderRadius: BorderRadius.circular(18),
+              border: Border.all(color: _kRiderGreen.withOpacity(0.4)),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    const Icon(Icons.account_balance_wallet,
+                        color: _kRiderGreen, size: 22),
+                    const SizedBox(width: 8),
+                    Text(
+                      'Today\'s Earnings',
+                      style: theme.textTheme.titleSmall?.copyWith(
+                        fontWeight: FontWeight.bold,
+                        color: _kRiderGreen,
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                Text(
+                  '₹${_todayEarnings.toStringAsFixed(0)}',
+                  style: theme.textTheme.headlineMedium?.copyWith(
+                    fontWeight: FontWeight.bold,
+                    color: _kRiderGreen,
+                  ),
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  '${_settlements.length} completed trip'
+                  '${_settlements.length == 1 ? "" : "s"}',
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: theme.colorScheme.onSurfaceVariant,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 24),
+
+          // ----- Section title -----------------------------------------
+          Text(
+            'Recent Trip History',
+            style: theme.textTheme.titleMedium?.copyWith(
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+          const SizedBox(height: 12),
+
+          // ----- List or empty state -----------------------------------
+          if (_settlements.isEmpty)
+            Container(
+              padding: const EdgeInsets.symmetric(vertical: 40, horizontal: 24),
+              decoration: BoxDecoration(
+                color: theme.colorScheme.surfaceContainerHighest
+                    .withOpacity(0.4),
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(color: Colors.grey.shade200),
+              ),
+              child: Column(
+                children: [
+                  Icon(Icons.receipt_long_outlined,
+                      size: 56, color: Colors.grey.shade400),
+                  const SizedBox(height: 12),
+                  Text(
+                    'No completed trips yet',
+                    style: theme.textTheme.titleSmall?.copyWith(
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    'Completed deliveries will appear here '
+                    'along with their payout amounts.',
+                    textAlign: TextAlign.center,
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: theme.colorScheme.onSurfaceVariant,
+                    ),
+                  ),
+                ],
+              ),
+            )
+          else
+            ..._settlements.map((s) => _SettlementTile(settlement: s)),
+        ],
+      ),
+    );
+  }
+}
+
+class _SettlementTile extends StatelessWidget {
+  const _SettlementTile({required this.settlement});
+
+  final Map<String, dynamic> settlement;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final payout =
+        ((settlement['total_payout'] ?? 0) as num).toDouble();
+    final status = (settlement['status'] ?? 'PENDING').toString();
+
+    DateTime? created;
+    final raw = settlement['created_at'];
+    if (raw is String) created = DateTime.tryParse(raw);
+
+    final dateLabel = created == null
+        ? '—'
+        : '${created.day.toString().padLeft(2, '0')}/'
+            '${created.month.toString().padLeft(2, '0')}/'
+            '${created.year} '
+            '${created.hour.toString().padLeft(2, '0')}:'
+            '${created.minute.toString().padLeft(2, '0')}';
+
+    final isPaid = status.toUpperCase() == 'PAID';
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 10),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.grey.shade200),
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 40,
+            height: 40,
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+              color: _kRiderGreen.withOpacity(0.1),
+              shape: BoxShape.circle,
+            ),
+            child: const Icon(Icons.currency_rupee,
+                color: _kRiderGreen, size: 20),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  '₹${payout.toStringAsFixed(0)}',
+                  style: theme.textTheme.titleSmall?.copyWith(
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  dateLabel,
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: theme.colorScheme.onSurfaceVariant,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
+            decoration: BoxDecoration(
+              color: isPaid
+                  ? _kRiderGreen.withOpacity(0.12)
+                  : Colors.amber.withOpacity(0.15),
+              borderRadius: BorderRadius.circular(20),
+              border: Border.all(
+                color: isPaid ? _kRiderGreen : Colors.amber.shade800,
+              ),
+            ),
+            child: Text(
+              status.toUpperCase(),
+              style: TextStyle(
+                color: isPaid ? _kRiderGreen : Colors.amber.shade900,
+                fontWeight: FontWeight.bold,
+                fontSize: 10,
+                letterSpacing: 0.5,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Tab 3 — Account
+// ---------------------------------------------------------------------------
+
+class _DriverAccountTab extends StatefulWidget {
+  const _DriverAccountTab();
+
+  @override
+  State<_DriverAccountTab> createState() => _DriverAccountTabState();
+}
+
+class _DriverAccountTabState extends State<_DriverAccountTab>
+    with AutomaticKeepAliveClientMixin {
+  /// Local-only online/offline flag. Flip it and the card subtitle changes,
+  /// but nothing else happens yet — hook it up to a backend "rider
+  /// availability" endpoint when that exists, and gate /trips/accept on it.
+  bool _isOnline = false;
+
+  @override
+  bool get wantKeepAlive => true;
+
+  @override
+  Widget build(BuildContext context) {
+    super.build(context);
+    final theme = Theme.of(context);
+    final auth = context.read<AuthProvider>();
+
+    return SafeArea(
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            // ----- Profile header ----------------------------------------
+            //
+            // NOTE: /users/me doesn't exist on the backend yet, so the name
+            // and phone are placeholders. When that endpoint lands, fetch
+            // here and setState. `auth.userId` is available today if you
+            // want a non-name identifier in the meantime.
+            Container(
+              padding: const EdgeInsets.all(20),
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                  colors: [
+                    _kRiderGreen.withOpacity(0.12),
+                    _kRiderGreen.withOpacity(0.04),
+                  ],
+                ),
+                borderRadius: BorderRadius.circular(18),
+                border: Border.all(color: _kRiderGreen.withOpacity(0.4)),
+              ),
+              child: Row(
+                children: [
+                  Container(
+                    width: 64,
+                    height: 64,
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      shape: BoxShape.circle,
+                      border: Border.all(color: _kRiderGreen, width: 2),
+                    ),
+                    child: const Icon(Icons.person,
+                        size: 36, color: _kRiderGreen),
+                  ),
+                  const SizedBox(width: 16),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'Rider',
+                          style: theme.textTheme.titleMedium?.copyWith(
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                        const SizedBox(height: 4),
+                        Row(
+                          children: [
+                            const Icon(Icons.star,
+                                size: 14, color: Colors.amber),
+                            const SizedBox(width: 4),
+                            Text(
+                              '4.8',
+                              style: theme.textTheme.bodySmall?.copyWith(
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                            const SizedBox(width: 10),
+                            Icon(Icons.phone,
+                                size: 13,
+                                color: theme.colorScheme.onSurfaceVariant),
+                            const SizedBox(width: 4),
+                            Expanded(
+                              child: Text(
+                                '—',
+                                style: theme.textTheme.bodySmall?.copyWith(
+                                  color: theme.colorScheme.onSurfaceVariant,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          'Signed in as RIDER',
+                          style: theme.textTheme.bodySmall?.copyWith(
+                            color: theme.colorScheme.onSurfaceVariant,
+                            fontSize: 11,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 16),
+
+            // ----- Online / Offline toggle -------------------------------
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(color: Colors.grey.shade200),
+              ),
+              child: Row(
+                children: [
+                  Container(
+                    width: 38,
+                    height: 38,
+                    alignment: Alignment.center,
+                    decoration: BoxDecoration(
+                      color: (_isOnline ? _kRiderGreen : Colors.grey)
+                          .withOpacity(0.12),
+                      shape: BoxShape.circle,
+                    ),
+                    child: Icon(
+                      _isOnline ? Icons.wifi_tethering : Icons.wifi_tethering_off,
+                      color: _isOnline ? _kRiderGreen : Colors.grey.shade700,
+                      size: 20,
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          _isOnline ? 'Online' : 'Offline',
+                          style: theme.textTheme.titleSmall?.copyWith(
+                            fontWeight: FontWeight.bold,
+                            color: _isOnline
+                                ? _kRiderGreen
+                                : theme.colorScheme.onSurface,
+                          ),
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          _isOnline
+                              ? 'You will receive new trip requests'
+                              : 'You will not receive new requests',
+                          style: theme.textTheme.bodySmall?.copyWith(
+                            color: theme.colorScheme.onSurfaceVariant,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  Switch(
+                    value: _isOnline,
+                    activeColor: _kRiderGreen,
+                    onChanged: (v) => setState(() => _isOnline = v),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 16),
+
+            // ----- Vehicle details ---------------------------------------
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(color: Colors.grey.shade200),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      const Icon(Icons.two_wheeler,
+                          color: _kRiderGreen, size: 20),
+                      const SizedBox(width: 8),
+                      Text(
+                        'Vehicle Details',
+                        style: theme.textTheme.titleSmall?.copyWith(
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  const _DetailRow(label: 'Model', value: '—'),
+                  const SizedBox(height: 8),
+                  const _DetailRow(label: 'Registration Number', value: '—'),
+                  const SizedBox(height: 8),
+                  const _DetailRow(
+                      label: 'Max Payload Capacity', value: '—'),
+                  const SizedBox(height: 12),
+                  Text(
+                    'Vehicle details coming soon. Contact support to update '
+                    'your vehicle information.',
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: theme.colorScheme.onSurfaceVariant,
+                      fontSize: 11,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 24),
+
+            // ----- Logout -------------------------------------------------
+            OutlinedButton.icon(
+              onPressed: () => auth.logout(),
+              style: OutlinedButton.styleFrom(
+                foregroundColor: Colors.red.shade700,
+                side: BorderSide(color: Colors.red.shade300),
+                padding: const EdgeInsets.symmetric(vertical: 14),
+              ),
+              icon: const Icon(Icons.logout),
+              label: const Text('Log Out'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _DetailRow extends StatelessWidget {
+  const _DetailRow({required this.label, required this.value});
+
+  final String label;
+  final String value;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Expanded(
+          flex: 4,
+          child: Text(
+            label,
+            style: theme.textTheme.bodySmall?.copyWith(
+              color: theme.colorScheme.onSurfaceVariant,
+            ),
+          ),
+        ),
+        Expanded(
+          flex: 6,
+          child: Text(
+            value,
+            textAlign: TextAlign.end,
+            style: theme.textTheme.bodyMedium?.copyWith(
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ),
+      ],
+    );
   }
 }
 

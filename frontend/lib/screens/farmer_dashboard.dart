@@ -5,7 +5,9 @@ import 'package:http/http.dart' as http;
 import 'package:provider/provider.dart';
 
 import '../providers/auth_provider.dart';
+import 'farmer_home_tab.dart';
 import 'farmer_orders_tab.dart';
+
 /// Base URL of the FastAPI backend.
 ///
 /// NOTE: `127.0.0.1` only works from Flutter Desktop / Chrome on the same
@@ -109,7 +111,7 @@ class _FarmerDashboardState extends State<FarmerDashboard> {
       body: IndexedStack(
         index: _currentIndex,
         children: [
-          FarmerHomeTab(onBookTransport: () => _goToTab(1)),
+          FarmerHomeTab(onTabSwitch: _goToTab),
           const FarmerBookTransportTab(),
           FarmerOrdersTab(onBookTransport: () => _goToTab(1)),
           const FarmerAccountTab(),
@@ -139,179 +141,6 @@ class _FarmerDashboardState extends State<FarmerDashboard> {
           BottomNavigationBarItem(
             icon: Icon(Icons.person),
             label: 'Account',
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Tab 0 — Home
-// ---------------------------------------------------------------------------
-
-class FarmerHomeTab extends StatelessWidget {
-  const FarmerHomeTab({super.key, required this.onBookTransport});
-
-  /// Switches the parent to the Book Transport tab. Passed down because a
-  /// child widget can't change the parent's _currentIndex directly.
-  final VoidCallback onBookTransport;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final authProvider = Provider.of<AuthProvider>(context);
-
-    // The API doesn't expose a "get my profile" endpoint yet, so we fall
-    // back to a generic greeting rather than showing a blank name.
-    final greeting = 'Welcome back';
-
-    return SafeArea(
-      child: SingleChildScrollView(
-        padding: const EdgeInsets.fromLTRB(24, 32, 24, 32),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Container(
-              padding: const EdgeInsets.all(24),
-              decoration: BoxDecoration(
-                color: _kFarmerGreen.withOpacity(0.08),
-                shape: BoxShape.circle,
-              ),
-              child: const Icon(
-                Icons.agriculture_rounded,
-                size: 72,
-                color: _kFarmerGreen,
-              ),
-            ),
-            const SizedBox(height: 24),
-            Text(
-              greeting,
-              textAlign: TextAlign.center,
-              style: theme.textTheme.headlineSmall?.copyWith(
-                fontWeight: FontWeight.w600,
-              ),
-            ),
-            const SizedBox(height: 8),
-            Text(
-              'Need to move your produce to the mandi? '
-              'Book a rider in a few taps.',
-              textAlign: TextAlign.center,
-              style: theme.textTheme.bodyMedium?.copyWith(
-                color: theme.colorScheme.onSurfaceVariant,
-              ),
-            ),
-            const SizedBox(height: 32),
-            FilledButton.icon(
-              onPressed: onBookTransport,
-              style: FilledButton.styleFrom(
-                backgroundColor: _kFarmerGreen,
-                padding: const EdgeInsets.symmetric(vertical: 18),
-                textStyle: const TextStyle(
-                  fontSize: 16,
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-              icon: const Icon(Icons.add),
-              label: const Text('Book Transport'),
-            ),
-            const SizedBox(height: 40),
-            // Small section explaining what the app does, so a brand-new
-            // farmer isn't dropped into a blank screen with one button.
-            Text(
-              'How it works',
-              style: theme.textTheme.titleMedium?.copyWith(
-                fontWeight: FontWeight.bold,
-              ),
-            ),
-            const SizedBox(height: 12),
-            const _HowItWorksStep(
-              number: '1',
-              title: 'Post your pickup',
-              body: 'Tell us the crop, crate count, and your district.',
-            ),
-            const _HowItWorksStep(
-              number: '2',
-              title: 'Pick a mandi',
-              body: 'Choose the APMC yard you want the produce delivered to.',
-            ),
-            const _HowItWorksStep(
-              number: '3',
-              title: 'Rider picks up',
-              body: 'A nearby rider accepts and delivers to the mandi.',
-            ),
-            const SizedBox(height: 8),
-            Text(
-              'Signed in as ${authProvider.role ?? "FARMER"}',
-              textAlign: TextAlign.center,
-              style: theme.textTheme.bodySmall?.copyWith(
-                color: theme.colorScheme.onSurfaceVariant,
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _HowItWorksStep extends StatelessWidget {
-  const _HowItWorksStep({
-    required this.number,
-    required this.title,
-    required this.body,
-  });
-
-  final String number;
-  final String title;
-  final String body;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 16),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Container(
-            width: 28,
-            height: 28,
-            alignment: Alignment.center,
-            decoration: const BoxDecoration(
-              color: _kFarmerGreen,
-              shape: BoxShape.circle,
-            ),
-            child: Text(
-              number,
-              style: const TextStyle(
-                color: Colors.white,
-                fontWeight: FontWeight.bold,
-                fontSize: 14,
-              ),
-            ),
-          ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  title,
-                  style: theme.textTheme.titleSmall?.copyWith(
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-                const SizedBox(height: 2),
-                Text(
-                  body,
-                  style: theme.textTheme.bodySmall?.copyWith(
-                    color: theme.colorScheme.onSurfaceVariant,
-                  ),
-                ),
-              ],
-            ),
           ),
         ],
       ),
@@ -707,11 +536,6 @@ class _FarmerBookTransportTabState extends State<FarmerBookTransportTab> {
     );
   }
 }
-
-// ---------------------------------------------------------------------------
-// Tab 2 — My Orders (placeholder)
-// ---------------------------------------------------------------------------
-
 
 // ---------------------------------------------------------------------------
 // Tab 3 — Account (placeholder)
