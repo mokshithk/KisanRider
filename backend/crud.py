@@ -30,6 +30,23 @@ import schemas
 
 
 # ---------------------------------------------------------------------------
+# Settlement economics — single place to tune the money math
+# ---------------------------------------------------------------------------
+
+# Platform's cut of the gross mandi sale, as a fraction.
+_PLATFORM_FEE_RATE = 0.02  # 2%
+
+# Placeholder mandi rate when the caller doesn't supply one. Real rate should
+# come from the /mandi-rates/ feed or a user-supplied value.
+_DEFAULT_RATE_PER_KG = 40.0  # ₹ per kg
+
+# Placeholder trip distance for the auto-created settlement when the caller
+# doesn't supply one. Trips don't currently record distance travelled, so
+# this is the fallback until GPS-trail tracking exists.
+_DEFAULT_DISTANCE_KM = 10.0
+
+
+# ---------------------------------------------------------------------------
 # User CRUD
 # ---------------------------------------------------------------------------
 
@@ -438,7 +455,12 @@ def accept_produce_request(db: Session, request_id: UUID, rider_id: UUID) -> mod
         raise
 
 
-def update_trip_status(db: Session, trip_id: UUID, status: str) -> Optional[models.Trip]:
+def update_trip_status(
+    db: Session,
+    trip_id: UUID,
+    status: str,
+    distance_km: Optional[float] = None,
+) -> Optional[models.Trip]:
     """
     Transition a Trip to a new status ('PICKED_UP', 'DELIVERED', or
     'CANCELLED' — enforced upstream by schemas.TripStatusUpdate).
@@ -448,16 +470,25 @@ def update_trip_status(db: Session, trip_id: UUID, status: str) -> Optional[mode
     (terminal-state guard) is a domain error raised as ValueError, which
     main.py maps to 400 — same layering as accept_produce_request.
 
-    On transition to 'DELIVERED': stamps `completed_at` and also marks the
-    linked ProduceRequest as 'COMPLETED', since a delivered trip means the
-    produce has reached its destination. On 'CANCELLED': also stamps
-    `completed_at` (CANCELLED is terminal) but leaves the ProduceRequest
-    status untouched — reopening it for another rider is a separate concern
-    this endpoint doesn't own.
+    On transition to 'DELIVERED': stamps `completed_at`, marks the linked
+    ProduceRequest as 'COMPLETED', AND auto-creates a Settlement row for the
+    trip — all in one transaction. The settlement carries both the rider's
+    fare breakdown (base + distance + weight surcharge) and the farmer's
+    payout breakdown (gross mandi sale − rider fare − platform fee), computed
+    from the ProduceRequest's weight and the caller-supplied `distance_km`
+    (falling back to a placeholder if omitted).
+
+    On 'CANCELLED': also stamps `completed_at` (CANCELLED is terminal) but
+    leaves the ProduceRequest status untouched and creates no settlement —
+    reopening it for another rider is a separate concern this endpoint
+    doesn't own.
 
     Both the Trip and its ProduceRequest are row-locked for the duration of
     the transaction, consistent with accept_produce_request, so a status
-    update can't race another writer touching the same rows.
+    update can't race another writer touching the same rows. If any part of
+    the delivery path fails — the ProduceRequest update, the settlement
+    insert, anything — the single `db.rollback()` reverts everything, so a
+    trip is never left marked DELIVERED without its matching settlement.
     """
     try:
         trip = (
@@ -472,6 +503,8 @@ def update_trip_status(db: Session, trip_id: UUID, status: str) -> Optional[mode
 
         if trip.status in ("DELIVERED", "CANCELLED"):
             raise ValueError(f"Trip is already in a terminal state ({trip.status}) and cannot be updated")
+
+        pr: Optional[models.ProduceRequest] = None
 
         if status == "DELIVERED":
             trip.completed_at = datetime.utcnow()
@@ -488,6 +521,13 @@ def update_trip_status(db: Session, trip_id: UUID, status: str) -> Optional[mode
             trip.completed_at = datetime.utcnow()
 
         trip.status = status
+
+        # Auto-create the settlement in the same transaction. The helper
+        # is idempotent (it checks for an existing row first), so a
+        # duplicate PATCH that somehow slips past the terminal-state guard
+        # won't create two settlements for the same trip.
+        if status == "DELIVERED":
+            _ensure_settlement_for_trip(db, trip, pr, distance_km)
 
         db.commit()
         db.refresh(trip)
@@ -561,34 +601,127 @@ def create_crate_scan(
 # Settlement CRUD
 # ---------------------------------------------------------------------------
 
-# Default platform fee as a fraction of gross sale amount. Kept as a module
-# constant so it's the single place to change if the business rate moves.
-_PLATFORM_FEE_RATE = 0.02  # 2%
+def _compute_settlement_values(
+    weight_kg: float,
+    distance_km: float,
+    rate_per_kg: float,
+) -> dict:
+    """
+    Single source of truth for the fare/payout arithmetic.
+
+    Both `create_settlement` (the manual / admin endpoint) and
+    `_ensure_settlement_for_trip` (the auto-creation path when a trip is
+    marked DELIVERED) call this, so the two never drift apart.
+
+    Returns a dict of every numeric field the Settlement row needs. Kept
+    as a plain dict rather than a NamedTuple to avoid a new module-level
+    type for what's fundamentally an internal helper.
+    """
+    # ----- Rider fare breakdown -------------------------------------------
+    base_fare = 50.0
+    distance_fare = distance_km * 15.0
+    weight_surcharge = max(0.0, weight_kg - 50.0) * 2.0
+    rider_fare = base_fare + distance_fare + weight_surcharge
+
+    # ----- Farmer payout breakdown ----------------------------------------
+    gross_amount = weight_kg * rate_per_kg
+    platform_fee = gross_amount * _PLATFORM_FEE_RATE
+    net_payout = gross_amount - (rider_fare + platform_fee)
+
+    return {
+        "base_fare": base_fare,
+        "distance_fare": distance_fare,
+        "weight_surcharge": weight_surcharge,
+        "rider_fare": rider_fare,
+        "gross_amount": gross_amount,
+        "platform_fee": platform_fee,
+        "net_payout": net_payout,
+    }
+
+
+def _ensure_settlement_for_trip(
+    db: Session,
+    trip: models.Trip,
+    pr: Optional[models.ProduceRequest],
+    distance_km: Optional[float],
+) -> Optional[models.Settlement]:
+    """
+    Create a Settlement row for `trip` if one doesn't already exist.
+
+    Called from `update_trip_status` on the DELIVERED transition, so the
+    settlement is staged with `db.add()` and committed by the caller's
+    single `db.commit()` — i.e. the trip status change and the settlement
+    insert land in the same transaction and either both succeed or both
+    roll back.
+
+    Idempotency: if a settlement already exists for this trip_id, this is a
+    no-op. That protects against duplicate PATCHes slipping through (though
+    the terminal-state guard in update_trip_status already blocks the common
+    case) and matches the DB-level unique constraint on Settlement.trip_id.
+
+    `pr` may be None in pathological cases (it shouldn't be — the FK
+    cascades deletes — but defensive code wins). When None, the settlement
+    is created with farmer_id / crop_name / quantity_kg all null; the row
+    still records the rider's side of the transaction.
+
+    `distance_km` falls back to `_DEFAULT_DISTANCE_KM` when the caller
+    didn't supply one. Trips don't yet track real distance travelled, so
+    this is the placeholder until that's wired up.
+    """
+    existing = (
+        db.query(models.Settlement.id)
+        .filter(models.Settlement.trip_id == trip.id)
+        .first()
+    )
+    if existing:
+        return None
+
+    weight_kg = (
+        float(pr.weight_kg)
+        if pr is not None and pr.weight_kg is not None
+        else 0.0
+    )
+    values = _compute_settlement_values(
+        weight_kg,
+        distance_km if distance_km is not None else _DEFAULT_DISTANCE_KM,
+        _DEFAULT_RATE_PER_KG,
+    )
+
+    db_settlement = models.Settlement(
+        trip_id=trip.id,
+        rider_id=trip.rider_id,
+        farmer_id=pr.farmer_id if pr is not None else None,
+        crop_name=pr.crop_type if pr is not None else None,
+        quantity_kg=weight_kg,
+        # Rider side — total_payout == rider_fare by design (see models.py).
+        base_fare=values["base_fare"],
+        distance_fare=values["distance_fare"],
+        weight_surcharge=values["weight_surcharge"],
+        total_payout=values["rider_fare"],
+        # Farmer side.
+        gross_amount=values["gross_amount"],
+        rider_fare=values["rider_fare"],
+        platform_fee=values["platform_fee"],
+        net_payout=values["net_payout"],
+        # Money hasn't moved yet — an admin / payout worker flips this to
+        # "PAID" once the transfer is confirmed. Same convention as the
+        # manual endpoint.
+        status="PENDING",
+    )
+    db.add(db_settlement)
+    return db_settlement
 
 
 def create_settlement(
     db: Session, settlement_in: schemas.SettlementCreate
 ) -> Optional[models.Settlement]:
     """
-    Create the settlement row for a completed trip. One row carries both
-    sides of the transaction:
+    Manual / admin creation of a settlement for a DELIVERED trip.
 
-        Rider side (what the rider earns):
-            base_fare         = ₹50 flat
-            distance_fare     = distance_km * ₹15
-            weight_surcharge  = ₹2 per kg over 50 kg (0 below that)
-            total_payout      = base_fare + distance_fare + weight_surcharge
-
-        Farmer side (what the farmer nets from the mandi sale):
-            gross_amount      = quantity_kg * rate_per_kg
-            rider_fare        = total_payout (the rider's cut; duplicated
-                                here so the farmer's row is self-contained)
-            platform_fee      = gross_amount * _PLATFORM_FEE_RATE (2%)
-            net_payout        = gross_amount - (rider_fare + platform_fee)
-
-    `rider_id` and `farmer_id` are populated from the trip and its linked
-    produce request, so role-based queries in `get_settlements_for_user()`
-    can filter directly on them without a join.
+    In the normal rider flow this is redundant — PATCH /trips/{id}/status
+    with {"status": "DELIVERED"} now auto-creates the settlement. This
+    endpoint remains useful for retries, backfills, or a scenario where
+    the trip was marked DELIVERED before auto-creation existed.
 
     Returns None if `trip_id` doesn't exist (main.py -> 404). Raises
     ValueError (main.py -> 400) for domain errors: trip isn't DELIVERED yet,
@@ -620,43 +753,30 @@ def create_settlement(
     pr = trip.produce_request
     weight_kg = (
         float(pr.weight_kg)
-        if pr and pr.weight_kg is not None
+        if pr is not None and pr.weight_kg is not None
         else 0.0
     )
-    crop_name = pr.crop_type if pr else None
-    farmer_id = pr.farmer_id if pr else None
-    rider_id = trip.rider_id
 
-    # ----- Rider fare breakdown --------------------------------------------
-    base_fare = 50.0
-    distance_fare = settlement_in.distance_km * 15.0
-    weight_surcharge = max(0.0, weight_kg - 50.0) * 2.0
-    rider_fare = base_fare + distance_fare + weight_surcharge
-
-    # ----- Farmer payout breakdown -----------------------------------------
-    # rate_per_kg comes from the caller (SettlementCreate). Defaults to a
-    # placeholder in the schema; callers with a real mandi rate should pass it.
-    gross_amount = weight_kg * settlement_in.rate_per_kg
-    platform_fee = gross_amount * _PLATFORM_FEE_RATE
-    net_payout = gross_amount - (rider_fare + platform_fee)
+    values = _compute_settlement_values(
+        weight_kg,
+        settlement_in.distance_km,
+        settlement_in.rate_per_kg,
+    )
 
     db_settlement = models.Settlement(
         trip_id=trip.id,
-        rider_id=rider_id,
-        farmer_id=farmer_id,
-        # Rider side
-        base_fare=base_fare,
-        distance_fare=distance_fare,
-        weight_surcharge=weight_surcharge,
-        total_payout=rider_fare,
-        # Farmer side
-        crop_name=crop_name,
+        rider_id=trip.rider_id,
+        farmer_id=pr.farmer_id if pr is not None else None,
+        crop_name=pr.crop_type if pr is not None else None,
         quantity_kg=weight_kg,
-        gross_amount=gross_amount,
-        rider_fare=rider_fare,
-        platform_fee=platform_fee,
-        net_payout=net_payout,
-        # Metadata
+        base_fare=values["base_fare"],
+        distance_fare=values["distance_fare"],
+        weight_surcharge=values["weight_surcharge"],
+        total_payout=values["rider_fare"],
+        gross_amount=values["gross_amount"],
+        rider_fare=values["rider_fare"],
+        platform_fee=values["platform_fee"],
+        net_payout=values["net_payout"],
         status="PENDING",
     )
 

@@ -787,9 +787,16 @@ def update_trip_status(
     403, which is why we fetch the trip first rather than letting
     crud.update_trip_status run unconditionally.
 
-    Transitioning to DELIVERED also marks the underlying produce request as
-    COMPLETED. Trips already in a terminal state (DELIVERED/CANCELLED)
-    reject further updates with a 400.
+    Transitioning to DELIVERED also:
+      - marks the underlying produce request as COMPLETED, and
+      - auto-creates a Settlement row for the trip (rider fare + farmer
+        payout, computed from the ProduceRequest's weight and, if supplied
+        in the body, `distance_km`).
+
+    All three changes commit in one transaction: if any part fails, the
+    trip is not left marked DELIVERED without its matching settlement.
+    Trips already in a terminal state (DELIVERED/CANCELLED) reject further
+    updates with a 400.
     """
     trip = crud.get_trip_by_id(db, trip_id)
     if not trip:
@@ -798,7 +805,10 @@ def update_trip_status(
         raise HTTPException(status_code=403, detail="You are not the rider assigned to this trip")
 
     try:
-        result = crud.update_trip_status(db, trip_id, body.status)
+        result = crud.update_trip_status(
+            db, trip_id, body.status,
+            distance_km=body.distance_km,
+        )
     except (SQLAlchemyError, ValueError) as e:
         raise HTTPException(status_code=400, detail=str(e))
     if not result:
@@ -863,9 +873,16 @@ def create_settlement(
     db: Session = Depends(get_db),
 ):
     """
-    Create the settlement row for a DELIVERED trip: rider fare + farmer
-    payout, in one record. 404 if the trip doesn't exist; 400 if it isn't
-    DELIVERED yet or already has a settlement.
+    Manual / admin creation of a settlement for a DELIVERED trip.
+
+    In the normal rider flow this endpoint is redundant — PATCH
+    /trips/{trip_id}/status with {"status": "DELIVERED"} auto-creates the
+    settlement in the same transaction. This endpoint remains useful for
+    retries, backfills, or scenarios where the trip was delivered before
+    auto-creation existed.
+
+    404 if the trip doesn't exist; 400 if it isn't DELIVERED yet or already
+    has a settlement.
     """
     try:
         result = crud.create_settlement(db, settlement_in)
