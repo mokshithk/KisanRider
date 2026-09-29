@@ -213,19 +213,62 @@ class CrateScanResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 class SettlementCreate(BaseModel):
+    """
+    Body for POST /settlements/. The caller (usually the rider completing a
+    delivery) supplies the distance covered; `rate_per_kg` is the mandi price
+    per kg for the crop, used to compute the farmer's gross sale proceeds.
+
+    `rate_per_kg` defaults to 20.0 as an MVP placeholder. When the app starts
+    wiring real mandi rates in (e.g. from the /mandi-rates/ endpoint), pass
+    the caller-supplied rate here instead of relying on the default.
+    """
     trip_id: UUID
     distance_km: float = Field(..., gt=0, description="Distance covered for this trip, in kilometers")
+    rate_per_kg: float = Field(
+        20.0, gt=0,
+        description="Mandi rate per kg for the crop, in ₹. Defaults to a placeholder.",
+    )
 
 
 class SettlementResponse(BaseModel):
+    """
+    Unified settlement row — carries both the rider's fare breakdown and the
+    farmer's payout breakdown, so one endpoint (GET /settlements/me) serves
+    both roles. Fields not relevant to the caller's role are still present
+    but represent the other party's figures.
+
+    RIDER view (populated on every row):
+        base_fare, distance_fare, weight_surcharge, total_payout
+
+    FARMER view (populated on rows created after the farmer columns were
+    added — older rows have None here):
+        crop_name, quantity_kg, gross_amount, rider_fare, platform_fee,
+        net_payout
+    """
+
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
     trip_id: UUID
+    rider_id: Optional[UUID] = None
+    farmer_id: Optional[UUID] = None
+
+    # Rider fare breakdown
     base_fare: float
     distance_fare: float
     weight_surcharge: float
     total_payout: float
+
+    # Farmer payout breakdown — None on rows created before the farmer
+    # columns existed.
+    crop_name: Optional[str] = None
+    quantity_kg: Optional[float] = None
+    gross_amount: Optional[float] = None
+    rider_fare: Optional[float] = None
+    platform_fee: Optional[float] = None
+    net_payout: Optional[float] = None
+
+    # Metadata
     status: Literal["PENDING", "PAID"]
     created_at: datetime
 

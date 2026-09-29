@@ -98,21 +98,52 @@ class CrateScan(Base):
 
 class Settlement(Base):
     """
-    The rider payout for one completed (DELIVERED) trip. One-to-one with
-    Trip — `trip_id` is unique, so a second settlement attempt on the same
-    trip is a DB-level conflict, not just an application-level check.
+    The financial record for one completed (DELIVERED) trip, one-to-one with
+    Trip. A single row carries both sides of the transaction so neither party
+    needs to join across tables to see their payout:
 
-    total_payout = base_fare + distance_fare + weight_surcharge
+      - Rider side:  base_fare + distance_fare + weight_surcharge = total_payout
+      - Farmer side: gross_amount (mandi sale) - rider_fare - platform_fee = net_payout
+
+    `rider_fare` and `total_payout` hold the same value by design —
+    `total_payout` is the rider's wallet column, `rider_fare` is the number
+    the farmer's net_payout subtracts. Storing both makes each party's view
+    self-contained.
+
+    `trip_id` is unique, so a second settlement attempt for the same trip is
+    a DB-level conflict, not just an application-level check.
+
+    Old rows (created before this table gained the farmer columns) will have
+    NULL for rider_id / farmer_id / crop_name / quantity_kg / gross_amount /
+    rider_fare / platform_fee / net_payout — the role-based query in crud.py
+    simply won't surface them to either party.
     """
 
     __tablename__ = "settlements"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     trip_id = Column(UUID(as_uuid=True), ForeignKey("trips.id", ondelete="CASCADE"), unique=True, nullable=False)
+
+    # Who gets paid. ON DELETE SET NULL preserves financial history if a
+    # user row is later removed (rather than cascading and losing the record).
+    rider_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    farmer_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+
+    # ----- Rider fare breakdown --------------------------------------------
     base_fare = Column(Float, nullable=False, default=50.0)
     distance_fare = Column(Float, nullable=False)
     weight_surcharge = Column(Float, nullable=False)
-    total_payout = Column(Float, nullable=False)
+    total_payout = Column(Float, nullable=False)  # rider's wallet amount
+
+    # ----- Farmer payout breakdown -----------------------------------------
+    crop_name = Column(String(50), nullable=True)
+    quantity_kg = Column(Float, nullable=True)
+    gross_amount = Column(Float, nullable=True)  # mandi sale proceeds (qty * rate)
+    rider_fare = Column(Float, nullable=True)  # == total_payout; kept for the farmer view
+    platform_fee = Column(Float, nullable=True)  # 2% of gross by default
+    net_payout = Column(Float, nullable=True)  # gross - (rider_fare + platform_fee)
+
+    # ----- Metadata --------------------------------------------------------
     status = Column(String(20), nullable=False, default="PENDING")
     created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
 

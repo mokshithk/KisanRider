@@ -5,6 +5,7 @@ import 'package:http/http.dart' as http;
 import 'package:provider/provider.dart';
 
 import '../providers/auth_provider.dart';
+import 'farmer_earnings_tab.dart';
 import 'farmer_home_tab.dart';
 import 'farmer_orders_tab.dart';
 
@@ -75,18 +76,59 @@ class FarmerDashboard extends StatefulWidget {
 }
 
 class _FarmerDashboardState extends State<FarmerDashboard> {
+  // Position within the IndexedStack. Maps 1:1 with the BottomNavigationBar
+  // items below — 0 = Home, 1 = My Orders, 2 = Earnings, 3 = Account.
+  // Book Transport is not a tab; it opens as a modal route (see
+  // _openBookTransport).
   int _currentIndex = 0;
 
   static const List<String> _titles = [
     'KisanRider',
-    'Book Transport',
     'My Orders',
+    'Earnings',
     'Account',
   ];
 
   void _goToTab(int index) {
     if (index == _currentIndex) return;
     setState(() => _currentIndex = index);
+  }
+
+  /// Called by FarmerHomeTab for its quick actions.
+  ///
+  /// The home tab still uses its original convention: 1 = "Book Transport",
+  /// 2 = "My Orders". Since Book Transport is no longer a bottom-nav tab,
+  /// we intercept that here and open it as a modal route, rather than
+  /// renumbering the tabs (which would require editing farmer_home_tab.dart).
+  void _handleHomeTabSwitch(int requestedIndex) {
+    switch (requestedIndex) {
+      case 1:
+        _openBookTransport();
+        break;
+      case 2:
+        // My Orders now lives at stack index 1 (was 2 in the old layout).
+        _goToTab(1);
+        break;
+    }
+  }
+
+  /// Pushes the Book Transport form as a full-screen page with its own
+  /// AppBar. Kept as a route rather than a bottom-nav tab so the nav bar
+  /// stays focused on persistent sections (Home / My Orders / Earnings /
+  /// Account).
+  void _openBookTransport() {
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => Scaffold(
+          appBar: AppBar(
+            title: const Text('Book Transport'),
+            backgroundColor: _kFarmerGreen,
+            foregroundColor: Colors.white,
+          ),
+          body: const FarmerBookTransportTab(),
+        ),
+      ),
+    );
   }
 
   @override
@@ -106,14 +148,15 @@ class _FarmerDashboardState extends State<FarmerDashboard> {
           ),
         ],
       ),
-      // IndexedStack keeps each tab's state alive across switches, so a
-      // half-filled Book Transport form survives a trip to Home and back.
+      // IndexedStack keeps every tab's state alive across switches, so a
+      // partially-loaded orders list or an in-progress fetch survives a
+      // trip to Earnings and back.
       body: IndexedStack(
         index: _currentIndex,
         children: [
-          FarmerHomeTab(onTabSwitch: _goToTab),
-          const FarmerBookTransportTab(),
-          FarmerOrdersTab(onBookTransport: () => _goToTab(1)),
+          FarmerHomeTab(onTabSwitch: _handleHomeTabSwitch),
+          FarmerOrdersTab(onBookTransport: _openBookTransport),
+          const FarmerEarningsTab(),
           const FarmerAccountTab(),
         ],
       ),
@@ -127,19 +170,23 @@ class _FarmerDashboardState extends State<FarmerDashboard> {
         backgroundColor: Colors.white,
         items: const [
           BottomNavigationBarItem(
-            icon: Icon(Icons.home),
+            icon: Icon(Icons.home_outlined),
+            activeIcon: Icon(Icons.home),
             label: 'Home',
           ),
           BottomNavigationBarItem(
-            icon: Icon(Icons.add_circle_outline),
-            label: 'Book Transport',
-          ),
-          BottomNavigationBarItem(
-            icon: Icon(Icons.local_shipping),
+            icon: Icon(Icons.inventory_2_outlined),
+            activeIcon: Icon(Icons.inventory_2),
             label: 'My Orders',
           ),
           BottomNavigationBarItem(
-            icon: Icon(Icons.person),
+            icon: Icon(Icons.account_balance_wallet_outlined),
+            activeIcon: Icon(Icons.account_balance_wallet),
+            label: 'Earnings',
+          ),
+          BottomNavigationBarItem(
+            icon: Icon(Icons.person_outline),
+            activeIcon: Icon(Icons.person),
             label: 'Account',
           ),
         ],
@@ -149,7 +196,11 @@ class _FarmerDashboardState extends State<FarmerDashboard> {
 }
 
 // ---------------------------------------------------------------------------
-// Tab 1 — Book Transport (district -> mandi form)
+// Tab 1 — Book Transport form
+//
+// Still lives in this file since it's reached as a route rather than a tab,
+// and nothing else references it. Move it into its own file if you want
+// this dashboard file to shrink further.
 // ---------------------------------------------------------------------------
 
 class FarmerBookTransportTab extends StatefulWidget {

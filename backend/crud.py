@@ -561,21 +561,41 @@ def create_crate_scan(
 # Settlement CRUD
 # ---------------------------------------------------------------------------
 
+# Default platform fee as a fraction of gross sale amount. Kept as a module
+# constant so it's the single place to change if the business rate moves.
+_PLATFORM_FEE_RATE = 0.02  # 2%
+
+
 def create_settlement(
     db: Session, settlement_in: schemas.SettlementCreate
 ) -> Optional[models.Settlement]:
     """
-    Create the payout settlement for a completed trip.
+    Create the settlement row for a completed trip. One row carries both
+    sides of the transaction:
 
-    total_payout = base_fare (Rs 50) + distance_fare (distance_km * Rs 15)
-                   + weight_surcharge (Rs 2 per kg over 50kg, 0 below that)
+        Rider side (what the rider earns):
+            base_fare         = ₹50 flat
+            distance_fare     = distance_km * ₹15
+            weight_surcharge  = ₹2 per kg over 50 kg (0 below that)
+            total_payout      = base_fare + distance_fare + weight_surcharge
+
+        Farmer side (what the farmer nets from the mandi sale):
+            gross_amount      = quantity_kg * rate_per_kg
+            rider_fare        = total_payout (the rider's cut; duplicated
+                                here so the farmer's row is self-contained)
+            platform_fee      = gross_amount * _PLATFORM_FEE_RATE (2%)
+            net_payout        = gross_amount - (rider_fare + platform_fee)
+
+    `rider_id` and `farmer_id` are populated from the trip and its linked
+    produce request, so role-based queries in `get_settlements_for_user()`
+    can filter directly on them without a join.
 
     Returns None if `trip_id` doesn't exist (main.py -> 404). Raises
     ValueError (main.py -> 400) for domain errors: trip isn't DELIVERED yet,
     or a settlement already exists for this trip — the latter is also
     enforced at the DB level via `trip_id`'s unique constraint, so this
     check is a friendlier error message, not the only thing standing
-    between two concurrent requests and a race (see note below).
+    between two concurrent requests and a race.
     """
     trip = (
         db.query(models.Trip)
@@ -597,23 +617,46 @@ def create_settlement(
     if existing:
         raise ValueError("A settlement already exists for this trip")
 
+    pr = trip.produce_request
     weight_kg = (
-        float(trip.produce_request.weight_kg)
-        if trip.produce_request and trip.produce_request.weight_kg is not None
+        float(pr.weight_kg)
+        if pr and pr.weight_kg is not None
         else 0.0
     )
+    crop_name = pr.crop_type if pr else None
+    farmer_id = pr.farmer_id if pr else None
+    rider_id = trip.rider_id
 
+    # ----- Rider fare breakdown --------------------------------------------
     base_fare = 50.0
     distance_fare = settlement_in.distance_km * 15.0
     weight_surcharge = max(0.0, weight_kg - 50.0) * 2.0
-    total_payout = base_fare + distance_fare + weight_surcharge
+    rider_fare = base_fare + distance_fare + weight_surcharge
+
+    # ----- Farmer payout breakdown -----------------------------------------
+    # rate_per_kg comes from the caller (SettlementCreate). Defaults to a
+    # placeholder in the schema; callers with a real mandi rate should pass it.
+    gross_amount = weight_kg * settlement_in.rate_per_kg
+    platform_fee = gross_amount * _PLATFORM_FEE_RATE
+    net_payout = gross_amount - (rider_fare + platform_fee)
 
     db_settlement = models.Settlement(
         trip_id=trip.id,
+        rider_id=rider_id,
+        farmer_id=farmer_id,
+        # Rider side
         base_fare=base_fare,
         distance_fare=distance_fare,
         weight_surcharge=weight_surcharge,
-        total_payout=total_payout,
+        total_payout=rider_fare,
+        # Farmer side
+        crop_name=crop_name,
+        quantity_kg=weight_kg,
+        gross_amount=gross_amount,
+        rider_fare=rider_fare,
+        platform_fee=platform_fee,
+        net_payout=net_payout,
+        # Metadata
         status="PENDING",
     )
 
@@ -631,6 +674,36 @@ def create_settlement(
         # duplicate payout.
         db.rollback()
         raise
+
+
+def get_settlements_for_user(
+    db: Session, user_id: UUID, role: str
+) -> List[models.Settlement]:
+    """
+    Role-based payout history. Both roles see their own settlements,
+    newest first:
+
+      - FARMER: rows where `farmer_id == user_id` (net sale proceeds to them)
+      - RIDER:  rows where `rider_id == user_id` (their fare earnings)
+
+    Returns an empty list for any other role, and for either role with no
+    matching rows. Callers in main.py translate the empty list into a 200
+    with `[]` automatically — no 404/500 for the "no settlements yet" case.
+    """
+    query = db.query(models.Settlement)
+
+    if role == "FARMER":
+        query = query.filter(models.Settlement.farmer_id == user_id)
+    elif role == "RIDER":
+        query = query.filter(models.Settlement.rider_id == user_id)
+    else:
+        # Unknown / unhandled role — return empty rather than 500. This
+        # shouldn't fire in practice since require_role gates the signup
+        # path, but failing closed here is safer than leaking another
+        # user's financial rows.
+        return []
+
+    return query.order_by(models.Settlement.created_at.desc()).all()
 
 
 # ---------------------------------------------------------------------------
@@ -671,15 +744,4 @@ def get_admin_stats(db: Session) -> schemas.AdminStatsResponse:
         total_trips=total_trips,
         completed_trips=completed_trips,
         total_payout_volume=float(total_payout_volume),
-    )
-
-
-def get_rider_settlements(db: Session, rider_id: UUID) -> List[models.Settlement]:
-    """All settlements for trips this rider has fulfilled, newest first."""
-    return (
-        db.query(models.Settlement)
-        .join(models.Trip, models.Settlement.trip_id == models.Trip.id)
-        .filter(models.Trip.rider_id == rider_id)
-        .order_by(models.Settlement.created_at.desc())
-        .all()
     )
