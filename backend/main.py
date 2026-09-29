@@ -863,8 +863,8 @@ def create_settlement(
     db: Session = Depends(get_db),
 ):
     """
-    Create the payout settlement for a DELIVERED trip: base fare + distance
-    fare + weight surcharge. 404 if the trip doesn't exist; 400 if it isn't
+    Create the settlement row for a DELIVERED trip: rider fare + farmer
+    payout, in one record. 404 if the trip doesn't exist; 400 if it isn't
     DELIVERED yet or already has a settlement.
     """
     try:
@@ -878,11 +878,22 @@ def create_settlement(
 
 @app.get("/settlements/me", response_model=List[schemas.SettlementResponse])
 def get_my_settlements(
-    current_user: models.User = Depends(auth.require_role("RIDER")),
+    current_user: models.User = Depends(auth.get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Payout history for the authenticated rider, newest first."""
-    return crud.get_rider_settlements(db, current_user.id)
+    """
+    Role-based payout history for the authenticated user.
+
+    - FARMER: settlements where `farmer_id == current_user.id`, i.e. their
+      net sale proceeds from delivered trips.
+    - RIDER:  settlements where `rider_id == current_user.id`, i.e. their
+      fare earnings from delivered trips.
+
+    Gated by `get_current_user` rather than `require_role("RIDER")` so both
+    roles can hit the same endpoint. Returns an empty list (HTTP 200) when
+    there are no settlements — the "no payouts yet" case is not an error.
+    """
+    return crud.get_settlements_for_user(db, current_user.id, current_user.role)
 
 
 # ---------------------------------------------------------------------------
