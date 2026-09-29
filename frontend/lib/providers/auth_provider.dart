@@ -34,7 +34,7 @@ class AuthProvider extends ChangeNotifier {
   /// session on app startup. Useful for showing a splash/loading screen.
   bool get isInitializing => _isInitializing;
 
-  /// True while a `devLogin` call is in flight.
+  /// True while a login request is in flight (either [login] or [devLogin]).
   bool get isLoggingIn => _isLoggingIn;
 
   /// The error message from the most recent failed login attempt, if any.
@@ -69,14 +69,86 @@ class AuthProvider extends ChangeNotifier {
     }
   }
 
+  /// Standard email + password login against `POST /auth/login`.
+  ///
+  /// On success, persists the JWT, role, and user id to secure storage and
+  /// flips in-memory state to logged-in. The caller (or the root widget
+  /// observing [notifyListeners]) can then route based on [role].
+  ///
+  /// Returns `true` on success. On failure returns `false` and sets
+  /// [lastError] to the server's `detail` message — most commonly
+  /// "Invalid email or password" — which the caller should surface as-is.
+  Future<bool> login(String email, String password) async {
+    _isLoggingIn = true;
+    _lastError = null;
+    notifyListeners();
+
+    try {
+      final response = await ApiService.dio.post(
+        '/auth/login',
+        data: {
+          // Normalize email client-side too — the backend does it as well,
+          // but this keeps the request body identical to what /auth/signup
+          // sent at registration, which helps if you ever add request
+          // logging.
+          'email': email.trim().toLowerCase(),
+          'password': password,
+        },
+      );
+
+      if (response.statusCode == 200 && response.data != null) {
+        final data = response.data as Map<String, dynamic>;
+        final token = data['access_token'] as String?;
+        final user = data['user'] as Map<String, dynamic>?;
+        final userRole = (user?['role'] ?? '').toString();
+        final userId = (user?['id'] ?? '').toString();
+
+        if (token == null ||
+            token.isEmpty ||
+            userRole.isEmpty ||
+            userId.isEmpty) {
+          _lastError = 'Server returned an incomplete session.';
+          _isLoggingIn = false;
+          notifyListeners();
+          return false;
+        }
+
+        await _secureStorage.write(key: _tokenKey, value: token);
+        await _secureStorage.write(key: _roleKey, value: userRole);
+        await _secureStorage.write(key: _userIdKey, value: userId);
+
+        _isLoggedIn = true;
+        _role = userRole;
+        _userId = userId;
+        _token = token;
+        _isLoggingIn = false;
+        notifyListeners();
+        return true;
+      } else {
+        _lastError = 'Unexpected response (status ${response.statusCode}).';
+        _isLoggingIn = false;
+        notifyListeners();
+        return false;
+      }
+    } on DioException catch (e) {
+      _lastError = _messageFromDioException(e);
+      _isLoggingIn = false;
+      notifyListeners();
+      return false;
+    } catch (e) {
+      _lastError = 'Unexpected error: $e';
+      _isLoggingIn = false;
+      notifyListeners();
+      return false;
+    }
+  }
+
   /// Logs in using the backend's dev-token flow:
   /// `POST /auth/dev-token?user_id=<uuid>`.
   ///
-  /// On success, persists the token, role, and user id to secure storage,
-  /// updates in-memory state, and notifies listeners.
-  ///
-  /// Returns `true` on success, `false` on failure (check [lastError] for
-  /// details).
+  /// Retained for local development; not reachable in production because
+  /// the backend 404s that route when ENVIRONMENT=production. The current
+  /// login UI doesn't expose it — call [login] instead.
   Future<bool> devLogin(String uuid, String selectedRole) async {
     _isLoggingIn = true;
     _lastError = null;
@@ -124,6 +196,42 @@ class AuthProvider extends ChangeNotifier {
     } catch (e) {
       _lastError = 'Unexpected error: $e';
       _isLoggingIn = false;
+      notifyListeners();
+      return false;
+    }
+  }
+
+  /// Persists a session established by the email-OTP signup flow.
+  ///
+  /// The signup screen has already hit `/auth/verify-otp` and has the
+  /// `access_token`, `role`, and user id in hand — this method just
+  /// centralizes the storage writes and in-memory state update so the rest
+  /// of the app sees a "just logged in" transition, exactly like
+  /// [login] does on success.
+  ///
+  /// Returns `true` on success, `false` if secure storage rejected the
+  /// write (in which case [lastError] explains why and the caller should
+  /// NOT navigate).
+  Future<bool> completeSignup({
+    required String token,
+    required String role,
+    required String userId,
+  }) async {
+    _lastError = null;
+
+    try {
+      await _secureStorage.write(key: _tokenKey, value: token);
+      await _secureStorage.write(key: _roleKey, value: role);
+      await _secureStorage.write(key: _userIdKey, value: userId);
+
+      _isLoggedIn = true;
+      _role = role;
+      _userId = userId;
+      _token = token;
+      notifyListeners();
+      return true;
+    } catch (e) {
+      _lastError = 'Could not save session: $e';
       notifyListeners();
       return false;
     }

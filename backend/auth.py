@@ -1,180 +1,183 @@
 """
-Supabase JWT authentication for KisanRider.
+Authentication primitives for KisanRider.
 
-Verifies the JWT that Supabase Auth issues to the frontend (sent by the
-client as `Authorization: Bearer <token>`) and resolves it to our own
-`users` row, so endpoints can trust `current_user.id` / `current_user.role`
-instead of accepting a farmer_id/rider_id straight from the request.
+Provides:
+  - password hashing / verification (bcrypt via passlib)
+  - JWT access-token creation
+  - FastAPI dependencies: get_current_user, require_role(...)
+  - DEV_MODE gate + create_dev_token for local Swagger testing
 
-IMPORTANT — which signing mode is your Supabase project on?
-Supabase JWTs are verified one of two ways, and it depends on a setting in
-your project (Project Settings -> Data API -> JWT Settings):
-
-1. **Legacy HS256 shared secret** — every project created before Supabase's
-   2024/2025 migration to asymmetric keys defaults to this. You verify with
-   a single symmetric secret (`SUPABASE_JWT_SECRET`). This is what's
-   implemented below.
-2. **Asymmetric signing keys (ES256/RS256)** — newer projects (and any
-   project you've rotated onto the new key system) sign with a private key
-   and publish the public half at
-   `{SUPABASE_URL}/auth/v1/.well-known/jwks.json`. A shared secret can't
-   verify these tokens at all — `jwt.decode()` will fail with a signature
-   error that looks identical to "invalid token" from the outside.
-
-   If that's your project, swap the verification block for a JWKS-based
-   check instead (fetch + cache the JWKS, pick the key matching the
-   token's `kid` header, verify with `jose.jwk.construct(...)`).
-
-Check your project's JWT Settings before deploying this to confirm which
-of the two you're actually on.
-
-Env vars required:
-- SUPABASE_JWT_SECRET: Project Settings -> Data API -> JWT Settings -> JWT Secret
-  (only applies to mode 1 above)
+Environment variables (loaded by main.py's python-dotenv bootstrap):
+  - SECRET_KEY             signing key for JWTs; set a real one in prod
+  - JWT_ALGORITHM          default "HS256"
+  - ACCESS_TOKEN_MINUTES   default 1440 (24h)
+  - ENVIRONMENT            "production" disables the dev-token route
 """
 
 import os
-from datetime import datetime, timedelta
-from typing import Optional
+from datetime import datetime, timedelta, timezone
+from typing import Callable, Optional
 from uuid import UUID
 
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError, jwt
+from passlib.context import CryptContext
 from sqlalchemy.orm import Session
 
 import crud
 import models
 from database import get_db
 
-SUPABASE_JWT_SECRET = os.environ["SUPABASE_JWT_SECRET"]
-JWT_ALGORITHM = "HS256"
-JWT_AUDIENCE = "authenticated"  # Supabase's standard audience claim for a logged-in user
 
-# Gates create_dev_token()/the /auth/dev-token endpoint. This mints a valid,
-# signed access token for *any* user id with no password check at all — it
-# is a deliberate full auth bypass, scoped to local development only. It
-# must never be reachable with ENVIRONMENT=production; see create_dev_token
-# below for why disabling it isn't optional.
-DEV_MODE = os.environ.get("ENVIRONMENT", "development").lower() != "production"
+# ---------------------------------------------------------------------------
+# Config
+# ---------------------------------------------------------------------------
 
-# HTTPBearer, not OAuth2PasswordBearer: tokens are issued by Supabase Auth
-# directly (the client talks to Supabase, not to this API, to log in), so
-# there's no local /token endpoint for OAuth2PasswordBearer's password-grant
-# flow to point at. HTTPBearer just expects "Authorization: Bearer <token>".
-oauth2_scheme = HTTPBearer(auto_error=True)
+SECRET_KEY: str = os.environ.get("SECRET_KEY", "dev-secret-change-me-in-production")
+JWT_ALGORITHM: str = os.environ.get("JWT_ALGORITHM", "HS256")
+ACCESS_TOKEN_EXPIRE_MINUTES: int = int(
+    os.environ.get("ACCESS_TOKEN_MINUTES", str(60 * 24))
+)
+
+ENVIRONMENT: str = (os.environ.get("ENVIRONMENT") or "development").strip().lower()
+# Any environment other than "production" is treated as dev. The dev-token
+# route in main.py 404s when DEV_MODE is False — i.e. once you deploy with
+# ENVIRONMENT=production, that route simply does not exist.
+DEV_MODE: bool = ENVIRONMENT != "production"
 
 
-def _unauthorized(detail: str = "Could not validate credentials") -> HTTPException:
-    return HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail=detail,
-        headers={"WWW-Authenticate": "Bearer"},
-    )
+# ---------------------------------------------------------------------------
+# Password hashing
+# ---------------------------------------------------------------------------
+
+# bcrypt via passlib. On Python 3.13 + passlib 1.7.4 you may see a single
+# cosmetic warning on first import:
+#   (trapped) error reading bcrypt version
+# It's passlib looking for `bcrypt.__about__.__version__`, which bcrypt 4.1+
+# removed. Verification and hashing still work correctly; the warning is safe
+# to ignore. If it bothers you, pin `bcrypt==4.0.1` in requirements.txt.
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+
+def hash_password(password: str) -> str:
+    """bcrypt-hash a plaintext password. Returns the encoded hash string."""
+    return pwd_context.hash(password)
+
+
+def verify_password(plain: str, hashed: str) -> bool:
+    """
+    Constant-time bcrypt compare. Returns False on any malformed-hash error
+    (a corrupt column value, a null, etc.) rather than letting passlib raise —
+    the caller just sees "no match", which is what it should do.
+    """
+    try:
+        return pwd_context.verify(plain, hashed)
+    except Exception:
+        return False
+
+
+# ---------------------------------------------------------------------------
+# JWT
+# ---------------------------------------------------------------------------
+
+def _create_token(
+    user_id,
+    expires_delta: timedelta,
+    extra: Optional[dict] = None,
+) -> str:
+    now = datetime.now(timezone.utc)
+    payload = {
+        # `sub` must be a string per RFC 7519; UUIDs are not JSON-native.
+        "sub": str(user_id),
+        "iat": int(now.timestamp()),
+        "exp": int((now + expires_delta).timestamp()),
+    }
+    if extra:
+        payload.update(extra)
+    return jwt.encode(payload, SECRET_KEY, algorithm=JWT_ALGORITHM)
+
+
+def create_access_token(user_id) -> str:
+    """Issue a normal login token. Lifetime = ACCESS_TOKEN_EXPIRE_MINUTES."""
+    return _create_token(user_id, timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
+
+
+def create_dev_token(user_id) -> str:
+    """
+    Issue a short-lived token for local Swagger testing only. Marked with
+    `"dev": true` so it's easy to spot in a decoded payload, and expires
+    much sooner than a real login token.
+    """
+    return _create_token(user_id, timedelta(minutes=30), extra={"dev": True})
+
+
+# ---------------------------------------------------------------------------
+# FastAPI dependencies
+# ---------------------------------------------------------------------------
+
+# auto_error=False so a missing Authorization header produces our own 401
+# with a clear detail message, not HTTPBearer's generic one.
+_bearer = HTTPBearer(auto_error=False)
 
 
 def get_current_user(
-    credentials: HTTPAuthorizationCredentials = Depends(oauth2_scheme),
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(_bearer),
     db: Session = Depends(get_db),
 ) -> models.User:
     """
-    Decode + verify the Supabase JWT, then load the matching row from our
-    own `users` table via its `sub` claim (Supabase's auth user id, which
-    KisanRider also uses as `users.id`).
+    Decode the Bearer JWT, load the referenced user, return the ORM row.
 
-    Deliberately returns the DB row, not the raw token claims: our app-level
-    role (FARMER/RIDER) lives in `users.role`, which is authoritative — it's
-    what registration set and what every existing endpoint already checks.
-    Supabase's own `role` claim in the token is a different, auth-level
-    concept (almost always just "authenticated") and isn't the same thing;
-    trusting a role claim from the token instead of the DB would let a stale
-    or forged claim bypass an app-level permission check.
+    Returns 401 in every failure mode — missing header, malformed token,
+    expired token, `sub` missing, `sub` not a UUID, or the user id no longer
+    exists in the DB. The client can't distinguish these on purpose; the
+    correct reaction to all of them is "log in again".
     """
+    unauthorized = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Not authenticated",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+
+    if credentials is None or not credentials.credentials:
+        raise unauthorized
+
     token = credentials.credentials
-
     try:
-        payload = jwt.decode(
-            token,
-            SUPABASE_JWT_SECRET,
-            algorithms=[JWT_ALGORITHM],
-            audience=JWT_AUDIENCE,
-        )
-    except JWTError:
-        raise _unauthorized()
-
-    sub: Optional[str] = payload.get("sub")
-    if not sub:
-        raise _unauthorized("Token missing 'sub' claim")
-
-    try:
-        user_id = UUID(sub)
-    except ValueError:
-        raise _unauthorized("Token 'sub' claim is not a valid UUID")
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[JWT_ALGORITHM])
+        sub = payload.get("sub")
+        if not sub:
+            raise unauthorized
+        user_id = UUID(str(sub))
+    except (JWTError, ValueError):
+        raise unauthorized
 
     user = crud.get_user_by_id(db, user_id)
-    if not user:
-        raise _unauthorized("No user found for this token")
-
+    if user is None:
+        raise unauthorized
     return user
 
 
-def require_role(*allowed_roles: str):
+def require_role(role: str) -> Callable[..., models.User]:
     """
-    Dependency factory for endpoints restricted to specific app roles:
+    Dependency factory. Usage:
 
-        @app.post("/produce-requests/")
-        def create(
-            ...,
-            current_user: models.User = Depends(auth.require_role("FARMER")),
-        ):
+        @app.get("/x")
+        def endpoint(user: models.User = Depends(auth.require_role("FARMER"))):
             ...
 
-    A valid-but-wrong-role token gets 403 (the identity checks out, the
-    permission doesn't), not 401 (which means the identity itself is
-    unverified/missing) — keeping that distinction is what lets a frontend
-    tell "log in again" apart from "you're logged in as the wrong kind of
-    user for this action".
+    Returns a dependency that first resolves `get_current_user` (so an
+    unauthenticated request 401s before the role is even examined), then
+    checks `user.role == role`. A mismatch raises 403.
     """
-
-    def _dependency(current_user: models.User = Depends(get_current_user)) -> models.User:
-        if current_user.role not in allowed_roles:
+    def _dependency(
+        current_user: models.User = Depends(get_current_user),
+    ) -> models.User:
+        if current_user.role != role:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"This action requires role: {', '.join(allowed_roles)}",
+                detail=f"This endpoint requires role: {role}",
             )
         return current_user
 
     return _dependency
-
-
-def create_dev_token(user_id: UUID, expires_minutes: int = 60) -> str:
-    """
-    Mint a JWT for `user_id` signed with the same secret get_current_user
-    verifies against, so it satisfies auth.get_current_user exactly like a
-    real Supabase-issued token would — no Supabase call, no password.
-
-    DO NOT expose whatever calls this outside local development. It's a
-    complete authentication bypass: anyone who can hit the endpoint that
-    calls this can become any user in the database just by knowing (or
-    guessing/enumerating) their UUID. That's why this function refuses to
-    run at all unless DEV_MODE is True — the caller (the /auth/dev-token
-    endpoint in main.py) checks DEV_MODE too, but the check is duplicated
-    here on purpose, so this function is unsafe to call by construction,
-    not just unsafe because of how one call site happens to guard it.
-    """
-    if not DEV_MODE:
-        raise RuntimeError(
-            "create_dev_token() is disabled: ENVIRONMENT=production. "
-            "This function issues unauthenticated access tokens and must "
-            "never run outside local development."
-        )
-
-    now = datetime.utcnow()
-    payload = {
-        "sub": str(user_id),
-        "aud": JWT_AUDIENCE,
-        "role": "authenticated",
-        "iat": now,
-        "exp": now + timedelta(minutes=expires_minutes),
-    }
-    return jwt.encode(payload, SUPABASE_JWT_SECRET, algorithm=JWT_ALGORITHM)
