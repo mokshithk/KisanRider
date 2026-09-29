@@ -1,18 +1,14 @@
 """
 KisanRider FastAPI application.
-
-Merge the endpoints below into your existing main.py (keep your current
-/db-check endpoint as-is — it's reproduced here only for completeness).
 """
 
 # --- Env / dotenv bootstrap (must run before anything reads os.environ) ---
 from dotenv import load_dotenv
 load_dotenv()
 
-import asyncio
 import math
 import os
-import random
+import random  # noqa: F401  (kept for parity with downstream modules)
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -22,23 +18,40 @@ from uuid import UUID
 
 import httpx
 from fastapi import Depends, FastAPI, File, HTTPException, Query, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 import auth
+import config
 import crud
 import models
+import otp_service
 import schemas
 from database import engine, get_db
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
 
-# Temporary startup diagnostic — remove once /mandi-rates/ is confirmed live.
+
+# Temporary startup diagnostics — remove once you've confirmed both are set.
 print(f"[startup] DATA_GOV_API_KEY present: {bool(os.environ.get('DATA_GOV_API_KEY'))}")
+print(f"[startup] ENABLE_REAL_EMAIL_OTP = {config.ENABLE_REAL_EMAIL_OTP}")
 
-app = FastAPI(title="KisanRider API")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """
+    Create any tables defined in models.py that don't exist yet in Postgres
+    (e.g. crate_scans) on startup.
+
+    create_all() only issues CREATE TABLE IF NOT EXISTS for tables it
+    doesn't find — it never alters an existing table.
+    """
+    models.Base.metadata.create_all(bind=engine)
+    yield
+
+
+app = FastAPI(title="KisanRider API", lifespan=lifespan)
 
 # Allows Flutter Web on any local port to interact with FastAPI
 app.add_middleware(
@@ -49,38 +62,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    """
-    Create any tables defined in models.py that don't exist yet in Postgres
-    (e.g. crate_scans) on startup.
-
-    create_all() only issues CREATE TABLE IF NOT EXISTS for tables it
-    doesn't find — it never touches a table that already exists, so it
-    won't add/drop/alter a column on your existing users/produce_requests/
-    trips tables no matter how their models.py definition has drifted from
-    the live schema. That's exactly why the CrateScan model added a couple
-    of rounds ago never actually created crate_scans in Postgres: nothing
-    had called create_all() since that model was added, so every insert
-    into it 500'd with "relation crate_scans does not exist" — the bare,
-    non-JSON error body you're seeing is Postgres' error escaping past
-    every try/except in crud.py/main.py, none of which catch a missing-
-    table error specifically.
-
-    For anything beyond "table doesn't exist yet" — an actual schema
-    change to a column that already exists — create_all() does nothing;
-    you'd need a real migration tool (Alembic) or a manual SQL script.
-    """
-    models.Base.metadata.create_all(bind=engine)
-    yield
-
-
-app = FastAPI(title="KisanRider API", lifespan=lifespan)
-
-# Local static storage for delivery photos (see POST /uploads/delivery-photo
-# below). Swap this whole block for real Supabase Storage in production —
-# local disk storage doesn't survive a redeploy on most hosts and doesn't
-# scale past one server instance.
+# Local static storage for delivery photos.
 UPLOAD_DIR = Path("static/uploads")
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 app.mount("/static", StaticFiles(directory="static"), name="static")
@@ -94,7 +76,7 @@ MAX_UPLOAD_BYTES = 10 * 1024 * 1024  # 10 MB
 
 
 # ---------------------------------------------------------------------------
-# Health / diagnostics (existing)
+# Health / diagnostics
 # ---------------------------------------------------------------------------
 
 @app.get("/db-check")
@@ -103,19 +85,16 @@ def db_check(db: Session = Depends(get_db)):
         result = db.execute(text("SELECT PostGIS_Version();")).fetchone()
         return {"database": "Connected", "postgis_version": result[0]}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Database connection failed: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Database connection failed: {str(e)}",
+        )
 
 
 # ---------------------------------------------------------------------------
 # Mandi search (OpenStreetMap Overpass API — no API key required)
 # ---------------------------------------------------------------------------
 
-# District centers used as the search anchor. Overpass's bbox filter needs
-# coordinates, not a place name, so we anchor on the district HQ. 30km
-# half-width covers most districts; the four largest (Belagavi, Uttara
-# Kannada, Kalaburagi, Ballari) are big enough that a mandi near their
-# outer edge may fall outside — bump `radius_km` in search_mandis() or add
-# secondary centers for those if that becomes a problem.
 _DISTRICT_CENTERS: dict[str, tuple[float, float]] = {
     "Bagalkot":           (16.1817, 75.6958),
     "Ballari":            (15.1394, 76.9214),
@@ -150,9 +129,6 @@ _DISTRICT_CENTERS: dict[str, tuple[float, float]] = {
     "Vijayanagara":       (15.2689, 76.3909),
 }
 
-# Multiple Overpass mirrors. The public main instance is frequently
-# overloaded and returns 504s; falling through to a second mirror usually
-# succeeds. Order matters — cheapest/most-reliable first.
 _OVERPASS_MIRRORS = [
     "https://overpass-api.de/api/interpreter",
     "https://overpass.kumi.systems/api/interpreter",
@@ -160,32 +136,19 @@ _OVERPASS_MIRRORS = [
 ]
 _OVERPASS_USER_AGENT = "KisanRiderApp/1.0"
 
-# Simple in-process cache: district (lowercased) -> (timestamp, mandis).
-# Mandi locations don't change often; a 1-hour TTL keeps repeated dropdown
-# selections from hammering Overpass. Multi-worker deploy: each worker gets
-# its own cache — fine for MVP, swap for Redis if you scale out.
 _MANDI_CACHE: dict[str, tuple[float, list[dict]]] = {}
 _MANDI_CACHE_TTL = 3600  # seconds
 
-# Terms that show up in OSM's Kannada/Hindi naming and can slip past even a
-# word-boundary regex on some spellings. Belt-and-braces on top of the
-# `\b(APMC|Mandi)\b` filter: drop anything whose name or address still
-# contains one of these.
 _MANDI_BLACKLIST = [
     "mandir", "mandira", "temple", "vidya", "kalamandir",
     "showroom", "school", "college", "church", "hospital",
 ]
 
 
-def _bbox_around(lat: float, lng: float, radius_km: float) -> tuple[float, float, float, float]:
-    """
-    Return (south, west, north, east) for a square bounding box with the
-    given half-width in kilometers, centered on (lat, lng).
-
-    Overpass's bbox filter is dramatically cheaper than `around:` — the
-    latter has to compute great-circle distance for every candidate element
-    on the planet, while the former is a spatial-index range scan.
-    """
+def _bbox_around(
+    lat: float, lng: float, radius_km: float
+) -> tuple[float, float, float, float]:
+    """Return (south, west, north, east) for a square bbox."""
     lat_delta = radius_km / 111.0
     lng_delta = radius_km / (111.0 * math.cos(math.radians(lat)))
     return (lat - lat_delta, lng - lng_delta, lat + lat_delta, lng + lng_delta)
@@ -193,44 +156,17 @@ def _bbox_around(lat: float, lng: float, radius_km: float) -> tuple[float, float
 
 @app.get("/mandis/search")
 async def search_mandis(
-    district: str = Query(..., min_length=1, max_length=80,
-                          description="District name, e.g. 'Kolar'"),
+    district: str = Query(..., min_length=1, max_length=80),
 ):
     """
     Find APMC mandis / market yards in a district via OpenStreetMap's
     Overpass API (free, no API key).
-
-    Why Overpass, not Nominatim: Nominatim is a *forward geocoder*
-    (text -> one best-matching place) and does not index "APMC yard" as a
-    category — free-form queries like "APMC market yard Kolar Karnataka"
-    legitimately return zero hits even when the yard exists in OSM. Overpass
-    is a *POI query engine*: it returns every element matching an OSM tag
-    inside a geographic region, which is exactly what "list mandis in this
-    district" needs.
-
-    Noise filtering (two layers, both required):
-      1. The Overpass `name` regex uses word boundaries — `\\b(APMC|Mandi)\\b`
-         — so "Mandikallu" (village) and "Ranga Mandira" (theatre) don't
-         substring-match "Mandi".
-      2. Any remaining result whose name or address contains a term from
-         _MANDI_BLACKLIST (temple/mandir/school/showroom/hospital...) is
-         dropped before returning.
-
-    Response shape is unchanged, so the Flutter client needs no update:
-        {
-          "district": "Kolar",
-          "mandis": [ { "name", "address", "lat", "lng" }, ... ]
-        }
     """
     district_clean = district.strip()
     center = _DISTRICT_CENTERS.get(district_clean)
     if center is None:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Unknown district: {district_clean}",
-        )
+        raise HTTPException(status_code=400, detail=f"Unknown district: {district_clean}")
 
-    # Cache hit?
     cache_key = district_clean.lower()
     now = time.time()
     cached = _MANDI_CACHE.get(cache_key)
@@ -241,9 +177,6 @@ async def search_mandis(
     south, west, north, east = _bbox_around(lat, lng, radius_km=30.0)
     bbox = f"{south},{west},{north},{east}"
 
-    # `nwr` = node+way+relation shorthand. Word-boundary regex so "Mandi"
-    # only matches as a whole word. `out center tags;` puts a usable
-    # centroid on ways and relations.
     overpass_query = f"""
     [out:json][timeout:60];
     (
@@ -283,8 +216,6 @@ async def search_mandis(
         if not name:
             continue
 
-        # Overpass returns lat/lon directly on nodes; ways and relations
-        # have their centroid under `center` because of `out center`.
         if el.get("type") == "node":
             el_lat = el.get("lat")
             el_lng = el.get("lon")
@@ -304,8 +235,6 @@ async def search_mandis(
         ]
         address = ", ".join(p for p in addr_parts if p) or name
 
-        # Second-layer noise filter. Covers both the name and address, so a
-        # stray "Sri Vidya Mandir APMC Road" still gets dropped.
         haystack = f"{name} {address}".lower()
         if any(term in haystack for term in _MANDI_BLACKLIST):
             continue
@@ -317,8 +246,6 @@ async def search_mandis(
             "lng": float(el_lng),
         })
 
-    # Dedupe on (name, rounded coords) — same yard often appears as a node
-    # plus the way/relation enclosing it.
     seen = set()
     unique: list[dict] = []
     for m in mandis:
@@ -337,17 +264,10 @@ async def search_mandis(
 # Mandi rates (Data.gov.in Agmarknet — optional API key, mock fallback)
 # ---------------------------------------------------------------------------
 
-# Data.gov.in resource id for "Variety-wise Daily Market Prices Data of
-# Commodity" (the Agmarknet feed). The key is free — register at
-# https://data.gov.in and paste it into the DATA_GOV_API_KEY env var.
-# When the key is missing or the call fails, we fall back to local mock
-# data so the app never shows a broken screen.
 _DATA_GOV_BASE_URL = (
     "https://api.data.gov.in/resource/9ef84268-d588-465a-a308-a864a43d0070"
 )
 
-# Districts the app offers rates for. Exposed in the response so the
-# frontend dropdown can render itself from server truth.
 _MANDI_RATE_DISTRICTS = [
     "Kolar",
     "Bengaluru Urban",
@@ -356,9 +276,6 @@ _MANDI_RATE_DISTRICTS = [
     "Davanagere",
 ]
 
-# Local fallback rates per district. Prices are typical Karnataka APMC
-# modal prices in ₹ per quintal (1 qtl = 100 kg). Used only when the live
-# call can't be made — values are reasonable, not authoritative.
 _MOCK_MANDI_RATES: dict[str, list[dict]] = {
     "Kolar": [
         {"crop": "Tomato",  "modal_price": 2200, "mandi": "Kolar APMC"},
@@ -394,11 +311,6 @@ _MOCK_MANDI_RATES: dict[str, list[dict]] = {
 
 
 def _mock_rates_for(district: str) -> list[dict]:
-    """
-    Return local mock rates for `district`, or the Kolar set as a generic
-    fallback for districts we don't have curated data for. Keeps the
-    response shape consistent no matter what.
-    """
     chosen = _MOCK_MANDI_RATES.get(district) or _MOCK_MANDI_RATES["Kolar"]
     return [
         {
@@ -412,34 +324,13 @@ def _mock_rates_for(district: str) -> list[dict]:
 
 @app.get("/mandi-rates/")
 async def get_mandi_rates(
-    district: Optional[str] = Query(
-        None, max_length=80,
-        description="District name, e.g. 'Kolar'. Defaults to 'Kolar'.",
-    ),
+    district: Optional[str] = Query(None, max_length=80),
 ):
     """
     Today's modal mandi prices for a Karnataka district.
 
     Tries Data.gov.in's Agmarknet resource first when DATA_GOV_API_KEY is
-    set; falls back to a small local mock dataset on any failure (missing
-    key, timeout, HTTP error, unexpected response shape) so the client
-    never has to handle an empty screen.
-
-    Response shape:
-        {
-          "status": "success",
-          "source": "live" | "mock",
-          "selected_district": "Kolar",
-          "available_districts": ["Kolar", "Bengaluru Urban", ...],
-          "rates": [
-            {"crop": "Tomato", "modal_price": "₹2200 / Qtl", "mandi": "Kolar APMC"},
-            ...
-          ]
-        }
-
-    `status` is always "success" even on the fallback path — the point of
-    the endpoint is that it never returns a broken screen. `source` tells
-    the client (and you, while debugging) which path actually executed.
+    set; falls back to a small local mock dataset on any failure.
     """
     selected_district = (district or "Kolar").strip()
 
@@ -449,7 +340,6 @@ async def get_mandi_rates(
     if api_key:
         try:
             async with httpx.AsyncClient(timeout=25.0) as client:
-                # --- Attempt 1: with the filters we originally wrote ---
                 resp = await client.get(
                     _DATA_GOV_BASE_URL,
                     params={
@@ -464,16 +354,18 @@ async def get_mandi_rates(
                 print(f"[mandi-rates] filtered status={resp.status_code}")
                 resp.raise_for_status()
                 payload = resp.json()
-                print(f"[mandi-rates] filtered total={payload.get('total')} "
-                      f"count={payload.get('count')} "
-                      f"records={len(payload.get('records', []))}")
+                print(
+                    f"[mandi-rates] filtered total={payload.get('total')} "
+                    f"count={payload.get('count')} "
+                    f"records={len(payload.get('records', []))}"
+                )
 
-                records = payload.get("records") if isinstance(payload, dict) else None
+                records = (
+                    payload.get("records")
+                    if isinstance(payload, dict)
+                    else None
+                )
 
-                # --- Attempt 2: no filters at all, filter client-side ---
-                # Data.gov.in's filter parameter names vary by resource; if
-                # the filtered call returns zero rows, this fallback hits
-                # the bare resource and matches state/district ourselves.
                 if not records:
                     print("[mandi-rates] filtered returned nothing, retrying unfiltered...")
                     resp2 = await client.get(
@@ -495,8 +387,6 @@ async def get_mandi_rates(
                     )
                     print(f"[mandi-rates] unfiltered total records={len(all_records)}")
 
-                    # Filter locally by state + district, tolerating both
-                    # lowercase and Capitalized field names.
                     def _field(rec, *names):
                         for n in names:
                             v = rec.get(n)
@@ -507,7 +397,8 @@ async def get_mandi_rates(
                     records = [
                         r for r in all_records
                         if _field(r, "state", "State") == "karnataka"
-                        and _field(r, "district", "District") == selected_district.lower()
+                        and _field(r, "district", "District")
+                        == selected_district.lower()
                     ]
                     print(f"[mandi-rates] client-side filtered to {len(records)} rows")
 
@@ -560,6 +451,133 @@ async def get_mandi_rates(
 
 
 # ---------------------------------------------------------------------------
+# Signup + OTP (real email when ENABLE_REAL_EMAIL_OTP, dev bypass otherwise)
+# ---------------------------------------------------------------------------
+
+@app.post("/auth/signup")
+def signup(payload: schemas.UserSignUp, db: Session = Depends(get_db)):
+    """
+    Step 1 of the signup flow: validate the email, generate an OTP, and
+    (when real OTP is enabled) email it.
+
+    Returns immediately with "OTP sent to your email" on the happy path.
+    When ENABLE_REAL_EMAIL_OTP is False, returns the bypass message and
+    does NOT attempt delivery.
+
+    The email is only checked for uniqueness here — the user row is not
+    created until /auth/verify-otp succeeds.
+    """
+    if crud.get_user_by_email(db, payload.email):
+        raise HTTPException(status_code=400, detail="Email already registered")
+
+    result = otp_service.issue_and_send_email_otp(payload.email)
+
+    if result["bypass"]:
+        return {"message": "Bypass active. Enter any 4 digits to continue"}
+
+    if not result["sent"]:
+        raise HTTPException(
+            status_code=502,
+            detail="Could not send OTP email. Please try again later.",
+        )
+
+    return {"message": "OTP sent to your email"}
+
+
+@app.post("/auth/verify-otp", response_model=schemas.Token)
+def verify_signup_otp(
+    payload: schemas.OTPVerifyRequest,
+    db: Session = Depends(get_db),
+):
+    """
+    Step 2 of the signup flow: verify the OTP and create the account.
+
+    When ENABLE_REAL_EMAIL_OTP is True, the submitted OTP is checked
+    against the stored code (5-minute TTL, single-use). When False, the
+    check is skipped; any 4–8 digit string is accepted.
+
+    On success, returns a JWT plus the new user's public profile.
+    """
+    if crud.get_user_by_email(db, payload.email):
+        raise HTTPException(status_code=400, detail="Email already registered")
+
+    if config.ENABLE_REAL_EMAIL_OTP:
+        if not otp_service.verify_email_otp_code(payload.email, payload.otp):
+            raise HTTPException(status_code=400, detail="Invalid or expired OTP")
+    else:
+        # Dev bypass — still sanity-check shape so a client bug can't
+        # create a user with an empty or malformed code field.
+        otp = payload.otp.strip()
+        if not otp.isdigit() or not (4 <= len(otp) <= 8):
+            raise HTTPException(
+                status_code=400,
+                detail="Dev bypass active — enter any 4 to 8 digits.",
+            )
+
+    try:
+        user = crud.create_user_signup(
+            db,
+            email=payload.email,
+            password_hash=auth.hash_password(payload.password),
+            role=payload.role,
+            full_name=payload.full_name,
+            district=payload.district,
+            state=payload.state,
+        )
+    except SQLAlchemyError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    token = auth.create_access_token(user.id)
+    return schemas.Token(
+        access_token=token,
+        token_type="bearer",
+        user=schemas.UserOut.model_validate(user),
+    )
+
+
+@app.post("/auth/login", response_model=schemas.Token)
+def login(
+    payload: schemas.UserLogin,
+    db: Session = Depends(get_db),
+):
+    """
+    Standard email + password login.
+
+    Returns the same `Token` shape as /auth/verify-otp so the client can
+    treat both auth paths identically.
+
+    All failure modes return the SAME 401 with the same message —
+    "Invalid email or password" — deliberately.
+    """
+    invalid = HTTPException(
+        status_code=401,
+        detail="Invalid email or password",
+    )
+
+    user = crud.get_user_by_email(db, payload.email)
+    if not user:
+        raise invalid
+
+    if not user.password_hash:
+        raise invalid
+
+    try:
+        matches = auth.verify_password(payload.password, user.password_hash)
+    except Exception:
+        matches = False
+
+    if not matches:
+        raise invalid
+
+    token = auth.create_access_token(user.id)
+    return schemas.Token(
+        access_token=token,
+        token_type="bearer",
+        user=schemas.UserOut.model_validate(user),
+    )
+
+
+# ---------------------------------------------------------------------------
 # Dev-only auth (local testing in Swagger UI)
 # ---------------------------------------------------------------------------
 
@@ -570,15 +588,8 @@ def issue_dev_token(
 ):
     """
     Mint a short-lived access token for an existing user, for exercising
-    protected endpoints from Swagger UI without going through Supabase Auth.
-
-    404s in production (ENVIRONMENT=production) rather than merely
-    rejecting the token mint — DEV_MODE is checked before touching the DB
-    at all, so this route has zero attack surface once deployed for real:
-    it behaves as if it doesn't exist. It's a complete auth bypass by
-    design (any real user_id in, a valid token for that user out, no
-    password), which is exactly why it can't be reachable outside
-    development.
+    protected endpoints from Swagger UI without going through the normal
+    auth flow. 404s in production.
     """
     if not auth.DEV_MODE:
         raise HTTPException(status_code=404, detail="Not found")
@@ -597,7 +608,7 @@ def issue_dev_token(
 
 @app.post("/users/", response_model=schemas.UserResponse, status_code=201)
 def register_user(user: schemas.UserCreate, db: Session = Depends(get_db)):
-    """Register a new farmer or rider."""
+    """Register a new farmer or rider (legacy path — no password, no OTP)."""
     if crud.get_user_by_phone(db, user.phone):
         raise HTTPException(status_code=400, detail="Phone number already registered")
 
@@ -611,7 +622,11 @@ def register_user(user: schemas.UserCreate, db: Session = Depends(get_db)):
 # Produce Requests
 # ---------------------------------------------------------------------------
 
-@app.post("/produce-requests/", response_model=schemas.ProduceRequestResponse, status_code=201)
+@app.post(
+    "/produce-requests/",
+    response_model=schemas.ProduceRequestResponse,
+    status_code=201,
+)
 def create_produce_request(
     request: schemas.ProduceRequestCreate,
     current_user: models.User = Depends(auth.require_role("FARMER")),
@@ -620,11 +635,6 @@ def create_produce_request(
     """
     Create a produce pickup request tied to the authenticated farmer,
     storing a PostGIS point and generating a 4-digit pickup OTP.
-
-    NOTE: the OTP is generated inside crud.create_produce_request — that's
-    where the DB insert happens, and threading a new `pickup_otp` parameter
-    through this endpoint would only move the same logic. `random` is
-    imported above for parity with the spec but is unused here.
     """
     try:
         return crud.create_produce_request(db, request, current_user.id)
@@ -643,18 +653,11 @@ def verify_pickup_otp(
     db: Session = Depends(get_db),
 ):
     """
-    Verify the 4-digit pickup OTP for a produce request and, on a match,
-    flip the request's status to PICKED_UP.
+    Verify the 4-digit PICKUP handoff OTP for a produce request and, on a
+    match, flip the request's status to PICKED_UP.
 
-    Gated only by auth.get_current_user — both the farmer and the assigned
-    rider are legitimate callers in different workflows (the farmer
-    confirms the handoff, or the rider enters the code the farmer read out).
-    If you want to narrow this to one role, swap `get_current_user` for
-    `require_role("RIDER")` (or "FARMER").
-
-    404 if the request doesn't exist. 400 for every domain failure — wrong
-    OTP, request isn't ACCEPTED yet, or request is already in a terminal
-    state (COMPLETED/CANCELLED).
+    NOTE: this is a different flow from /auth/verify-otp (which handles
+    the SIGNUP OTP).
     """
     try:
         result = crud.verify_pickup_otp(db, request_id, body.otp)
@@ -669,21 +672,29 @@ def verify_pickup_otp(
     )
 
 
-@app.get("/produce-requests/nearby", response_model=List[schemas.NearbyProduceRequestResponse])
+@app.get(
+    "/produce-requests/nearby",
+    response_model=List[schemas.NearbyProduceRequestResponse],
+)
 def nearby_produce_requests(
     lat: float = Query(..., ge=-90, le=90, description="Rider's current latitude"),
     lng: float = Query(..., ge=-180, le=180, description="Rider's current longitude"),
     radius_km: float = Query(10, gt=0, le=200, description="Search radius in kilometers"),
     db: Session = Depends(get_db),
 ) -> List[schemas.NearbyProduceRequestResponse]:
-    """Return PENDING produce requests within radius_km of the given point, nearest first."""
+    """Return PENDING produce requests within radius_km of the given point."""
     try:
-        return crud.get_nearby_produce_requests(db, lat=lat, lng=lng, radius_km=radius_km)
+        return crud.get_nearby_produce_requests(
+            db, lat=lat, lng=lng, radius_km=radius_km
+        )
     except (SQLAlchemyError, ValueError) as e:
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@app.get("/produce-requests/{request_id}", response_model=schemas.ProduceRequestResponse)
+@app.get(
+    "/produce-requests/{request_id}",
+    response_model=schemas.ProduceRequestResponse,
+)
 def get_produce_request(request_id: UUID, db: Session = Depends(get_db)):
     try:
         result = crud.get_produce_request_by_id(db, request_id)
@@ -694,17 +705,15 @@ def get_produce_request(request_id: UUID, db: Session = Depends(get_db)):
     return result
 
 
-@app.get("/produce-requests/farmer/me", response_model=List[schemas.FarmerProduceRequestResponse])
+@app.get(
+    "/produce-requests/farmer/me",
+    response_model=List[schemas.FarmerProduceRequestResponse],
+)
 def get_my_produce_requests(
     current_user: models.User = Depends(auth.require_role("FARMER")),
     db: Session = Depends(get_db),
 ):
-    """
-    All of the authenticated farmer's produce requests, newest first, each
-    including the assigned rider and trip status once a rider has accepted
-    it (null while still PENDING), and the pickup OTP the farmer reads to
-    the rider at handoff.
-    """
+    """All of the authenticated farmer's produce requests, newest first."""
     try:
         return crud.get_produce_requests_for_farmer(db, current_user.id)
     except (SQLAlchemyError, ValueError) as e:
@@ -715,10 +724,11 @@ def get_my_produce_requests(
 # Trips
 # ---------------------------------------------------------------------------
 
-# MVP alias — creates a ProduceRequest, not a Trip. Semantically duplicates
-# POST /produce-requests/; kept because it was requested. A Trip row only
-# exists once a rider accepts via /trips/accept.
-@app.post("/trips/", response_model=schemas.ProduceRequestResponse, status_code=201)
+@app.post(
+    "/trips/",
+    response_model=schemas.ProduceRequestResponse,
+    status_code=201,
+)
 def create_trip_request(
     request: schemas.ProduceRequestCreate,
     current_user: models.User = Depends(auth.require_role("FARMER")),
@@ -728,9 +738,7 @@ def create_trip_request(
     Create a produce pickup request for the authenticated farmer.
 
     NOTE: despite the URL, this creates a ProduceRequest row (status
-    PENDING), not a Trip. A Trip only comes into existence when a rider
-    accepts. Payload = crop_type, crate_count, weight_kg, latitude,
-    longitude, dropoff_location.
+    PENDING), not a Trip.
     """
     try:
         return crud.create_produce_request(db, request, current_user.id)
@@ -738,18 +746,12 @@ def create_trip_request(
         raise HTTPException(status_code=400, detail=str(e))
 
 
-# Flat MVP list of the farmer's own produce requests.
 @app.get("/trips/me", response_model=List[schemas.ProduceRequestResponse])
 def get_my_trip_requests(
     current_user: models.User = Depends(auth.require_role("FARMER")),
     db: Session = Depends(get_db),
 ):
-    """
-    All produce requests belonging to the authenticated farmer, newest
-    first. Flat response (no nested trip/rider) — the MVP view. For the
-    richer feed that includes rider + trip status, use
-    GET /produce-requests/farmer/me.
-    """
+    """Flat list of the farmer's own produce requests, newest first."""
     try:
         return crud.get_farmer_produce_requests(db, current_user.id)
     except (SQLAlchemyError, ValueError) as e:
@@ -764,9 +766,7 @@ def accept_trip(
 ):
     """
     The authenticated rider accepts a PENDING produce request, creating a
-    Trip and moving the request to 'ACCEPTED'. Fails with 400 if the
-    request doesn't exist or is no longer PENDING (already accepted/
-    cancelled/etc).
+    Trip and moving the request to 'ACCEPTED'.
     """
     try:
         return crud.accept_produce_request(db, request_id, current_user.id)
@@ -782,23 +782,27 @@ def update_trip_status(
     db: Session = Depends(get_db),
 ):
     """
-    Transition a trip to PICKED_UP, DELIVERED, or CANCELLED. Only the rider
-    assigned to the trip may update it — any other authenticated rider gets
-    403, which is why we fetch the trip first rather than letting
-    crud.update_trip_status run unconditionally.
+    Transition a trip to PICKED_UP, DELIVERED, or CANCELLED. Only the
+    rider assigned to the trip may update it.
 
-    Transitioning to DELIVERED also marks the underlying produce request as
-    COMPLETED. Trips already in a terminal state (DELIVERED/CANCELLED)
-    reject further updates with a 400.
+    Transitioning to DELIVERED also:
+      - marks the underlying produce request as COMPLETED, and
+      - auto-creates a Settlement row for the trip.
     """
     trip = crud.get_trip_by_id(db, trip_id)
     if not trip:
         raise HTTPException(status_code=404, detail="Trip not found")
     if trip.rider_id != current_user.id:
-        raise HTTPException(status_code=403, detail="You are not the rider assigned to this trip")
+        raise HTTPException(
+            status_code=403,
+            detail="You are not the rider assigned to this trip",
+        )
 
     try:
-        result = crud.update_trip_status(db, trip_id, body.status)
+        result = crud.update_trip_status(
+            db, trip_id, body.status,
+            distance_km=body.distance_km,
+        )
     except (SQLAlchemyError, ValueError) as e:
         raise HTTPException(status_code=400, detail=str(e))
     if not result:
@@ -812,9 +816,8 @@ def get_active_trips(
     db: Session = Depends(get_db),
 ):
     """
-    All of the authenticated rider's currently active trips (status ACCEPTED
-    or PICKED_UP), newest first. Returns an empty list (200) when the rider
-    has no active trips — no more 404 on the happy empty case.
+    All of the authenticated rider's currently active trips (status
+    ACCEPTED or PICKED_UP), newest first.
     """
     trips = crud.get_active_trips_for_rider(db, current_user.id)
     return [
@@ -835,16 +838,18 @@ def get_active_trips(
 # Crate Scans
 # ---------------------------------------------------------------------------
 
-@app.post("/crate-scans/", response_model=schemas.CrateScanResponse, status_code=201)
+@app.post(
+    "/crate-scans/",
+    response_model=schemas.CrateScanResponse,
+    status_code=201,
+)
 def create_crate_scan(
     scan: schemas.CrateScanCreate,
     current_user: models.User = Depends(auth.get_current_user),
     db: Session = Depends(get_db),
 ):
     """
-    Record a PICKUP or DELIVERY crate QR-code scan against a trip, logged
-    under whichever authenticated user (farmer or rider) performed it.
-    404s if the trip doesn't exist.
+    Record a PICKUP or DELIVERY crate QR-code scan against a trip.
     """
     result = crud.create_crate_scan(db, scan, current_user.id)
     if not result:
@@ -856,16 +861,22 @@ def create_crate_scan(
 # Settlements
 # ---------------------------------------------------------------------------
 
-@app.post("/settlements/", response_model=schemas.SettlementResponse, status_code=201)
+@app.post(
+    "/settlements/",
+    response_model=schemas.SettlementResponse,
+    status_code=201,
+)
 def create_settlement(
     settlement_in: schemas.SettlementCreate,
     current_user: models.User = Depends(auth.get_current_user),
     db: Session = Depends(get_db),
 ):
     """
-    Create the settlement row for a DELIVERED trip: rider fare + farmer
-    payout, in one record. 404 if the trip doesn't exist; 400 if it isn't
-    DELIVERED yet or already has a settlement.
+    Manual / admin creation of a settlement for a DELIVERED trip.
+
+    In the normal rider flow this endpoint is redundant — PATCH
+    /trips/{trip_id}/status with {"status": "DELIVERED"} auto-creates the
+    settlement in the same transaction.
     """
     try:
         result = crud.create_settlement(db, settlement_in)
@@ -883,15 +894,6 @@ def get_my_settlements(
 ):
     """
     Role-based payout history for the authenticated user.
-
-    - FARMER: settlements where `farmer_id == current_user.id`, i.e. their
-      net sale proceeds from delivered trips.
-    - RIDER:  settlements where `rider_id == current_user.id`, i.e. their
-      fare earnings from delivered trips.
-
-    Gated by `get_current_user` rather than `require_role("RIDER")` so both
-    roles can hit the same endpoint. Returns an empty list (HTTP 200) when
-    there are no settlements — the "no payouts yet" case is not an error.
     """
     return crud.get_settlements_for_user(db, current_user.id, current_user.role)
 
@@ -906,14 +908,8 @@ def get_admin_stats(
     db: Session = Depends(get_db),
 ):
     """
-    Platform-wide summary: user/farmer/rider counts, trip counts, and total
-    payout volume.
-
-    NOTE: gated only by auth.get_current_user, exactly as specified — there
-    is no ADMIN role in this codebase yet (only FARMER/RIDER), so right now
-    *any* logged-in farmer or rider can see platform-wide numbers, not just
-    staff. If that's not intended, this needs a real admin role added to
-    users.role and require_role("ADMIN") here instead.
+    Platform-wide summary: user/farmer/rider counts, trip counts, and
+    total payout volume.
     """
     return crud.get_admin_stats(db)
 
@@ -922,25 +918,19 @@ def get_admin_stats(
 # Photo uploads
 # ---------------------------------------------------------------------------
 
-@app.post("/uploads/delivery-photo", response_model=schemas.PhotoUploadResponse, status_code=201)
+@app.post(
+    "/uploads/delivery-photo",
+    response_model=schemas.PhotoUploadResponse,
+    status_code=201,
+)
 async def upload_delivery_photo(
     file: UploadFile = File(...),
     current_user: models.User = Depends(auth.get_current_user),
 ):
     """
-    Upload a delivery proof-of-photo. Saves to local static storage (see
-    the UPLOAD_DIR/StaticFiles mount near the top of this file) and returns
-    a URL the app can display or attach to a trip/settlement record.
-
-    Auth wasn't specified for this endpoint in the task, but every other
-    write endpoint in this file requires a caller — leaving file upload as
-    the one open door would let anyone fill your disk with arbitrary
-    uploads, so Depends(auth.get_current_user) is applied here too.
-
-    The uploaded filename is never trusted for the saved path (a client
-    could send `../../etc/passwd` as a filename) — the stored name is
-    always a fresh UUID plus an extension this server chose, not anything
-    from the request.
+    Upload a delivery proof-of-photo. Saves to local static storage and
+    returns a URL the app can display or attach to a trip/settlement
+    record.
     """
     if file.content_type not in ALLOWED_UPLOAD_CONTENT_TYPES:
         raise HTTPException(

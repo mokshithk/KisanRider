@@ -1,25 +1,65 @@
 import uuid
 from datetime import datetime
-from sqlalchemy import Column, String, Integer, Numeric, DateTime, Float, ForeignKey, func
+
+from sqlalchemy import (
+    Boolean,
+    Column,
+    DateTime,
+    Float,
+    ForeignKey,
+    Integer,
+    Numeric,
+    String,
+    func,
+)
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from geoalchemy2 import Geometry
+
 from database import Base
+
 
 class User(Base):
     __tablename__ = "users"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    phone = Column(String(15), unique=True, nullable=False)
-    role = Column(String(20), nullable=False)
-    full_name = Column(String(100))
+
+    # Email is the primary signup identifier for the OTP flow.
+    email = Column(String(255), unique=True, index=True, nullable=False)
+
+    # Legacy phone-only accounts; kept for /users/ back-compat. Nullable
+    # because new email-signup users never supply a phone.
+    phone = Column(String(15), unique=True, nullable=True)
+
+    role = Column(String(20), nullable=False, default="FARMER")
+    full_name = Column(String(100), nullable=False)
+
+    # Bcrypt hash. Nullable so users created via the legacy /users/ path
+    # or Supabase Auth (who have no local password) can still exist.
+    # Every user created by /auth/verify-otp has this populated.
+    password_hash = Column(String(255), nullable=True)
+
+    # Location captured at signup. Kept nullable for legacy rows.
+    district = Column(String(80), nullable=True)
+    state = Column(String(80), nullable=True, default="Karnataka")
+
+    # Email-OTP signup sets this True once the code is verified.
+    # Defaults True so legacy rows are treated as already verified.
+    is_verified = Column(Boolean, nullable=False, default=True)
+
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
-    # A user can be the farmer on many produce requests and/or the rider on many trips.
     produce_requests = relationship(
-        "ProduceRequest", back_populates="farmer", foreign_keys="ProduceRequest.farmer_id"
+        "ProduceRequest",
+        back_populates="farmer",
+        foreign_keys="ProduceRequest.farmer_id",
     )
-    trips = relationship("Trip", back_populates="rider", foreign_keys="Trip.rider_id")
+    trips = relationship(
+        "Trip",
+        back_populates="rider",
+        foreign_keys="Trip.rider_id",
+    )
+
 
 class ProduceRequest(Base):
     __tablename__ = "produce_requests"
@@ -30,49 +70,63 @@ class ProduceRequest(Base):
     crate_count = Column(Integer, nullable=False)
     weight_kg = Column(Numeric(10, 2))
     pickup_location = Column(Geometry("POINT", srid=4326), nullable=False)
-    dropoff_location = Column(String(255), nullable=True)  # free-text dropoff (MVP)
-    # Mandi dropoff coordinates captured from the district/mandi picker.
-    # Plain floats, not PostGIS — we don't do spatial queries on dropoff, so
-    # a geometry column would be overkill. Nullable because a farmer can
-    # submit with only a text dropoff location.
+    dropoff_location = Column(String(255), nullable=True)
     dropoff_lat = Column(Float, nullable=True)
     dropoff_lng = Column(Float, nullable=True)
-    # 4-digit handoff code generated at creation time. The farmer reads it
-    # to the rider at pickup; the rider submits it to /verify-otp to confirm
-    # the handoff. Nullable so rows created before this column existed don't
-    # break the app (verify treats NULL as "no OTP on file" -> reject).
     pickup_otp = Column(String(4), nullable=True)
     status = Column(String(20), default="PENDING")
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
-    farmer = relationship("User", back_populates="produce_requests", foreign_keys=[farmer_id])
-    trip = relationship("Trip", back_populates="produce_request", uselist=False)
+    farmer = relationship(
+        "User",
+        back_populates="produce_requests",
+        foreign_keys=[farmer_id],
+    )
+    trip = relationship(
+        "Trip",
+        back_populates="produce_request",
+        uselist=False,
+    )
 
 
 class Trip(Base):
     """
     A Trip represents a rider accepting (and fulfilling) a ProduceRequest.
 
-    Lifecycle: ACCEPTED -> PICKED_UP -> DELIVERED (or CANCELLED at any point
-    before DELIVERED). `completed_at` is set when the trip reaches a terminal
-    state (DELIVERED or CANCELLED); it stays NULL while the trip is in
-    progress.
+    Lifecycle: ACCEPTED -> PICKED_UP -> DELIVERED (or CANCELLED at any
+    point before DELIVERED). `completed_at` is set when the trip reaches a
+    terminal state (DELIVERED or CANCELLED); it stays NULL while the trip
+    is in progress.
     """
 
     __tablename__ = "trips"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     produce_request_id = Column(
-        UUID(as_uuid=True), ForeignKey("produce_requests.id", ondelete="CASCADE"), nullable=False
+        UUID(as_uuid=True),
+        ForeignKey("produce_requests.id", ondelete="CASCADE"),
+        nullable=False,
     )
-    rider_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    rider_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
     status = Column(String(20), nullable=False, default="ACCEPTED")
     created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
     completed_at = Column(DateTime(timezone=True), nullable=True)
 
-    produce_request = relationship("ProduceRequest", back_populates="trip", foreign_keys=[produce_request_id])
+    produce_request = relationship(
+        "ProduceRequest",
+        back_populates="trip",
+        foreign_keys=[produce_request_id],
+    )
     rider = relationship("User", back_populates="trips", foreign_keys=[rider_id])
-    crate_scans = relationship("CrateScan", back_populates="trip", foreign_keys="CrateScan.trip_id")
+    crate_scans = relationship(
+        "CrateScan",
+        back_populates="trip",
+        foreign_keys="CrateScan.trip_id",
+    )
     settlement = relationship("Settlement", uselist=False, back_populates="trip")
 
 
@@ -86,8 +140,16 @@ class CrateScan(Base):
     __tablename__ = "crate_scans"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    trip_id = Column(UUID(as_uuid=True), ForeignKey("trips.id", ondelete="CASCADE"), nullable=False)
-    scanned_by_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    trip_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("trips.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    scanned_by_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
     scan_type = Column(String(20), nullable=False)
     qr_code = Column(String(255), nullable=False)
     scanned_at = Column(DateTime(timezone=True), default=datetime.utcnow)
@@ -98,50 +160,44 @@ class CrateScan(Base):
 
 class Settlement(Base):
     """
-    The financial record for one completed (DELIVERED) trip, one-to-one with
-    Trip. A single row carries both sides of the transaction so neither party
-    needs to join across tables to see their payout:
-
-      - Rider side:  base_fare + distance_fare + weight_surcharge = total_payout
-      - Farmer side: gross_amount (mandi sale) - rider_fare - platform_fee = net_payout
-
-    `rider_fare` and `total_payout` hold the same value by design —
-    `total_payout` is the rider's wallet column, `rider_fare` is the number
-    the farmer's net_payout subtracts. Storing both makes each party's view
-    self-contained.
-
-    `trip_id` is unique, so a second settlement attempt for the same trip is
-    a DB-level conflict, not just an application-level check.
-
-    Old rows (created before this table gained the farmer columns) will have
-    NULL for rider_id / farmer_id / crop_name / quantity_kg / gross_amount /
-    rider_fare / platform_fee / net_payout — the role-based query in crud.py
-    simply won't surface them to either party.
+    The financial record for one completed (DELIVERED) trip, one-to-one
+    with Trip.
     """
 
     __tablename__ = "settlements"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    trip_id = Column(UUID(as_uuid=True), ForeignKey("trips.id", ondelete="CASCADE"), unique=True, nullable=False)
+    trip_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("trips.id", ondelete="CASCADE"),
+        unique=True,
+        nullable=False,
+    )
 
-    # Who gets paid. ON DELETE SET NULL preserves financial history if a
-    # user row is later removed (rather than cascading and losing the record).
-    rider_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
-    farmer_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    rider_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    farmer_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
 
     # ----- Rider fare breakdown --------------------------------------------
     base_fare = Column(Float, nullable=False, default=50.0)
     distance_fare = Column(Float, nullable=False)
     weight_surcharge = Column(Float, nullable=False)
-    total_payout = Column(Float, nullable=False)  # rider's wallet amount
+    total_payout = Column(Float, nullable=False)
 
     # ----- Farmer payout breakdown -----------------------------------------
     crop_name = Column(String(50), nullable=True)
     quantity_kg = Column(Float, nullable=True)
-    gross_amount = Column(Float, nullable=True)  # mandi sale proceeds (qty * rate)
-    rider_fare = Column(Float, nullable=True)  # == total_payout; kept for the farmer view
-    platform_fee = Column(Float, nullable=True)  # 2% of gross by default
-    net_payout = Column(Float, nullable=True)  # gross - (rider_fare + platform_fee)
+    gross_amount = Column(Float, nullable=True)
+    rider_fare = Column(Float, nullable=True)
+    platform_fee = Column(Float, nullable=True)
+    net_payout = Column(Float, nullable=True)
 
     # ----- Metadata --------------------------------------------------------
     status = Column(String(20), nullable=False, default="PENDING")
