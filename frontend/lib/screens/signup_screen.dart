@@ -681,7 +681,7 @@ class _OtpBottomSheetState extends State<_OtpBottomSheet> {
               ),
               const SizedBox(height: 8),
               Text(
-                'We sent a 4-digit code to',
+                "We sent a 4-digit code to\nDidn't receive it? Check your Spam folder.",
                 textAlign: TextAlign.center,
                 style: theme.textTheme.bodySmall?.copyWith(
                   color: theme.colorScheme.onSurfaceVariant,
