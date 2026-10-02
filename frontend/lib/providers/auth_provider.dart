@@ -26,6 +26,12 @@ class AuthProvider extends ChangeNotifier {
   String? _lastError;
 
   bool get isLoggedIn => _isLoggedIn;
+
+  /// Alias for [isLoggedIn]. Provided so callers that express the check as
+  /// "is the user authenticated?" read naturally — e.g. the auth-gated
+  /// routing branch in main.dart, or a logout button's enabled state.
+  bool get isAuthenticated => _isLoggedIn;
+
   String? get role => _role;
   String? get userId => _userId;
   String? get token => _token;
@@ -257,10 +263,31 @@ class AuthProvider extends ChangeNotifier {
   }
 
   /// Clears the persisted session and resets in-memory state.
+  ///
+  /// Three things must happen for the app to reach a clean logged-out
+  /// state, and all three are done here:
+  ///
+  ///   1. Wipe the JWT, role, and user id from secure storage so a restart
+  ///      doesn't resurrect the session.
+  ///   2. Reset the in-memory fields (`_isLoggedIn`, `_role`, `_userId`,
+  ///      `_token`) so nothing downstream can read a stale token.
+  ///   3. `notifyListeners()` so any `Consumer<AuthProvider>` /
+  ///      `context.watch` in the tree rebuilds immediately.
+  ///
+  /// The storage wipe is wrapped in a `try` on purpose: if the platform
+  /// channel to secure storage is misbehaving, we still want the in-memory
+  /// reset + notification to fire. Leaving the app half-logged-in (screen
+  /// still shows the dashboard, but the token is gone) is a worse failure
+  /// mode than a stale keychain entry that the next successful login will
+  /// overwrite.
   Future<void> logout() async {
-    await _secureStorage.delete(key: _tokenKey);
-    await _secureStorage.delete(key: _roleKey);
-    await _secureStorage.delete(key: _userIdKey);
+    try {
+      await _secureStorage.delete(key: _tokenKey);
+      await _secureStorage.delete(key: _roleKey);
+      await _secureStorage.delete(key: _userIdKey);
+    } catch (_) {
+      // Swallow — see comment above. In-memory state still gets reset.
+    }
 
     _isLoggedIn = false;
     _role = null;
