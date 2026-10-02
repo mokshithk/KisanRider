@@ -578,6 +578,94 @@ def login(
 
 
 # ---------------------------------------------------------------------------
+# Password reset via email OTP
+# ---------------------------------------------------------------------------
+
+@app.post("/auth/forgot-password")
+def forgot_password(
+    payload: schemas.ForgotPasswordRequest,
+    db: Session = Depends(get_db),
+):
+    """
+    Step 1 of the password reset flow.
+
+    Looks up the email, then either mails a 4-digit reset code (when
+    ENABLE_REAL_EMAIL_OTP is True) or returns the dev-bypass message.
+
+    A 404 here leaks whether an email is registered. That's an intentional
+    trade-off for MVP UX: the client can tell the user "no account with
+    that email" instead of leaving them stuck. If enumeration becomes a
+    concern, switch to always returning 200 with the same message — the
+    rest of the flow doesn't need to change.
+    """
+    user = crud.get_user_by_email(db, payload.email)
+    if not user:
+        raise HTTPException(
+            status_code=404,
+            detail="User with this email does not exist",
+        )
+
+    result = otp_service.issue_and_send_password_reset_otp(payload.email)
+
+    if result["bypass"]:
+        return {"message": "Bypass active. Enter any 4 digits to reset password"}
+
+    if not result["sent"]:
+        raise HTTPException(
+            status_code=502,
+            detail="Could not send password reset email. Please try again later.",
+        )
+
+    return {"message": "Password reset OTP sent to your email"}
+
+
+@app.post("/auth/reset-password")
+def reset_password(
+    payload: schemas.ResetPasswordRequest,
+    db: Session = Depends(get_db),
+):
+    """
+    Step 2 of the password reset flow.
+
+    When ENABLE_REAL_EMAIL_OTP is True, the submitted OTP is validated
+    against the code cached by /auth/forgot-password (5-minute TTL,
+    single-use). When False, the check is skipped, but the shape is still
+    sanity-checked so a client bug can't submit an empty code.
+
+    On success, the user's password_hash column is replaced with a fresh
+    bcrypt hash of `new_password` and the change is committed.
+    """
+    user = crud.get_user_by_email(db, payload.email)
+    if not user:
+        raise HTTPException(
+            status_code=404,
+            detail="User with this email does not exist",
+        )
+
+    if config.ENABLE_REAL_EMAIL_OTP:
+        if not otp_service.verify_password_reset_otp_code(
+            payload.email, payload.otp
+        ):
+            raise HTTPException(status_code=400, detail="Invalid or expired OTP")
+    else:
+        otp = payload.otp.strip()
+        if not otp.isdigit() or not (4 <= len(otp) <= 8):
+            raise HTTPException(
+                status_code=400,
+                detail="Dev bypass active — enter any 4 to 8 digits.",
+            )
+
+    try:
+        crud.update_user_password(
+            db, user, auth.hash_password(payload.new_password)
+        )
+    except SQLAlchemyError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    return {"message": "Password updated successfully"}
+
+
+# ---------------------------------------------------------------------------
 # Dev-only auth (local testing in Swagger UI)
 # ---------------------------------------------------------------------------
 

@@ -41,7 +41,13 @@ _SMTP_TIMEOUT_SECONDS = 30
 
 # email (lowercased) → (code, expires_at_unix_seconds)
 # A dict is not thread-safe across workers. Single-process dev is fine.
+#
+# The signup flow and the password-reset flow use SEPARATE stores so a
+# code issued for one flow can never be replayed against the other. If a
+# user has an in-flight signup OTP and then requests a password reset,
+# each code only unlocks its own endpoint.
 _otp_store: dict[str, tuple[str, float]] = {}
+_password_reset_otp_store: dict[str, tuple[str, float]] = {}
 
 
 def _normalize(email: str) -> str:
@@ -62,12 +68,19 @@ def _store_otp(email: str, code: str) -> None:
     _otp_store[_normalize(email)] = (code, time.time() + _OTP_TTL_SECONDS)
 
 
+def _store_password_reset_otp(email: str, code: str) -> None:
+    _password_reset_otp_store[_normalize(email)] = (
+        code,
+        time.time() + _OTP_TTL_SECONDS,
+    )
+
+
 def verify_email_otp_code(email: str, submitted: str) -> bool:
     """
-    Check `submitted` against the code stored for `email`. Returns False on
-    missing entry, expiry, or mismatch. A successful verification consumes
-    the code — a second call with the same OTP returns False. That's the
-    right behavior: an OTP is single-use.
+    Check `submitted` against the signup code stored for `email`. Returns
+    False on missing entry, expiry, or mismatch. A successful verification
+    consumes the code — a second call with the same OTP returns False.
+    That's the right behavior: an OTP is single-use.
     """
     key = _normalize(email)
     entry = _otp_store.get(key)
@@ -83,6 +96,29 @@ def verify_email_otp_code(email: str, submitted: str) -> bool:
         return False
 
     _otp_store.pop(key, None)
+    return True
+
+
+def verify_password_reset_otp_code(email: str, submitted: str) -> bool:
+    """
+    Same semantics as verify_email_otp_code, but against the password-reset
+    store. Kept separate so a signup OTP cannot be replayed as a reset OTP
+    (or vice versa).
+    """
+    key = _normalize(email)
+    entry = _password_reset_otp_store.get(key)
+    if entry is None:
+        return False
+
+    code, expires_at = entry
+    if time.time() > expires_at:
+        _password_reset_otp_store.pop(key, None)
+        return False
+
+    if submitted.strip() != code:
+        return False
+
+    _password_reset_otp_store.pop(key, None)
     return True
 
 
@@ -133,6 +169,49 @@ def issue_and_send_email_otp(email: str) -> dict:
         # is logged so the developer can recover manually if this is a
         # transient SMTP hiccup.
         print(f"[otp] Email send failed for {email}: {type(e).__name__}: {e}")
+        return {"sent": False, "bypass": False, "code": code}
+
+
+def issue_and_send_password_reset_otp(email: str) -> dict:
+    """
+    Generate and (when real OTP is enabled) email a password-reset code.
+
+    Mirrors issue_and_send_email_otp — same return shape, same dev bypass
+    semantics — but stores under the password-reset namespace and sends a
+    reset-specific subject/body. Kept parallel rather than parameterized so
+    each flow's subject line is impossible to mix up.
+    """
+    code = _generate_code()
+    _store_password_reset_otp(email, code)
+
+    if not ENABLE_REAL_EMAIL_OTP:
+        return {"sent": False, "bypass": True, "code": code}
+
+    if not SMTP_EMAIL or not SMTP_PASSWORD:
+        print(
+            f"[otp] SMTP credentials missing — password reset code for "
+            f"{email} is {code}"
+        )
+        return {"sent": False, "bypass": False, "code": code}
+
+    try:
+        _send_email(
+            to_email=email,
+            subject="KisanRider Password Reset Code",
+            body=(
+                "Your KisanRider password reset code is:\n\n"
+                f"    {code}\n\n"
+                "This code expires in 5 minutes. If you didn't request a "
+                "password reset, you can safely ignore this email — your "
+                "current password will keep working."
+            ),
+        )
+        return {"sent": True, "bypass": False, "code": code}
+    except Exception as e:
+        print(
+            f"[otp] Password reset email send failed for {email}: "
+            f"{type(e).__name__}: {e}"
+        )
         return {"sent": False, "bypass": False, "code": code}
 
 

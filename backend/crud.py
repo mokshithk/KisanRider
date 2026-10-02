@@ -131,6 +131,26 @@ def create_user_signup(
         raise
 
 
+def update_user_password(
+    db: Session, user: models.User, password_hash: str
+) -> models.User:
+    """
+    Overwrite `user.password_hash` with a freshly hashed password and commit.
+
+    Caller hashes the plaintext (same convention as create_user_signup) —
+    this function never sees the plaintext. Used by the password-reset flow
+    after the OTP has been verified.
+    """
+    user.password_hash = password_hash
+    try:
+        db.commit()
+        db.refresh(user)
+        return user
+    except SQLAlchemyError:
+        db.rollback()
+        raise
+
+
 # ---------------------------------------------------------------------------
 # ProduceRequest CRUD
 # ---------------------------------------------------------------------------

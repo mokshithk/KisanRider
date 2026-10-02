@@ -118,6 +118,29 @@ class UserLogin(BaseModel):
     password: str = Field(..., min_length=1, max_length=128)
 
 
+class ForgotPasswordRequest(BaseModel):
+    """
+    Body for POST /auth/forgot-password.
+
+    Only the email is required; the server looks up the user, generates a
+    short-lived reset code, and (when real email OTP is enabled) mails it.
+    """
+    email: EmailStr
+
+
+class ResetPasswordRequest(BaseModel):
+    """
+    Body for POST /auth/reset-password.
+
+    `otp` is checked against the code issued by /auth/forgot-password (when
+    ENABLE_REAL_EMAIL_OTP is True). On success the user's `password_hash`
+    column is overwritten with a fresh bcrypt hash of `new_password`.
+    """
+    email: EmailStr
+    otp: str = Field(..., min_length=4, max_length=8)
+    new_password: str = Field(..., min_length=6, max_length=128)
+
+
 class Token(BaseModel):
     """Response for POST /auth/verify-otp and POST /auth/login."""
     access_token: str
