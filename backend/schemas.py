@@ -279,6 +279,195 @@ class PayoutDetailsUpdate(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Rider Account schemas
+# ---------------------------------------------------------------------------
+
+class RiderAccountOut(BaseModel):
+    """
+    Full rider account payload. Returned by GET /rider/account and by every
+    PUT/PATCH below, so the client always gets the complete updated record
+    in one response.
+
+    Mirrors FarmerAccountOut's shape decisions:
+      - `email` is `str`, not `EmailStr`, so legacy phone-only accounts
+        (whose synthetic address ends in `.local`) don't 500 on validation.
+      - Every rider-specific field is Optional. A rider who signed up five
+        seconds ago has none of them set, and the client renders empty
+        states for each section until they do.
+    """
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    full_name: str
+    email: str
+    role: Literal["FARMER", "RIDER"]
+    is_verified: bool = True
+
+    # Basic info
+    district: Optional[str] = None
+    state: Optional[str] = None
+
+    # Duty status
+    is_on_duty: bool = False
+
+    # Driver & vehicle info
+    license_number: Optional[str] = None
+    vehicle_type: Optional[str] = None
+    vehicle_number: Optional[str] = None
+    payload_capacity_kg: Optional[float] = None
+
+    # Preferred routes
+    operating_routes: Optional[str] = None
+
+    # Payout info
+    bank_name: Optional[str] = None
+    account_number: Optional[str] = None
+    ifsc_code: Optional[str] = None
+    upi_id: Optional[str] = None
+
+    # Preferences
+    preferred_language: str = "en"
+
+
+class RiderProfileUpdate(BaseModel):
+    """
+    Body for PUT /rider/profile.
+
+    Only name and district — email changes go through the OTP flow (same
+    reasoning as the farmer endpoint), and `state` is fixed at Karnataka
+    for the MVP.
+    """
+    full_name: Optional[str] = Field(None, min_length=1, max_length=120)
+    district: Optional[str] = Field(None, max_length=80)
+
+
+class VehicleDetailsUpdate(BaseModel):
+    """
+    Body for PUT /rider/vehicle-details.
+
+    Validators normalize the two fields most prone to formatting drift:
+    license_number (uppercase, digits+letters only) and vehicle_number
+    (uppercase, spaces stripped). Users paste these with arbitrary casing
+    and spaces; rejecting valid input over a stray space is a worse UX
+    than storing it consistently uppercase.
+    """
+    license_number: Optional[str] = Field(None, max_length=30)
+    vehicle_type: Optional[str] = Field(None, max_length=80)
+    vehicle_number: Optional[str] = Field(None, max_length=20)
+    payload_capacity_kg: Optional[float] = Field(
+        None, ge=0, le=100000,
+        description="Vehicle payload capacity in kilograms.",
+    )
+
+    @field_validator("license_number")
+    @classmethod
+    def license_uppercase(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
+        # Strip spaces and hyphens that users paste in from the physical
+        # card ("KA-01 2019 0001234"), then uppercase.
+        cleaned = v.replace(" ", "").replace("-", "").strip().upper()
+        return cleaned or None
+
+    @field_validator("vehicle_number")
+    @classmethod
+    def vehicle_number_normalize(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
+        cleaned = v.replace(" ", "").replace("-", "").strip().upper()
+        return cleaned or None
+
+    @field_validator("vehicle_type")
+    @classmethod
+    def vehicle_type_trim(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
+        cleaned = v.strip()
+        return cleaned or None
+
+
+class RiderRoutesUpdate(BaseModel):
+    """
+    Body for PUT /rider/routes.
+
+    `operating_routes` is a comma-separated list of districts/regions the
+    rider is willing to serve, e.g. "Kolar, Bengaluru Urban, Tumakuru".
+    Stored as a single string; the client splits/joins as needed.
+    """
+    operating_routes: Optional[str] = Field(
+        None, max_length=255,
+        description="Comma-separated list of operating districts/regions.",
+    )
+
+    @field_validator("operating_routes")
+    @classmethod
+    def routes_trim(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
+        # Normalize to "a, b, c" — consistent spacing, no empties.
+        parts = [p.strip() for p in v.split(",")]
+        joined = ", ".join(p for p in parts if p)
+        return joined or None
+
+
+class RiderPayoutUpdate(BaseModel):
+    """
+    Body for PUT /rider/payouts.
+
+    Same shape and validators as the farmer's PayoutDetailsUpdate, but
+    kept as its own class so the two endpoints can evolve independently
+    (e.g. if riders later need a settlement account separate from a
+    farmer's payout account).
+    """
+    bank_name: Optional[str] = Field(None, max_length=100)
+    account_number: Optional[str] = Field(None, max_length=30)
+    ifsc_code: Optional[str] = Field(None, max_length=20)
+    upi_id: Optional[str] = Field(None, max_length=100)
+
+    @field_validator("ifsc_code")
+    @classmethod
+    def ifsc_uppercase(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
+        cleaned = v.strip().upper()
+        return cleaned or None
+
+    @field_validator("upi_id")
+    @classmethod
+    def upi_lowercase(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
+        cleaned = v.strip().lower()
+        return cleaned or None
+
+    @field_validator("account_number")
+    @classmethod
+    def account_digits(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
+        cleaned = v.replace(" ", "").strip()
+        if not cleaned:
+            return None
+        if not cleaned.isdigit():
+            raise ValueError("account_number must contain digits only")
+        return cleaned
+
+
+class DutyStatusUpdate(BaseModel):
+    """
+    Body for PATCH /rider/duty-status.
+
+    `is_on_duty` is required (not Optional). The client is explicitly
+    setting a state, not optionally editing a field — a PATCH with an
+    absent `is_on_duty` is a client bug, not a partial update.
+    """
+    is_on_duty: bool = Field(
+        ...,
+        description="True = online and accepting trips; False = offline.",
+    )
+
+
+# ---------------------------------------------------------------------------
 # ProduceRequest schemas
 # ---------------------------------------------------------------------------
 
