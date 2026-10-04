@@ -16,11 +16,26 @@ class AuthProvider extends ChangeNotifier {
   static const String _tokenKey = 'jwt_token';
   static const String _roleKey = 'user_role';
   static const String _userIdKey = 'user_id';
+  static const String _fullNameKey = 'user_full_name';
+  static const String _emailKey = 'user_email';
+  static const String _districtKey = 'user_district';
+  static const String _stateKey = 'user_state';
 
   bool _isLoggedIn = false;
   String? _role; // 'FARMER' | 'RIDER'
   String? _userId;
   String? _token;
+
+  /// Profile fields surfaced from the login / signup response's `user`
+  /// object. All nullable — a session restored from an older app version
+  /// (before these keys existed) will simply have them as null until the
+  /// next login. The Account screen falls back to `GET /farmer/account`
+  /// when these are missing.
+  String? _fullName;
+  String? _email;
+  String? _district;
+  String? _state;
+
   bool _isInitializing = true;
   bool _isLoggingIn = false;
   String? _lastError;
@@ -35,6 +50,10 @@ class AuthProvider extends ChangeNotifier {
   String? get role => _role;
   String? get userId => _userId;
   String? get token => _token;
+  String? get fullName => _fullName;
+  String? get email => _email;
+  String? get district => _district;
+  String? get state => _state;
 
   /// True while the provider is checking secure storage for an existing
   /// session on app startup. Useful for showing a splash/loading screen.
@@ -62,6 +81,13 @@ class AuthProvider extends ChangeNotifier {
         _role = storedRole;
         _userId = storedUserId;
         _token = token;
+
+        // Profile fields are best-effort — an older install may not have
+        // them stored, in which case they stay null.
+        _fullName = await _secureStorage.read(key: _fullNameKey);
+        _email = await _secureStorage.read(key: _emailKey);
+        _district = await _secureStorage.read(key: _districtKey);
+        _state = await _secureStorage.read(key: _stateKey);
       }
     } catch (_) {
       // If secure storage is unreadable, fall back to a logged-out state.
@@ -69,17 +95,55 @@ class AuthProvider extends ChangeNotifier {
       _role = null;
       _userId = null;
       _token = null;
+      _fullName = null;
+      _email = null;
+      _district = null;
+      _state = null;
     } finally {
       _isInitializing = false;
       notifyListeners();
     }
   }
 
+  /// Persists the profile fields that arrived alongside the token. Kept as
+  /// its own method so [login], [devLogin], and [completeSignup] all share
+  /// one write path — a field added here is automatically picked up by
+  /// every auth entry point.
+  ///
+  /// Any param passed as null clears the corresponding stored key. That's
+  /// the correct behavior for [devLogin], whose response carries no user
+  /// object at all.
+  Future<void> _persistProfileFields({
+    String? fullName,
+    String? email,
+    String? district,
+    String? state,
+  }) async {
+    Future<void> write(String key, String? value) async {
+      if (value == null || value.isEmpty) {
+        await _secureStorage.delete(key: key);
+      } else {
+        await _secureStorage.write(key: key, value: value);
+      }
+    }
+
+    await write(_fullNameKey, fullName);
+    await write(_emailKey, email);
+    await write(_districtKey, district);
+    await write(_stateKey, state);
+
+    _fullName = (fullName == null || fullName.isEmpty) ? null : fullName;
+    _email = (email == null || email.isEmpty) ? null : email;
+    _district = (district == null || district.isEmpty) ? null : district;
+    _state = (state == null || state.isEmpty) ? null : state;
+  }
+
   /// Standard email + password login against `POST /auth/login`.
   ///
-  /// On success, persists the JWT, role, and user id to secure storage and
-  /// flips in-memory state to logged-in. The caller (or the root widget
-  /// observing [notifyListeners]) can then route based on [role].
+  /// On success, persists the JWT, role, user id, and profile fields to
+  /// secure storage and flips in-memory state to logged-in. The caller (or
+  /// the root widget observing [notifyListeners]) can then route based on
+  /// [role].
   ///
   /// Returns `true` on success. On failure returns `false` and sets
   /// [lastError] to the server's `detail` message — most commonly
@@ -108,6 +172,10 @@ class AuthProvider extends ChangeNotifier {
         final user = data['user'] as Map<String, dynamic>?;
         final userRole = (user?['role'] ?? '').toString();
         final userId = (user?['id'] ?? '').toString();
+        final userFullName = (user?['full_name'] ?? '').toString();
+        final userEmail = (user?['email'] ?? '').toString();
+        final userDistrict = (user?['district'] ?? '').toString();
+        final userState = (user?['state'] ?? '').toString();
 
         if (token == null ||
             token.isEmpty ||
@@ -122,6 +190,12 @@ class AuthProvider extends ChangeNotifier {
         await _secureStorage.write(key: _tokenKey, value: token);
         await _secureStorage.write(key: _roleKey, value: userRole);
         await _secureStorage.write(key: _userIdKey, value: userId);
+        await _persistProfileFields(
+          fullName: userFullName,
+          email: userEmail,
+          district: userDistrict,
+          state: userState,
+        );
 
         _isLoggedIn = true;
         _role = userRole;
@@ -155,6 +229,10 @@ class AuthProvider extends ChangeNotifier {
   /// Retained for local development; not reachable in production because
   /// the backend 404s that route when ENVIRONMENT=production. The current
   /// login UI doesn't expose it — call [login] instead.
+  ///
+  /// The dev-token response carries no user object, so profile fields are
+  /// explicitly cleared. The Account screen will fetch them from
+  /// `GET /farmer/account` on first open.
   Future<bool> devLogin(String uuid, String selectedRole) async {
     _isLoggingIn = true;
     _lastError = null;
@@ -180,6 +258,7 @@ class AuthProvider extends ChangeNotifier {
         await _secureStorage.write(key: _tokenKey, value: token);
         await _secureStorage.write(key: _roleKey, value: selectedRole);
         await _secureStorage.write(key: _userIdKey, value: uuid);
+        await _persistProfileFields();
 
         _isLoggedIn = true;
         _role = selectedRole;
@@ -215,6 +294,12 @@ class AuthProvider extends ChangeNotifier {
   /// of the app sees a "just logged in" transition, exactly like
   /// [login] does on success.
   ///
+  /// [fullName], [email], [district], and [state] are optional. Callers
+  /// that already have the user object (which `/auth/verify-otp` returns)
+  /// can pass them so the Account screen's header renders instantly on
+  /// first open. Callers that don't (older code) can leave them out — the
+  /// Account screen falls back to `GET /farmer/account`.
+  ///
   /// Returns `true` on success, `false` if secure storage rejected the
   /// write (in which case [lastError] explains why and the caller should
   /// NOT navigate).
@@ -222,6 +307,10 @@ class AuthProvider extends ChangeNotifier {
     required String token,
     required String role,
     required String userId,
+    String? fullName,
+    String? email,
+    String? district,
+    String? state,
   }) async {
     _lastError = null;
 
@@ -229,6 +318,12 @@ class AuthProvider extends ChangeNotifier {
       await _secureStorage.write(key: _tokenKey, value: token);
       await _secureStorage.write(key: _roleKey, value: role);
       await _secureStorage.write(key: _userIdKey, value: userId);
+      await _persistProfileFields(
+        fullName: fullName,
+        email: email,
+        district: district,
+        state: state,
+      );
 
       _isLoggedIn = true;
       _role = role;
@@ -267,10 +362,10 @@ class AuthProvider extends ChangeNotifier {
   /// Three things must happen for the app to reach a clean logged-out
   /// state, and all three are done here:
   ///
-  ///   1. Wipe the JWT, role, and user id from secure storage so a restart
-  ///      doesn't resurrect the session.
-  ///   2. Reset the in-memory fields (`_isLoggedIn`, `_role`, `_userId`,
-  ///      `_token`) so nothing downstream can read a stale token.
+  ///   1. Wipe the JWT, role, user id, and profile fields from secure
+  ///      storage so a restart doesn't resurrect the session.
+  ///   2. Reset the in-memory fields so nothing downstream can read a
+  ///      stale token or display a previous user's name.
   ///   3. `notifyListeners()` so any `Consumer<AuthProvider>` /
   ///      `context.watch` in the tree rebuilds immediately.
   ///
@@ -285,6 +380,10 @@ class AuthProvider extends ChangeNotifier {
       await _secureStorage.delete(key: _tokenKey);
       await _secureStorage.delete(key: _roleKey);
       await _secureStorage.delete(key: _userIdKey);
+      await _secureStorage.delete(key: _fullNameKey);
+      await _secureStorage.delete(key: _emailKey);
+      await _secureStorage.delete(key: _districtKey);
+      await _secureStorage.delete(key: _stateKey);
     } catch (_) {
       // Swallow — see comment above. In-memory state still gets reset.
     }
@@ -293,6 +392,10 @@ class AuthProvider extends ChangeNotifier {
     _role = null;
     _userId = null;
     _token = null;
+    _fullName = null;
+    _email = null;
+    _district = null;
+    _state = null;
     _lastError = null;
     notifyListeners();
   }

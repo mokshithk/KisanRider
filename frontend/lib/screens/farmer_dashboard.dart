@@ -5,10 +5,10 @@ import 'package:http/http.dart' as http;
 import 'package:provider/provider.dart';
 
 import '../providers/auth_provider.dart';
+import 'farmer_account_screen.dart';
 import 'farmer_earnings_tab.dart';
 import 'farmer_home_tab.dart';
 import 'farmer_orders_tab.dart';
-import 'login_screen.dart';
 
 /// Base URL of the FastAPI backend.
 ///
@@ -64,74 +64,6 @@ const List<String> _kDistricts = [
 
 /// Brand color used across the farmer-side UI.
 const Color _kFarmerGreen = Color(0xFF2E7D32);
-
-// ---------------------------------------------------------------------------
-// Logout helper — shared by the AppBar icon and the Account tab.
-// ---------------------------------------------------------------------------
-
-/// Shows the "Are you sure you want to log out?" confirmation dialog, then
-/// logs out and navigates to [LoginScreen].
-///
-/// ## Why this navigates manually
-///
-/// `login_screen.dart` uses `pushAndRemoveUntil(..., (route) => false)` to
-/// route to the dashboard after a successful login. That predicate removes
-/// **every** route in the Navigator, including the `MaterialApp.home` route
-/// that hosted `_AuthGate`. So by the time the user taps Logout, `_AuthGate`
-/// is no longer mounted and cannot react to `notifyListeners()`. The only
-/// way back to the login screen is to replace the stack explicitly — which
-/// is what this function does.
-///
-/// ## Order of operations
-///
-/// `auth.logout()` is awaited first so secure storage is cleared and
-/// `_AuthGate` (if it happens to still be alive) gets a chance to rebuild.
-/// Then we clear the Navigator. Doing it in the other order risks a rebuild
-/// of `_AuthGate` pushing a second `LoginScreen` on top of ours.
-///
-/// `navigator` is captured **before** the `await` on purpose: after the
-/// await, `context` may be stale if the widget has already been disposed.
-/// The captured `NavigatorState` remains valid for the frame.
-Future<void> _confirmAndLogout(BuildContext context) async {
-  final confirmed = await showDialog<bool>(
-    context: context,
-    builder: (dialogContext) => AlertDialog(
-      title: const Text('Log out?'),
-      content: const Text('Are you sure you want to log out?'),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.of(dialogContext).pop(false),
-          child: const Text('Cancel'),
-        ),
-        FilledButton(
-          onPressed: () => Navigator.of(dialogContext).pop(true),
-          style: FilledButton.styleFrom(
-            backgroundColor: _kFarmerGreen,
-            foregroundColor: Colors.white,
-          ),
-          child: const Text('Logout'),
-        ),
-      ],
-    ),
-  );
-
-  if (confirmed != true || !context.mounted) return;
-
-  final auth = context.read<AuthProvider>();
-  final navigator = Navigator.of(context);
-
-  try {
-    await auth.logout();
-  } catch (_) {
-    // Even if secure-storage cleanup threw, we still want to leave the
-    // dashboard. Fall through to the navigation below.
-  }
-
-  navigator.pushAndRemoveUntil(
-    MaterialPageRoute(builder: (_) => const LoginScreen()),
-    (Route<dynamic> route) => false,
-  );
-}
 
 // ---------------------------------------------------------------------------
 // Root dashboard with bottom navigation
@@ -211,7 +143,7 @@ class _FarmerDashboardState extends State<FarmerDashboard> {
           IconButton(
             tooltip: 'Logout',
             icon: const Icon(Icons.logout),
-            onPressed: () => _confirmAndLogout(context),
+            onPressed: () => showLogoutConfirmation(context),
           ),
         ],
       ),
@@ -224,7 +156,7 @@ class _FarmerDashboardState extends State<FarmerDashboard> {
           FarmerHomeTab(onTabSwitch: _handleHomeTabSwitch),
           FarmerOrdersTab(onBookTransport: _openBookTransport),
           const FarmerEarningsTab(),
-          const FarmerAccountTab(),
+          const FarmerAccountScreen(),
         ],
       ),
       bottomNavigationBar: BottomNavigationBar(
@@ -263,11 +195,11 @@ class _FarmerDashboardState extends State<FarmerDashboard> {
 }
 
 // ---------------------------------------------------------------------------
-// Tab 1 — Book Transport form
+// Book Transport form
 //
-// Still lives in this file since it's reached as a route rather than a tab,
-// and nothing else references it. Move it into its own file if you want
-// this dashboard file to shrink further.
+// Reached as a pushed route rather than a bottom-nav tab. Kept in this file
+// since nothing else references it — move it into its own file if this one
+// gets too large.
 // ---------------------------------------------------------------------------
 
 class FarmerBookTransportTab extends StatefulWidget {
@@ -649,105 +581,6 @@ class _FarmerBookTransportTabState extends State<FarmerBookTransportTab> {
               ),
             ],
           ),
-        ),
-      ),
-    );
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Tab 3 — Account
-// ---------------------------------------------------------------------------
-
-class FarmerAccountTab extends StatelessWidget {
-  const FarmerAccountTab({super.key});
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final auth = context.watch<AuthProvider>();
-
-    return SafeArea(
-      child: SingleChildScrollView(
-        padding: const EdgeInsets.fromLTRB(20, 32, 20, 32),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            // ----- Avatar + name -------------------------------------------
-            Center(
-              child: Column(
-                children: [
-                  Container(
-                    padding: const EdgeInsets.all(24),
-                    decoration: BoxDecoration(
-                      color: _kFarmerGreen.withOpacity(0.08),
-                      shape: BoxShape.circle,
-                    ),
-                    child: const Icon(
-                      Icons.person,
-                      size: 64,
-                      color: _kFarmerGreen,
-                    ),
-                  ),
-                  const SizedBox(height: 20),
-                  Text(
-                    'Farmer Profile',
-                    style: theme.textTheme.titleLarge
-                        ?.copyWith(fontWeight: FontWeight.w600),
-                    textAlign: TextAlign.center,
-                  ),
-                  const SizedBox(height: 6),
-                  Text(
-                    'Mandi rates and full profile coming soon.',
-                    style: theme.textTheme.bodySmall?.copyWith(
-                      color: theme.colorScheme.onSurfaceVariant,
-                    ),
-                    textAlign: TextAlign.center,
-                  ),
-                  if ((auth.userId ?? '').isNotEmpty) ...[
-                    const SizedBox(height: 10),
-                    Text(
-                      'ID: ${auth.userId}',
-                      style: theme.textTheme.bodySmall?.copyWith(
-                        color: theme.colorScheme.onSurfaceVariant,
-                      ),
-                    ),
-                  ],
-                ],
-              ),
-            ),
-            const SizedBox(height: 32),
-
-            // ----- Settings / actions list ---------------------------------
-            Card(
-              margin: EdgeInsets.zero,
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(16),
-              ),
-              child: Column(
-                children: [
-                  const ListTile(
-                    leading: Icon(Icons.person_outline, color: _kFarmerGreen),
-                    title: Text('Profile & Mandi Rates'),
-                    subtitle: Text('Coming soon'),
-                    trailing: Icon(Icons.chevron_right),
-                  ),
-                  const Divider(height: 1),
-                  ListTile(
-                    leading: const Icon(Icons.logout, color: Colors.red),
-                    title: const Text(
-                      'Log out',
-                      style: TextStyle(
-                        color: Colors.red,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                    onTap: () => _confirmAndLogout(context),
-                  ),
-                ],
-              ),
-            ),
-          ],
         ),
       ),
     );

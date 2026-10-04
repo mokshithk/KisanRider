@@ -149,6 +149,136 @@ class Token(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Farmer Account schemas
+# ---------------------------------------------------------------------------
+
+class FarmerAccountOut(BaseModel):
+    """
+    Full farmer account payload. Returned by GET /farmer/account and by
+    every PUT below, so the client always receives the complete updated
+    record in one response and can refresh its local copy without a
+    follow-up GET.
+
+    Email is typed as `str` rather than `EmailStr` on purpose: legacy
+    phone-only accounts get an auto-generated address ending in
+    `@legacy.kisanrider.local`, and Pydantic's strict EmailStr validation
+    rejects `.local` as a non-public TLD. `str` avoids a 500 on those rows.
+    """
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    full_name: str
+    email: str
+    role: Literal["FARMER", "RIDER"]
+    is_verified: bool = True
+
+    # Basic info
+    district: Optional[str] = None
+    taluk_village: Optional[str] = None
+    state: Optional[str] = None
+
+    # Farm info
+    farm_size_acres: Optional[float] = None
+    primary_crops: Optional[str] = None
+
+    # Address
+    farm_address: Optional[str] = None
+    landmark: Optional[str] = None
+
+    # Payout info
+    bank_name: Optional[str] = None
+    account_number: Optional[str] = None
+    ifsc_code: Optional[str] = None
+    upi_id: Optional[str] = None
+
+    # Preferences
+    preferred_language: str = "en"
+
+
+class FarmerProfileUpdate(BaseModel):
+    """
+    Body for PUT /farmer/profile.
+
+    Every field is optional. The endpoint uses `model_dump(exclude_unset=True)`,
+    so only fields the client actually sent are written — omitting a field
+    leaves the stored value untouched, while sending it as `null` clears it.
+    """
+    full_name: Optional[str] = Field(None, min_length=1, max_length=120)
+    district: Optional[str] = Field(None, max_length=80)
+    taluk_village: Optional[str] = Field(None, max_length=120)
+
+
+class FarmDetailsUpdate(BaseModel):
+    """Body for PUT /farmer/farm-details."""
+    farm_size_acres: Optional[float] = Field(
+        None, ge=0, le=100000,
+        description="Farm size in acres; must be non-negative.",
+    )
+    primary_crops: Optional[str] = Field(None, max_length=255)
+
+
+class FarmAddressUpdate(BaseModel):
+    """Body for PUT /farmer/address."""
+    farm_address: Optional[str] = Field(None, max_length=1000)
+    landmark: Optional[str] = Field(None, max_length=255)
+
+
+class PayoutDetailsUpdate(BaseModel):
+    """
+    Body for PUT /farmer/payouts.
+
+    All fields are free-text and stored as-is. `ifsc_code` and `upi_id`
+    are shape-checked lightly so obviously wrong input is rejected early;
+    a full bank/UPI verification flow is out of scope for the MVP.
+    """
+    bank_name: Optional[str] = Field(None, max_length=100)
+    account_number: Optional[str] = Field(None, max_length=30)
+    ifsc_code: Optional[str] = Field(None, max_length=20)
+    upi_id: Optional[str] = Field(None, max_length=100)
+
+    @field_validator("ifsc_code")
+    @classmethod
+    def ifsc_uppercase(cls, v: Optional[str]) -> Optional[str]:
+        """
+        IFSC codes are officially uppercase 11-char strings (4 letters +
+        '0' + 6 alphanumerics). We don't enforce the full pattern here —
+        users paste with spaces and varied casing, and rejecting a valid
+        code because of a stray space is worse than storing it as-is. We
+        do normalize to uppercase so lookups remain consistent.
+        """
+        if v is None:
+            return None
+        cleaned = v.strip().upper()
+        return cleaned or None
+
+    @field_validator("upi_id")
+    @classmethod
+    def upi_lowercase(cls, v: Optional[str]) -> Optional[str]:
+        """UPI IDs are case-insensitive in practice; normalize to lowercase."""
+        if v is None:
+            return None
+        cleaned = v.strip().lower()
+        return cleaned or None
+
+    @field_validator("account_number")
+    @classmethod
+    def account_digits(cls, v: Optional[str]) -> Optional[str]:
+        """
+        Reject anything containing non-digit characters. Indian bank
+        account numbers are digits-only; spaces are stripped first so
+        pasting "1234 5678 9012" doesn't fail validation.
+        """
+        if v is None:
+            return None
+        cleaned = v.replace(" ", "").strip()
+        if not cleaned:
+            return None
+        if not cleaned.isdigit():
+            raise ValueError("account_number must contain digits only")
+        return cleaned
+
+
+# ---------------------------------------------------------------------------
 # ProduceRequest schemas
 # ---------------------------------------------------------------------------
 

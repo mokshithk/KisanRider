@@ -10,6 +10,7 @@ from sqlalchemy import (
     Integer,
     Numeric,
     String,
+    Text,
     func,
 )
 from sqlalchemy.dialects.postgresql import UUID
@@ -39,9 +40,42 @@ class User(Base):
     # Every user created by /auth/verify-otp has this populated.
     password_hash = Column(String(255), nullable=True)
 
-    # Location captured at signup. Kept nullable for legacy rows.
+    # ----- Basic info ------------------------------------------------------
+    # `district` and `state` are captured at signup; `taluk_village` is
+    # filled in later from the Account screen.
     district = Column(String(80), nullable=True)
+    taluk_village = Column(String(120), nullable=True)
     state = Column(String(80), nullable=True, default="Karnataka")
+
+    # ----- Farm info -------------------------------------------------------
+    farm_size_acres = Column(Float, nullable=True)
+    primary_crops = Column(String(255), nullable=True)
+
+    # ----- Pickup address --------------------------------------------------
+    # `farm_address` is free-text; `landmark` is a short reference line the
+    # rider can look for on arrival. Both nullable — a user may sign up and
+    # never fill these in.
+    farm_address = Column(Text, nullable=True)
+    landmark = Column(String(255), nullable=True)
+
+    # ----- Payout info -----------------------------------------------------
+    # Stored as plain strings. If you later decide these need encryption at
+    # rest, do it at the service layer — the ORM column type stays String.
+    bank_name = Column(String(100), nullable=True)
+    account_number = Column(String(30), nullable=True)
+    ifsc_code = Column(String(20), nullable=True)
+    upi_id = Column(String(100), nullable=True)
+
+    # ----- Preferences -----------------------------------------------------
+    # ISO 639-1 language code. `server_default` matters: it backfills 'en'
+    # for any row inserted before this column existed and for direct SQL
+    # inserts that omit it.
+    preferred_language = Column(
+        String(10),
+        nullable=False,
+        default="en",
+        server_default="en",
+    )
 
     # Email-OTP signup sets this True once the code is verified.
     # Defaults True so legacy rows are treated as already verified.
