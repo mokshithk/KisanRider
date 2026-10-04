@@ -10,6 +10,7 @@ from sqlalchemy import (
     Integer,
     Numeric,
     String,
+    Text,
     func,
 )
 from sqlalchemy.dialects.postgresql import UUID
@@ -31,6 +32,22 @@ class User(Base):
     # because new email-signup users never supply a phone.
     phone = Column(String(15), unique=True, nullable=True)
 
+    # Contact phone number shown on the profile and shared with the
+    # counterparty on an active trip (a farmer sees their rider's number,
+    # and vice versa). Deliberately distinct from `phone` above:
+    #
+    #   - `phone` is a legacy *login identifier*. It's unique, and it was
+    #     used as the account key before the email-OTP signup flow
+    #     existed. New accounts never set it.
+    #   - `phone_number` is a *contact* number, editable from the Farmer
+    #     and Rider Account screens. Changing it has no effect on login.
+    #
+    # Both are nullable. `phone_number` is indexed for future
+    # "look up user by phone" support workflows, but NOT unique — two
+    # accounts sharing one family phone is a legitimate case on this
+    # platform.
+    phone_number = Column(String(15), nullable=True, index=True)
+
     role = Column(String(20), nullable=False, default="FARMER")
     full_name = Column(String(100), nullable=False)
 
@@ -39,9 +56,68 @@ class User(Base):
     # Every user created by /auth/verify-otp has this populated.
     password_hash = Column(String(255), nullable=True)
 
-    # Location captured at signup. Kept nullable for legacy rows.
+    # ----- Basic info ------------------------------------------------------
+    # `district` and `state` are captured at signup; `taluk_village` is
+    # filled in later from the Farmer Account screen.
     district = Column(String(80), nullable=True)
+    taluk_village = Column(String(120), nullable=True)
     state = Column(String(80), nullable=True, default="Karnataka")
+
+    # ----- Farmer-specific: farm info --------------------------------------
+    farm_size_acres = Column(Float, nullable=True)
+    primary_crops = Column(String(255), nullable=True)
+
+    # ----- Farmer-specific: pickup address ---------------------------------
+    # `farm_address` is free-text; `landmark` is a short reference line the
+    # rider can look for on arrival. Both nullable.
+    farm_address = Column(Text, nullable=True)
+    landmark = Column(String(255), nullable=True)
+
+    # ----- Rider-specific: duty status -------------------------------------
+    # Toggled from the Rider Account screen. `server_default="false"` is
+    # what backfills existing rows when the column is first added — without
+    # it, ADD COLUMN NOT NULL would fail on a non-empty table.
+    is_on_duty = Column(
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default="false",
+    )
+
+    # ----- Rider-specific: driver & vehicle info ---------------------------
+    # All nullable — a rider fills these in after signup from the Account
+    # screen, and a farmer never populates them at all.
+    license_number = Column(String(30), nullable=True)
+    vehicle_type = Column(String(80), nullable=True)
+    vehicle_number = Column(String(20), nullable=True)
+    payload_capacity_kg = Column(Float, nullable=True)
+
+    # ----- Rider-specific: preferred routes --------------------------------
+    # Free-text comma-separated list of districts/regions, e.g.
+    # "Kolar, Bengaluru Urban, Chikkaballapura". Stored as a single string
+    # rather than JSON so it's greppable and editable directly in SQL —
+    # splitting/joining happens client-side.
+    operating_routes = Column(String(255), nullable=True)
+
+    # ----- Shared: payout info ---------------------------------------------
+    # Used by both farmer and rider settlement flows. Stored as plain
+    # strings. If you later decide these need encryption at rest, do it at
+    # the service layer — the ORM column type stays String.
+    bank_name = Column(String(100), nullable=True)
+    account_number = Column(String(30), nullable=True)
+    ifsc_code = Column(String(20), nullable=True)
+    upi_id = Column(String(100), nullable=True)
+
+    # ----- Shared: preferences ---------------------------------------------
+    # ISO 639-1 language code. `server_default` matters: it backfills 'en'
+    # for any row inserted before this column existed and for direct SQL
+    # inserts that omit it.
+    preferred_language = Column(
+        String(10),
+        nullable=False,
+        default="en",
+        server_default="en",
+    )
 
     # Email-OTP signup sets this True once the code is verified.
     # Defaults True so legacy rows are treated as already verified.

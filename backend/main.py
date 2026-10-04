@@ -45,7 +45,37 @@ async def lifespan(app: FastAPI):
     (e.g. crate_scans) on startup.
 
     create_all() only issues CREATE TABLE IF NOT EXISTS for tables it
-    doesn't find — it never alters an existing table.
+    doesn't find — it never alters an existing table. New columns on the
+    `users` table (both the farmer-account set and the rider-account set)
+    must be applied to an existing database with a manual ALTER TABLE.
+    See the migration snippets in the Farmer Account and Rider Account
+    sections below.
+
+    Farmer account migration:
+
+        ALTER TABLE users
+          ADD COLUMN IF NOT EXISTS taluk_village      VARCHAR(120),
+          ADD COLUMN IF NOT EXISTS farm_size_acres    DOUBLE PRECISION,
+          ADD COLUMN IF NOT EXISTS primary_crops      VARCHAR(255),
+          ADD COLUMN IF NOT EXISTS farm_address       TEXT,
+          ADD COLUMN IF NOT EXISTS landmark           VARCHAR(255),
+          ADD COLUMN IF NOT EXISTS bank_name          VARCHAR(100),
+          ADD COLUMN IF NOT EXISTS account_number     VARCHAR(30),
+          ADD COLUMN IF NOT EXISTS ifsc_code          VARCHAR(20),
+          ADD COLUMN IF NOT EXISTS upi_id             VARCHAR(100),
+          ADD COLUMN IF NOT EXISTS preferred_language VARCHAR(10)
+            NOT NULL DEFAULT 'en';
+
+    Rider account migration:
+
+        ALTER TABLE users
+          ADD COLUMN IF NOT EXISTS is_on_duty          BOOLEAN
+            NOT NULL DEFAULT FALSE,
+          ADD COLUMN IF NOT EXISTS license_number      VARCHAR(30),
+          ADD COLUMN IF NOT EXISTS vehicle_type        VARCHAR(80),
+          ADD COLUMN IF NOT EXISTS vehicle_number      VARCHAR(20),
+          ADD COLUMN IF NOT EXISTS payload_capacity_kg DOUBLE PRECISION,
+          ADD COLUMN IF NOT EXISTS operating_routes    VARCHAR(255);
     """
     models.Base.metadata.create_all(bind=engine)
     yield
@@ -703,6 +733,335 @@ def register_user(user: schemas.UserCreate, db: Session = Depends(get_db)):
     try:
         return crud.create_user(db, user)
     except (SQLAlchemyError, ValueError) as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+# ---------------------------------------------------------------------------
+# Farmer Account
+#
+# All four PUTs follow the same shape:
+#   - payload.model_dump(exclude_unset=True) so omitted fields are left
+#     untouched and explicit nulls clear the stored value;
+#   - crud.apply_user_updates commits the change;
+#   - the full updated account is returned so the client can refresh its
+#     local copy without a follow-up GET.
+#
+# Every endpoint is gated on role FARMER, so a rider token gets a 403 —
+# the schema shape is farmer-specific (farm size, payouts, etc.).
+# ---------------------------------------------------------------------------
+
+@app.get(
+    "/farmer/account",
+    response_model=schemas.FarmerAccountOut,
+    summary="Get the logged-in farmer's full account record",
+)
+def get_farmer_account(
+    current_user: models.User = Depends(auth.require_role("FARMER")),
+):
+    """
+    Return every account field the farmer-side UI needs: identity, farm
+    info, pickup address, payout details, and preferences. No DB query is
+    issued here — `require_role` already resolved the User row via
+    `get_current_user`.
+    """
+    return current_user
+
+
+@app.put(
+    "/farmer/profile",
+    response_model=schemas.FarmerAccountOut,
+    summary="Update basic profile info (name, district, taluk/village)",
+)
+def update_farmer_profile(
+    payload: schemas.FarmerProfileUpdate,
+    current_user: models.User = Depends(auth.require_role("FARMER")),
+    db: Session = Depends(get_db),
+):
+    """
+    Update the name and location fields.
+
+    `email` is intentionally NOT updatable here. Changing it is a
+    privileged operation that needs re-verification via the OTP flow —
+    silently accepting a new address would let anyone repoint the account
+    at an email they don't control. Add a dedicated endpoint when needed.
+    """
+    updates = payload.model_dump(exclude_unset=True)
+
+    # Guard against a client sending `{"full_name": ""}` — Pydantic's
+    # `min_length=1` only rejects empty strings that are actually
+    # present, and "" passes that check if it's stripped to whitespace.
+    if "full_name" in updates and updates["full_name"] is not None:
+        updates["full_name"] = updates["full_name"].strip()
+        if not updates["full_name"]:
+            raise HTTPException(
+                status_code=400,
+                detail="full_name cannot be empty",
+            )
+
+    try:
+        return crud.apply_user_updates(db, current_user, updates)
+    except SQLAlchemyError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.put(
+    "/farmer/farm-details",
+    response_model=schemas.FarmerAccountOut,
+    summary="Update farm size and primary crops",
+)
+def update_farmer_farm_details(
+    payload: schemas.FarmDetailsUpdate,
+    current_user: models.User = Depends(auth.require_role("FARMER")),
+    db: Session = Depends(get_db),
+):
+    """Update `farm_size_acres` and `primary_crops`."""
+    updates = payload.model_dump(exclude_unset=True)
+
+    if "primary_crops" in updates and updates["primary_crops"] is not None:
+        updates["primary_crops"] = updates["primary_crops"].strip() or None
+
+    try:
+        return crud.apply_user_updates(db, current_user, updates)
+    except SQLAlchemyError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.put(
+    "/farmer/address",
+    response_model=schemas.FarmerAccountOut,
+    summary="Update farm pickup address and landmark",
+)
+def update_farmer_address(
+    payload: schemas.FarmAddressUpdate,
+    current_user: models.User = Depends(auth.require_role("FARMER")),
+    db: Session = Depends(get_db),
+):
+    """
+    Update the free-text pickup address and the short landmark line.
+
+    These are display-only fields for the MVP — the actual pickup
+    coordinates for a ProduceRequest still come from the client (mocked
+    in the current farmer_dashboard.dart). Wiring these strings to
+    geocoding is a separate piece of work.
+    """
+    updates = payload.model_dump(exclude_unset=True)
+
+    for field in ("farm_address", "landmark"):
+        if field in updates and updates[field] is not None:
+            updates[field] = updates[field].strip() or None
+
+    try:
+        return crud.apply_user_updates(db, current_user, updates)
+    except SQLAlchemyError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.put(
+    "/farmer/payouts",
+    response_model=schemas.FarmerAccountOut,
+    summary="Update bank account and UPI payout details",
+)
+def update_farmer_payouts(
+    payload: schemas.PayoutDetailsUpdate,
+    current_user: models.User = Depends(auth.require_role("FARMER")),
+    db: Session = Depends(get_db),
+):
+    """
+    Update the farmer's payout destination.
+
+    Values are stored as plain text — no checksum or penny-drop
+    verification runs here. `ifsc_code`, `upi_id`, and `account_number`
+    are normalized/validated at the schema layer (uppercase IFSC,
+    lowercase UPI, digits-only account number with spaces stripped).
+    """
+    updates = payload.model_dump(exclude_unset=True)
+
+    for field in ("bank_name", "account_number", "ifsc_code", "upi_id"):
+        if field in updates and updates[field] is not None:
+            updates[field] = updates[field].strip() or None
+
+    try:
+        return crud.apply_user_updates(db, current_user, updates)
+    except SQLAlchemyError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+# ---------------------------------------------------------------------------
+# Rider Account
+#
+# Mirrors the Farmer Account endpoints, with two differences:
+#
+#   1. `is_on_duty` is toggled via PATCH rather than PUT. It's a state
+#      transition the client performs with a single explicit boolean, not
+#      a partial update of a record — PUT semantics would be misleading.
+#
+#   2. Every endpoint is gated on role RIDER, so a farmer token gets a 403.
+#      The RiderAccountOut shape carries vehicle/license fields a farmer
+#      has no use for.
+#
+# As with the farmer endpoints, all updates use
+# `payload.model_dump(exclude_unset=True)` so omitted fields stay as
+# stored and explicit nulls clear, and every response returns the full
+# updated account record.
+# ---------------------------------------------------------------------------
+
+@app.get(
+    "/rider/account",
+    response_model=schemas.RiderAccountOut,
+    summary="Get the logged-in rider's full account record",
+)
+def get_rider_account(
+    current_user: models.User = Depends(auth.require_role("RIDER")),
+):
+    """
+    Return every account field the rider-side UI needs: identity, duty
+    status, vehicle details, operating routes, payout info, and
+    preferences. No DB query is issued here — `require_role` already
+    resolved the User row via `get_current_user`.
+    """
+    return current_user
+
+
+@app.patch(
+    "/rider/duty-status",
+    response_model=schemas.RiderAccountOut,
+    summary="Toggle the rider's online/offline availability",
+)
+def update_rider_duty_status(
+    payload: schemas.DutyStatusUpdate,
+    current_user: models.User = Depends(auth.require_role("RIDER")),
+    db: Session = Depends(get_db),
+):
+    """
+    Set `is_on_duty` to the boolean in the request body.
+
+    `is_on_duty` is required by the schema (not Optional) — a PATCH
+    without it is a client bug, and a 422 here catches it loudly rather
+    than silently no-op'ing.
+    """
+    updates = {"is_on_duty": payload.is_on_duty}
+
+    try:
+        return crud.apply_user_updates(db, current_user, updates)
+    except SQLAlchemyError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.put(
+    "/rider/profile",
+    response_model=schemas.RiderAccountOut,
+    summary="Update basic rider profile info (name, district)",
+)
+def update_rider_profile(
+    payload: schemas.RiderProfileUpdate,
+    current_user: models.User = Depends(auth.require_role("RIDER")),
+    db: Session = Depends(get_db),
+):
+    """
+    Update the rider's name and district.
+
+    `email` is intentionally NOT updatable here — same reasoning as the
+    farmer profile endpoint. Changing the login identifier needs the OTP
+    flow. `state` is fixed at Karnataka for the MVP and isn't exposed as
+    an editable field.
+    """
+    updates = payload.model_dump(exclude_unset=True)
+
+    if "full_name" in updates and updates["full_name"] is not None:
+        updates["full_name"] = updates["full_name"].strip()
+        if not updates["full_name"]:
+            raise HTTPException(
+                status_code=400,
+                detail="full_name cannot be empty",
+            )
+
+    if "district" in updates and updates["district"] is not None:
+        updates["district"] = updates["district"].strip() or None
+
+    try:
+        return crud.apply_user_updates(db, current_user, updates)
+    except SQLAlchemyError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.put(
+    "/rider/vehicle-details",
+    response_model=schemas.RiderAccountOut,
+    summary="Update driving license and vehicle specifications",
+)
+def update_rider_vehicle_details(
+    payload: schemas.VehicleDetailsUpdate,
+    current_user: models.User = Depends(auth.require_role("RIDER")),
+    db: Session = Depends(get_db),
+):
+    """
+    Update the rider's license number, vehicle type/number, and payload
+    capacity.
+
+    Normalization of `license_number` and `vehicle_number` (uppercase, no
+    spaces) happens at the schema layer so the stored values are
+    consistent regardless of how the rider typed them.
+    """
+    updates = payload.model_dump(exclude_unset=True)
+
+    try:
+        return crud.apply_user_updates(db, current_user, updates)
+    except SQLAlchemyError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.put(
+    "/rider/routes",
+    response_model=schemas.RiderAccountOut,
+    summary="Update preferred operating districts/routes",
+)
+def update_rider_routes(
+    payload: schemas.RiderRoutesUpdate,
+    current_user: models.User = Depends(auth.require_role("RIDER")),
+    db: Session = Depends(get_db),
+):
+    """
+    Update the rider's preferred operating routes.
+
+    Stored as a single comma-separated string; the schema validator
+    normalizes whitespace and strips empty entries. A rider who clears the
+    field ends up with `None`, which the client renders as "any route".
+    """
+    updates = payload.model_dump(exclude_unset=True)
+
+    try:
+        return crud.apply_user_updates(db, current_user, updates)
+    except SQLAlchemyError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.put(
+    "/rider/payouts",
+    response_model=schemas.RiderAccountOut,
+    summary="Update bank account and UPI payout details",
+)
+def update_rider_payouts(
+    payload: schemas.RiderPayoutUpdate,
+    current_user: models.User = Depends(auth.require_role("RIDER")),
+    db: Session = Depends(get_db),
+):
+    """
+    Update the rider's payout destination.
+
+    Values are stored as plain text — no checksum or penny-drop
+    verification runs here. `ifsc_code`, `upi_id`, and `account_number`
+    are normalized/validated at the schema layer (uppercase IFSC,
+    lowercase UPI, digits-only account number with spaces stripped).
+    """
+    updates = payload.model_dump(exclude_unset=True)
+
+    for field in ("bank_name", "account_number", "ifsc_code", "upi_id"):
+        if field in updates and updates[field] is not None:
+            updates[field] = updates[field].strip() or None
+
+    try:
+        return crud.apply_user_updates(db, current_user, updates)
+    except SQLAlchemyError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
 

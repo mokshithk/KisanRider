@@ -151,6 +151,40 @@ def update_user_password(
         raise
 
 
+def apply_user_updates(
+    db: Session, user: models.User, updates: dict
+) -> models.User:
+    """
+    Apply a dict of column-name -> value to `user` and commit.
+
+    Single chokepoint for every field-level update from the Farmer Account
+    screen so the four PUT endpoints don't each reimplement the same
+    setattr/commit/rollback dance.
+
+    The caller is responsible for filtering the dict — pass only the keys
+    the client actually sent. In the endpoints, that's achieved with
+    `payload.model_dump(exclude_unset=True)`: fields the client omitted are
+    absent from the dict (so they stay as stored), while fields sent as
+    `null` are present with value `None` (so they get cleared).
+
+    Empty dicts are a no-op against the DB; we still return the user so the
+    endpoint can uniformly serialize the current state.
+    """
+    if not updates:
+        return user
+
+    for field, value in updates.items():
+        setattr(user, field, value)
+
+    try:
+        db.commit()
+        db.refresh(user)
+        return user
+    except SQLAlchemyError:
+        db.rollback()
+        raise
+
+
 # ---------------------------------------------------------------------------
 # ProduceRequest CRUD
 # ---------------------------------------------------------------------------
