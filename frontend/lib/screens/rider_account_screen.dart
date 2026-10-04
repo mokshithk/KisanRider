@@ -283,6 +283,13 @@ class _RiderAccountScreenState extends State<RiderAccountScreen>
     return context.read<AuthProvider>().role ?? 'RIDER';
   }
 
+  /// Contact phone number, as normalized by the backend (10 digits, no
+  /// country code). Empty string when unset — the header uses that to
+  /// decide whether to render the phone row at all.
+  String get _displayPhone {
+    return _account?['phone_number']?.toString() ?? '';
+  }
+
   bool get _isOnDuty => (_account?['is_on_duty'] as bool?) ?? false;
 
   // -------------------------------------------------------------------------
@@ -367,6 +374,7 @@ class _RiderAccountScreenState extends State<RiderAccountScreen>
               email: _displayEmail,
               district: _displayDistrict,
               role: _displayRole,
+              phoneNumber: _displayPhone,
             ),
             const SizedBox(height: 16),
 
@@ -375,6 +383,25 @@ class _RiderAccountScreenState extends State<RiderAccountScreen>
               isOnDuty: _isOnDuty,
               isToggling: _isTogglingDuty,
               onChanged: _toggleDutyStatus,
+            ),
+
+            // ----- Personal Information -----------------------------------
+            // Added alongside the phone-number work so riders have the
+            // same "Edit Profile" affordance farmers do. Kept above the
+            // vehicle section — identity before equipment, matching the
+            // farmer screen's ordering.
+            _SectionHeader(title: 'PERSONAL INFORMATION'),
+            _SettingsCard(
+              children: [
+                _SettingsTile(
+                  icon: Icons.person_outline,
+                  title: 'Edit Profile',
+                  subtitle: 'Name, phone & base district',
+                  onTap: () => _openSheet(
+                    _RiderEditProfileSheet(account: _account),
+                  ),
+                ),
+              ],
             ),
 
             // ----- Vehicle & Driver Details -------------------------------
@@ -558,12 +585,18 @@ class _ProfileHeaderCard extends StatelessWidget {
     required this.email,
     required this.district,
     required this.role,
+    required this.phoneNumber,
   });
 
   final String fullName;
   final String email;
   final String district;
   final String role;
+
+  /// Normalized 10-digit contact number, or empty string when unset.
+  /// When empty, the phone row is omitted entirely — the Edit Profile
+  /// tile is the discoverable way to add one.
+  final String phoneNumber;
 
   @override
   Widget build(BuildContext context) {
@@ -621,6 +654,32 @@ class _ProfileHeaderCard extends StatelessWidget {
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
           ),
+
+          // Contact phone (only rendered when a number is on file).
+          // Prefixed with "+91 " so the displayed value matches what a
+          // user would dial — the stored value is just the 10 digits.
+          if (phoneNumber.isNotEmpty) ...[
+            const SizedBox(height: 6),
+            Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(
+                  Icons.phone,
+                  size: 14,
+                  color: theme.colorScheme.onSurfaceVariant,
+                ),
+                const SizedBox(width: 4),
+                Text(
+                  '+91 $phoneNumber',
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: theme.colorScheme.onSurfaceVariant,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ],
+            ),
+          ],
+
           const SizedBox(height: 14),
           Wrap(
             spacing: 8,
@@ -988,7 +1047,7 @@ class _SheetSubmitButton extends StatelessWidget {
 }
 
 // ============================================================================
-// PUT helper — every modal hits a different endpoint with the same shape
+// PUT helper
 // ============================================================================
 
 Future<Map<String, dynamic>?> _putRiderField({
@@ -1054,6 +1113,205 @@ Future<Map<String, dynamic>?> _putRiderField({
         );
     }
     return null;
+  }
+}
+
+// ============================================================================
+// Sheet 0 — Edit Profile (name, phone, district)
+// ============================================================================
+
+class _RiderEditProfileSheet extends StatefulWidget {
+  const _RiderEditProfileSheet({required this.account});
+
+  final Map<String, dynamic>? account;
+
+  @override
+  State<_RiderEditProfileSheet> createState() => _RiderEditProfileSheetState();
+}
+
+class _RiderEditProfileSheetState extends State<_RiderEditProfileSheet> {
+  final _formKey = GlobalKey<FormState>();
+  late final TextEditingController _fullName;
+
+  /// Holds the 10-digit number without any prefix. The "+91 " shown in
+  /// the field is a `prefixText` decoration, not part of the value — that
+  /// way the same controller round-trips cleanly through the backend
+  /// (which stores exactly the 10 digits).
+  late final TextEditingController _phone;
+
+  String? _district;
+  bool _isSubmitting = false;
+
+  /// Same list used by the signup form and the Farmer Account screen, so
+  /// every district dropdown in the app stays in sync.
+  static const List<String> _districts = [
+    'Bagalkot', 'Ballari', 'Belagavi', 'Bengaluru Rural', 'Bengaluru Urban',
+    'Bidar', 'Chamarajanagar', 'Chikkaballapura', 'Chikkamagaluru',
+    'Chitradurga', 'Dakshina Kannada', 'Davanagere', 'Dharwad', 'Gadag',
+    'Hassan', 'Haveri', 'Kalaburagi', 'Kodagu', 'Kolar', 'Koppal', 'Mandya',
+    'Mysuru', 'Raichur', 'Ramanagara', 'Shivamogga', 'Tumakuru', 'Udupi',
+    'Uttara Kannada', 'Vijayapura', 'Yadgir', 'Vijayanagara',
+  ];
+
+  @override
+  void initState() {
+    super.initState();
+    final a = widget.account ?? const {};
+    _fullName = TextEditingController(text: (a['full_name'] ?? '').toString());
+
+    // Strip any non-digit characters defensively — the backend normalizes
+    // on write, but a value that predates that validation might still be
+    // sitting in the DB. The digits-only formatter on the field would
+    // silently drop them anyway; doing it here means the initial render
+    // is consistent with what the user can subsequently type.
+    final rawPhone = (a['phone_number'] ?? '').toString();
+    _phone = TextEditingController(
+      text: rawPhone.replaceAll(RegExp(r'\D'), ''),
+    );
+
+    final d = (a['district'] ?? '').toString();
+    _district = _districts.contains(d) ? d : null;
+  }
+
+  @override
+  void dispose() {
+    _fullName.dispose();
+    _phone.dispose();
+    super.dispose();
+  }
+
+  Future<void> _submit() async {
+    if (!_formKey.currentState!.validate()) return;
+    setState(() => _isSubmitting = true);
+
+    final phoneText = _phone.text.trim();
+
+    final body = <String, dynamic>{
+      'full_name': _fullName.text.trim(),
+      'district': _district,
+      // Empty string clears the field server-side (PhoneNumber validator
+      // returns None for empty input). Non-empty has already been shaped
+      // to 10 digits by the input formatter + validator.
+      'phone_number': phoneText.isEmpty ? '' : phoneText,
+    };
+
+    final result = await _putRiderField(
+      context: context,
+      path: '/rider/profile',
+      body: body,
+    );
+
+    if (!mounted) return;
+    setState(() => _isSubmitting = false);
+    if (result != null) Navigator.of(context).pop(true);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return _SheetScaffold(
+      title: 'Edit Profile',
+      subtitle:
+          'Your name and contact details as they appear to farmers.',
+      child: Form(
+        key: _formKey,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            TextFormField(
+              controller: _fullName,
+              enabled: !_isSubmitting,
+              textCapitalization: TextCapitalization.words,
+              decoration: const InputDecoration(
+                labelText: 'Full Name',
+                border: OutlineInputBorder(),
+                prefixIcon: Icon(Icons.person_outline),
+              ),
+              validator: (v) {
+                if ((v ?? '').trim().isEmpty) return 'Name is required';
+                return null;
+              },
+            ),
+            const SizedBox(height: 14),
+
+            // Contact phone number. The "+91 " prefix is decoration; the
+            // controller value is just the 10 digits. inputFormatters
+            // enforce digits-only + max length so the field can't produce
+            // a value the validator would reject on shape grounds.
+            TextFormField(
+              controller: _phone,
+              enabled: !_isSubmitting,
+              keyboardType: TextInputType.phone,
+              inputFormatters: [
+                FilteringTextInputFormatter.digitsOnly,
+                LengthLimitingTextInputFormatter(10),
+              ],
+              decoration: const InputDecoration(
+                labelText: 'Contact Phone Number',
+                hintText: '9876543210',
+                border: OutlineInputBorder(),
+                prefixIcon: Icon(Icons.phone),
+                prefixText: '+91 ',
+                helperText:
+                    'Shared with the farmer on active trips',
+              ),
+              validator: (v) {
+                final value = (v ?? '').trim();
+                // Optional field — a rider who doesn't want to share a
+                // number can leave it blank.
+                if (value.isEmpty) return null;
+                if (!RegExp(r'^\d{10}$').hasMatch(value)) {
+                  return 'Enter a valid 10-digit mobile number';
+                }
+                return null;
+              },
+            ),
+            const SizedBox(height: 14),
+
+            // Email is intentionally read-only: changing it is a privileged
+            // operation that would need re-verification. Shown so the user
+            // sees which address their OTPs go to.
+            TextFormField(
+              initialValue: (widget.account?['email'] ?? '').toString(),
+              enabled: false,
+              decoration: const InputDecoration(
+                labelText: 'Email Address',
+                helperText: 'Contact support to change your login email',
+                border: OutlineInputBorder(),
+                prefixIcon: Icon(Icons.email_outlined),
+                filled: true,
+              ),
+            ),
+            const SizedBox(height: 14),
+
+            DropdownButtonFormField<String>(
+              value: _district,
+              isExpanded: true,
+              decoration: const InputDecoration(
+                labelText: 'Base District',
+                border: OutlineInputBorder(),
+                prefixIcon: Icon(Icons.map_outlined),
+              ),
+              items: _districts
+                  .map((d) => DropdownMenuItem<String>(
+                        value: d,
+                        child: Text(d, overflow: TextOverflow.ellipsis),
+                      ))
+                  .toList(),
+              onChanged: _isSubmitting
+                  ? null
+                  : (v) => setState(() => _district = v),
+            ),
+            const SizedBox(height: 22),
+
+            _SheetSubmitButton(
+              label: 'SAVE PROFILE',
+              isSubmitting: _isSubmitting,
+              onPressed: _submit,
+            ),
+          ],
+        ),
+      ),
+    );
   }
 }
 

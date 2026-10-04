@@ -218,6 +218,13 @@ class _FarmerAccountScreenState extends State<FarmerAccountScreen>
     return context.read<AuthProvider>().role ?? 'FARMER';
   }
 
+  /// Contact phone number, as normalized by the backend (10 digits, no
+  /// country code). Empty string when unset — the header uses that to
+  /// decide whether to render the phone row at all.
+  String get _displayPhone {
+    return _account?['phone_number']?.toString() ?? '';
+  }
+
   // -------------------------------------------------------------------------
   // Sheet launchers — each awaits a `true` result then refetches
   // -------------------------------------------------------------------------
@@ -285,6 +292,7 @@ class _FarmerAccountScreenState extends State<FarmerAccountScreen>
               email: _displayEmail,
               district: _displayDistrict,
               role: _displayRole,
+              phoneNumber: _displayPhone,
             ),
             const SizedBox(height: 8),
 
@@ -295,7 +303,7 @@ class _FarmerAccountScreenState extends State<FarmerAccountScreen>
                 _SettingsTile(
                   icon: Icons.person_outline,
                   title: 'Edit Profile',
-                  subtitle: 'Name, email, district & taluk',
+                  subtitle: 'Name, phone, district & taluk',
                   onTap: () => _openSheet(
                     _EditProfileSheet(account: _account),
                   ),
@@ -466,12 +474,18 @@ class _ProfileHeaderCard extends StatelessWidget {
     required this.email,
     required this.district,
     required this.role,
+    required this.phoneNumber,
   });
 
   final String fullName;
   final String email;
   final String district;
   final String role;
+
+  /// Normalized 10-digit contact number, or empty string when unset.
+  /// When empty, the phone row is omitted entirely — the Edit Profile
+  /// tile is the discoverable way to add one.
+  final String phoneNumber;
 
   @override
   Widget build(BuildContext context) {
@@ -534,6 +548,32 @@ class _ProfileHeaderCard extends StatelessWidget {
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
           ),
+
+          // Contact phone (only rendered when a number is on file).
+          // Prefixed with "+91 " so the displayed value matches what a
+          // user would dial — the stored value is just the 10 digits.
+          if (phoneNumber.isNotEmpty) ...[
+            const SizedBox(height: 6),
+            Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(
+                  Icons.phone,
+                  size: 14,
+                  color: theme.colorScheme.onSurfaceVariant,
+                ),
+                const SizedBox(width: 4),
+                Text(
+                  '+91 $phoneNumber',
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: theme.colorScheme.onSurfaceVariant,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ],
+            ),
+          ],
+
           const SizedBox(height: 14),
 
           // Pill chips
@@ -881,7 +921,7 @@ Future<Map<String, dynamic>?> _putAccountField({
 }
 
 // ============================================================================
-// Sheet 1 — Edit Profile (name, district, taluk/village)
+// Sheet 1 — Edit Profile (name, phone, district, taluk/village)
 // ============================================================================
 
 class _EditProfileSheet extends StatefulWidget {
@@ -897,6 +937,13 @@ class _EditProfileSheetState extends State<_EditProfileSheet> {
   final _formKey = GlobalKey<FormState>();
   late final TextEditingController _fullName;
   late final TextEditingController _talukVillage;
+
+  /// Holds the 10-digit number without any prefix. The "+91 " shown in
+  /// the field is a `prefixText` decoration, not part of the value — that
+  /// way the same controller round-trips cleanly through the backend
+  /// (which stores exactly the 10 digits).
+  late final TextEditingController _phone;
+
   String? _district;
 
   bool _isSubmitting = false;
@@ -919,6 +966,17 @@ class _EditProfileSheetState extends State<_EditProfileSheet> {
     _fullName = TextEditingController(text: (a['full_name'] ?? '').toString());
     _talukVillage =
         TextEditingController(text: (a['taluk_village'] ?? '').toString());
+
+    // Strip any non-digit characters defensively — the backend normalizes
+    // on write, but a value that predates that validation might still be
+    // sitting in the DB. The digits-only formatter on the field would
+    // silently drop them anyway; doing it here means the initial render
+    // is consistent with what the user can subsequently type.
+    final rawPhone = (a['phone_number'] ?? '').toString();
+    _phone = TextEditingController(
+      text: rawPhone.replaceAll(RegExp(r'\D'), ''),
+    );
+
     final d = (a['district'] ?? '').toString();
     _district = _districts.contains(d) ? d : null;
   }
@@ -927,6 +985,7 @@ class _EditProfileSheetState extends State<_EditProfileSheet> {
   void dispose() {
     _fullName.dispose();
     _talukVillage.dispose();
+    _phone.dispose();
     super.dispose();
   }
 
@@ -934,10 +993,16 @@ class _EditProfileSheetState extends State<_EditProfileSheet> {
     if (!_formKey.currentState!.validate()) return;
     setState(() => _isSubmitting = true);
 
+    final phoneText = _phone.text.trim();
+
     final body = <String, dynamic>{
       'full_name': _fullName.text.trim(),
       'district': _district,
       'taluk_village': _talukVillage.text.trim(),
+      // Empty string clears the field server-side (PhoneNumber validator
+      // returns None for empty input). Non-empty has already been shaped
+      // to 10 digits by the input formatter + validator.
+      'phone_number': phoneText.isEmpty ? '' : phoneText,
     };
 
     final result = await _putAccountField(
@@ -955,7 +1020,7 @@ class _EditProfileSheetState extends State<_EditProfileSheet> {
   Widget build(BuildContext context) {
     return _SheetScaffold(
       title: 'Edit Profile',
-      subtitle: 'Your name and location as they appear to riders.',
+      subtitle: 'Your name and contact details as they appear to riders.',
       child: Form(
         key: _formKey,
         child: Column(
@@ -972,6 +1037,40 @@ class _EditProfileSheetState extends State<_EditProfileSheet> {
               ),
               validator: (v) {
                 if ((v ?? '').trim().isEmpty) return 'Name is required';
+                return null;
+              },
+            ),
+            const SizedBox(height: 14),
+
+            // Contact phone number. The "+91 " prefix is decoration; the
+            // controller value is just the 10 digits. inputFormatters
+            // enforce digits-only + max length so the field can't produce
+            // a value the validator would reject on shape grounds.
+            TextFormField(
+              controller: _phone,
+              enabled: !_isSubmitting,
+              keyboardType: TextInputType.phone,
+              inputFormatters: [
+                FilteringTextInputFormatter.digitsOnly,
+                LengthLimitingTextInputFormatter(10),
+              ],
+              decoration: const InputDecoration(
+                labelText: 'Contact Phone Number',
+                hintText: '9876543210',
+                border: OutlineInputBorder(),
+                prefixIcon: Icon(Icons.phone),
+                prefixText: '+91 ',
+                helperText:
+                    'Shared with your rider on active trips',
+              ),
+              validator: (v) {
+                final value = (v ?? '').trim();
+                // Optional field — a farmer who doesn't want to share a
+                // number can leave it blank.
+                if (value.isEmpty) return null;
+                if (!RegExp(r'^\d{10}$').hasMatch(value)) {
+                  return 'Enter a valid 10-digit mobile number';
+                }
                 return null;
               },
             ),

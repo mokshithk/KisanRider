@@ -9,10 +9,77 @@ ProduceRequestResponse.
 """
 
 from datetime import datetime
-from typing import Literal, Optional
+from typing import Annotated, Literal, Optional
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
+from pydantic import (
+    AfterValidator,
+    BaseModel,
+    ConfigDict,
+    EmailStr,
+    Field,
+    field_validator,
+)
+
+
+# ---------------------------------------------------------------------------
+# Shared validators / annotated types
+# ---------------------------------------------------------------------------
+
+def _normalize_phone_number(v: Optional[str]) -> Optional[str]:
+    """
+    Normalize an Indian mobile number to exactly 10 digits, or None.
+
+    Input shapes accepted (all map to "9876543210"):
+      - "+91 98765 43210"
+      - "+919876543210"
+      - "098765-43210"
+      - "98765 43210"
+      - "9876543210"
+
+    Empty/whitespace input becomes None (clears the field). Anything that
+    isn't 10 digits after stripping raises — the caller sees a clear
+    validation error rather than a silently-corrupted stored value.
+
+    The validator is deliberately loose about the *input* format (users
+    type phone numbers in every conceivable shape) and strict about the
+    *output* format (consistent 10-digit storage). This is the same
+    philosophy as the IFSC and account-number validators on the payout
+    schemas.
+
+    If you later need to support non-Indian numbers, relax the
+    `len(cleaned) != 10` check — everything before that is generic
+    country-code stripping.
+    """
+    if v is None:
+        return None
+
+    # Strip formatting characters that are never part of the number.
+    cleaned = v.replace(" ", "").replace("-", "").strip()
+    if not cleaned:
+        return None
+
+    # Strip optional country code / trunk prefix. Order matters: check
+    # "+91" before bare "91" so "+91..." is handled by the first branch.
+    if cleaned.startswith("+91"):
+        cleaned = cleaned[3:]
+    elif len(cleaned) == 12 and cleaned.startswith("91"):
+        cleaned = cleaned[2:]
+    elif len(cleaned) == 11 and cleaned.startswith("0"):
+        cleaned = cleaned[1:]
+
+    if not cleaned.isdigit() or len(cleaned) != 10:
+        raise ValueError(
+            "phone_number must be a 10-digit mobile number "
+            "(optionally prefixed with +91)"
+        )
+
+    return cleaned
+
+
+# Reusable annotated type — reference this in every schema that carries
+# a phone number so validation and normalization stay in one place.
+PhoneNumber = Annotated[Optional[str], AfterValidator(_normalize_phone_number)]
 
 
 # ---------------------------------------------------------------------------
@@ -55,6 +122,10 @@ class UserOut(BaseModel):
 
     Deliberately narrower than UserResponse — no phone, no created_at.
     Matches the shape the Flutter client expects on signup/login.
+
+    `phone_number` is the contact number editable from the Account
+    screens. The legacy `phone` login identifier is intentionally not
+    exposed here — it's an internal implementation detail.
     """
     model_config = ConfigDict(from_attributes=True)
 
@@ -64,6 +135,7 @@ class UserOut(BaseModel):
     role: Literal["FARMER", "RIDER"]
     state: Optional[str] = None
     district: Optional[str] = None
+    phone_number: Optional[str] = None
     is_verified: bool = True
 
 
@@ -170,6 +242,7 @@ class FarmerAccountOut(BaseModel):
     full_name: str
     email: str
     role: Literal["FARMER", "RIDER"]
+    phone_number: Optional[str] = None
     is_verified: bool = True
 
     # Basic info
@@ -202,10 +275,14 @@ class FarmerProfileUpdate(BaseModel):
     Every field is optional. The endpoint uses `model_dump(exclude_unset=True)`,
     so only fields the client actually sent are written — omitting a field
     leaves the stored value untouched, while sending it as `null` clears it.
+
+    `phone_number` is normalized to 10 digits by the shared `PhoneNumber`
+    annotated type. Sending an empty string clears the field to None.
     """
     full_name: Optional[str] = Field(None, min_length=1, max_length=120)
     district: Optional[str] = Field(None, max_length=80)
     taluk_village: Optional[str] = Field(None, max_length=120)
+    phone_number: PhoneNumber = None
 
 
 class FarmDetailsUpdate(BaseModel):
@@ -301,6 +378,7 @@ class RiderAccountOut(BaseModel):
     full_name: str
     email: str
     role: Literal["FARMER", "RIDER"]
+    phone_number: Optional[str] = None
     is_verified: bool = True
 
     # Basic info
@@ -333,12 +411,16 @@ class RiderProfileUpdate(BaseModel):
     """
     Body for PUT /rider/profile.
 
-    Only name and district — email changes go through the OTP flow (same
-    reasoning as the farmer endpoint), and `state` is fixed at Karnataka
-    for the MVP.
+    Only name, district, and contact phone — email changes go through the
+    OTP flow (same reasoning as the farmer endpoint), and `state` is fixed
+    at Karnataka for the MVP.
+
+    `phone_number` is normalized to 10 digits by the shared `PhoneNumber`
+    annotated type.
     """
     full_name: Optional[str] = Field(None, min_length=1, max_length=120)
     district: Optional[str] = Field(None, max_length=80)
+    phone_number: PhoneNumber = None
 
 
 class VehicleDetailsUpdate(BaseModel):

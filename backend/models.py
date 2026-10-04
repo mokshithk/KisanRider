@@ -32,6 +32,22 @@ class User(Base):
     # because new email-signup users never supply a phone.
     phone = Column(String(15), unique=True, nullable=True)
 
+    # Contact phone number shown on the profile and shared with the
+    # counterparty on an active trip (a farmer sees their rider's number,
+    # and vice versa). Deliberately distinct from `phone` above:
+    #
+    #   - `phone` is a legacy *login identifier*. It's unique, and it was
+    #     used as the account key before the email-OTP signup flow
+    #     existed. New accounts never set it.
+    #   - `phone_number` is a *contact* number, editable from the Farmer
+    #     and Rider Account screens. Changing it has no effect on login.
+    #
+    # Both are nullable. `phone_number` is indexed for future
+    # "look up user by phone" support workflows, but NOT unique — two
+    # accounts sharing one family phone is a legitimate case on this
+    # platform.
+    phone_number = Column(String(15), nullable=True, index=True)
+
     role = Column(String(20), nullable=False, default="FARMER")
     full_name = Column(String(100), nullable=False)
 
