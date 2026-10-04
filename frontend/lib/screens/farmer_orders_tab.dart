@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:provider/provider.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../providers/auth_provider.dart';
 
@@ -17,11 +18,60 @@ const String _kApiBaseUrl = 'http://127.0.0.1:8000';
 /// no dependency on farmer_dashboard.dart.
 const Color _kFarmerGreen = Color(0xFF2E7D32);
 
+// ---------------------------------------------------------------------------
+// Phone call helper
+// ---------------------------------------------------------------------------
+
+/// Opens the platform's phone dialer pre-filled with [phone]. Mirrors the
+/// `launchPhoneCall` helper in `rider_common.dart` — kept local rather than
+/// imported so the farmer side doesn't pull in the rider module's other
+/// dependencies (Map launcher, OTP enum, rider models).
+Future<void> _launchPhoneCall(BuildContext context, String phone) async {
+  final cleaned = phone.replaceAll(RegExp(r'[^\d+]'), '');
+  if (cleaned.isEmpty) {
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No phone number available')),
+      );
+    }
+    return;
+  }
+
+  final Uri url = Uri(scheme: 'tel', path: cleaned);
+
+  try {
+    final ok = await launchUrl(url);
+    if (!ok && context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Could not open dialer for $cleaned')),
+      );
+    }
+  } catch (_) {
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Could not open the phone dialer')),
+      );
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Model
+// ---------------------------------------------------------------------------
+
 /// One entry from `GET /produce-requests/farmer/me`.
 ///
-/// The backend also nests a `trip` object once a rider has accepted, which
-/// carries `trip.rider.full_name` / `trip.rider.phone`. All of that is
-/// optional while the request is still PENDING.
+/// The backend nests a `trip` object once a rider has accepted. Its `rider`
+/// sub-object carries the assigned rider's identity; the exact fields
+/// returned depend on how `RiderSummary` is shaped on the backend:
+///
+///   - `full_name` and `phone` are always present.
+///   - `phone_number`, `vehicle_number`, and `vehicle_type` are read
+///     defensively — they aren't currently on `RiderSummary`, but the model
+///     picks them up automatically if you extend the backend to include them.
+///     Until then, the assigned-rider card renders "—" for the vehicle
+///     fields and prefers `phone_number` over the legacy `phone` when both
+///     are present.
 class FarmerOrder {
   FarmerOrder({
     required this.id,
@@ -33,6 +83,8 @@ class FarmerOrder {
     this.pickupOtp,
     this.riderName,
     this.riderPhone,
+    this.vehicleNumber,
+    this.vehicleType,
   });
 
   factory FarmerOrder.fromJson(Map<String, dynamic> json) {
@@ -45,11 +97,16 @@ class FarmerOrder {
     DateTime parsedCreatedAt;
     final rawCreated = json['created_at'];
     if (rawCreated is String) {
-      parsedCreatedAt =
-          DateTime.tryParse(rawCreated) ?? DateTime.fromMillisecondsSinceEpoch(0);
+      parsedCreatedAt = DateTime.tryParse(rawCreated) ??
+          DateTime.fromMillisecondsSinceEpoch(0);
     } else {
       parsedCreatedAt = DateTime.fromMillisecondsSinceEpoch(0);
     }
+
+    // Prefer the modern `phone_number` (contact field) over the legacy
+    // `phone` (login identifier) when both are present. The legacy field is
+    // only populated for accounts created before the email-OTP signup flow.
+    final rawPhone = (rider?['phone_number'] ?? rider?['phone'])?.toString();
 
     return FarmerOrder(
       id: (json['id'] ?? '').toString(),
@@ -60,7 +117,9 @@ class FarmerOrder {
       dropoffLocation: json['dropoff_location'] as String?,
       pickupOtp: json['pickup_otp']?.toString(),
       riderName: rider?['full_name'] as String?,
-      riderPhone: rider?['phone'] as String?,
+      riderPhone: (rawPhone == null || rawPhone.isEmpty) ? null : rawPhone,
+      vehicleNumber: rider?['vehicle_number'] as String?,
+      vehicleType: rider?['vehicle_type'] as String?,
     );
   }
 
@@ -73,14 +132,38 @@ class FarmerOrder {
   final String? pickupOtp;
   final String? riderName;
   final String? riderPhone;
+  final String? vehicleNumber;
+  final String? vehicleType;
 
-  bool get isActive => status == 'ACCEPTED' || status == 'PICKED_UP';
+  bool get isPending => status == 'PENDING';
+
+  /// True when a rider has been assigned and the handoff hasn't completed
+  /// yet. Matches the backend's active trip statuses (ACCEPTED and the
+  /// variants of "in transit" the system uses). Kept as a getter so the
+  /// status set lives in one place.
+  bool get isActive =>
+      status == 'ACCEPTED' || status == 'PICKED_UP' || status == 'IN_TRANSIT';
+
   bool get hasRider => riderName != null && riderName!.isNotEmpty;
+
+  bool get hasRiderPhone => riderPhone != null && riderPhone!.isNotEmpty;
 }
+
+// ---------------------------------------------------------------------------
+// Tab
+// ---------------------------------------------------------------------------
 
 /// My Orders tab: fetches the farmer's produce requests and lists them as
 /// cards, newest first. Pull-to-refresh re-fetches. Empty state offers a
 /// shortcut into the Book Transport tab via [onBookTransport].
+///
+/// ## Conditional rendering
+///
+/// Each card reflects the order's lifecycle:
+///   - PENDING: shows "Searching for nearby Rider…" and no rider section.
+///   - ACCEPTED / PICKED_UP / IN_TRANSIT: shows the assigned-rider card
+///     with name, vehicle info, and a CALL RIDER button.
+///   - DELIVERED / COMPLETED / CANCELLED: no rider section — the trip is over.
 class FarmerOrdersTab extends StatefulWidget {
   const FarmerOrdersTab({
     super.key,
@@ -103,7 +186,6 @@ class _FarmerOrdersTabState extends State<FarmerOrdersTab> {
   @override
   void initState() {
     super.initState();
-    // Provider/context is only safe after the first frame.
     WidgetsBinding.instance.addPostFrameCallback((_) => _fetchOrders());
   }
 
@@ -130,8 +212,6 @@ class _FarmerOrdersTabState extends State<FarmerOrdersTab> {
     });
 
     try {
-      // The backend exposes this list at /produce-requests/farmer/me
-      // (the /produce-requests/ path with no id isn't registered).
       final response = await http.get(
         Uri.parse('$_kApiBaseUrl/produce-requests/farmer/me'),
         headers: _headers(auth),
@@ -148,8 +228,7 @@ class _FarmerOrdersTabState extends State<FarmerOrdersTab> {
             .map(FarmerOrder.fromJson)
             .toList();
 
-        // Newest first. The backend uses UUID primary keys, so sorting on
-        // `id` numerically doesn't work — `created_at` is the correct key.
+        // Newest first.
         parsed.sort((a, b) => b.createdAt.compareTo(a.createdAt));
 
         setState(() {
@@ -261,70 +340,215 @@ class _OrderCard extends StatelessWidget {
                   '${(order.dropoffLocation ?? '').isEmpty ? "—" : order.dropoffLocation}',
             ),
 
-            // ----- Rider + OTP (only for active trips) --------------------
-            if (order.isActive) ...[
+            // ----- PENDING: search-in-progress notice ---------------------
+            // Rendered instead of the assigned-rider card. Gives the farmer
+            // a clear state indicator ("we're looking") rather than leaving
+            // them wondering why no rider info is showing yet.
+            if (order.isPending) ...[
               const SizedBox(height: 14),
-              const Divider(height: 1),
-              const SizedBox(height: 14),
-              Row(
-                children: [
-                  Icon(
-                    Icons.delivery_dining,
-                    size: 20,
-                    color: theme.colorScheme.primary,
-                  ),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Text(
-                      order.hasRider ? order.riderName! : 'Rider Assigned',
-                      style: theme.textTheme.titleSmall?.copyWith(
-                        fontWeight: FontWeight.w600,
+              Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 12,
+                  vertical: 10,
+                ),
+                decoration: BoxDecoration(
+                  color: Colors.amber.shade50,
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(color: Colors.amber.shade300),
+                ),
+                child: Row(
+                  children: [
+                    SizedBox(
+                      width: 16,
+                      height: 16,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        valueColor: AlwaysStoppedAnimation<Color>(
+                          Colors.amber.shade800,
+                        ),
                       ),
                     ),
-                  ),
-                  if (order.riderPhone != null &&
-                      order.riderPhone!.isNotEmpty)
-                    IconButton(
-                      tooltip: 'Call Rider',
-                      icon: const Icon(Icons.call),
-                      color: _kFarmerGreen,
-                      onPressed: () {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          SnackBar(
-                            content: Text('Calling ${order.riderPhone}…'),
-                          ),
-                        );
-                        // Wire up url_launcher:
-                        // launchUrl(Uri.parse('tel:${order.riderPhone}'));
-                      },
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Text(
+                        'Searching for nearby Rider…',
+                        style: TextStyle(
+                          fontWeight: FontWeight.w600,
+                          fontSize: 13,
+                          color: Colors.amber.shade900,
+                        ),
+                      ),
                     ),
-                ],
-              ),
-
-              // Pickup OTP — prominent amber badge the farmer reads to the
-              // rider at handoff. Shown for any active trip (ACCEPTED or
-              // PICKED_UP); falls back to "----" if the backend hasn't
-              // populated pickup_otp yet, so the layout stays consistent.
-              const SizedBox(height: 12),
-              Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                decoration: BoxDecoration(
-                  color: Colors.amber.shade100,
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: Text(
-                  'Pickup OTP: ${order.pickupOtp ?? '----'}',
-                  style: TextStyle(
-                    fontWeight: FontWeight.bold,
-                    color: Colors.amber.shade900,
-                    letterSpacing: 0.5,
-                  ),
+                  ],
                 ),
               ),
             ],
+
+            // ----- ACCEPTED / PICKED_UP: assigned-rider card --------------
+            // Shown only once a rider has been assigned and the trip is
+            // still active. Includes the CALL RIDER button (only when a
+            // phone number is on file) and the pickup OTP badge.
+            if (order.isActive) ...[
+              const SizedBox(height: 14),
+              _AssignedRiderCard(order: order),
+            ],
           ],
         ),
+      ),
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Assigned rider card
+// ---------------------------------------------------------------------------
+
+/// Card displayed inside an order while a rider is assigned and the trip is
+/// still active. Shows rider identity, vehicle info, the CALL RIDER action,
+/// and the pickup OTP the farmer reads out at handoff.
+class _AssignedRiderCard extends StatelessWidget {
+  const _AssignedRiderCard({required this.order});
+
+  final FarmerOrder order;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+
+    // Vehicle line — combines type and plate into one readable row.
+    // Either piece can be missing; when both are, the row renders an em
+    // dash so the layout stays consistent with the rest of the card.
+    final vehicleParts = <String>[];
+    if (order.vehicleType != null && order.vehicleType!.trim().isNotEmpty) {
+      vehicleParts.add(order.vehicleType!.trim());
+    }
+    if (order.vehicleNumber != null && order.vehicleNumber!.trim().isNotEmpty) {
+      vehicleParts.add('(${order.vehicleNumber!.trim()})');
+    }
+    final vehicleLine =
+        vehicleParts.isEmpty ? '—' : vehicleParts.join(' ');
+
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: _kFarmerGreen.withOpacity(0.06),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: _kFarmerGreen.withOpacity(0.30)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // ----- Header ------------------------------------------------
+          Row(
+            children: [
+              const Icon(Icons.delivery_dining,
+                  color: _kFarmerGreen, size: 20),
+              const SizedBox(width: 8),
+              Text(
+                'Assigned Rider',
+                style: theme.textTheme.titleSmall?.copyWith(
+                  fontWeight: FontWeight.bold,
+                  color: _kFarmerGreen,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+
+          // ----- Name --------------------------------------------------
+          Row(
+            children: [
+              const Icon(Icons.person_outline,
+                  size: 18, color: Colors.black54),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  order.hasRider ? order.riderName! : 'Rider assigned',
+                  style: theme.textTheme.bodyLarge?.copyWith(
+                    fontWeight: FontWeight.w600,
+                  ),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+
+          // ----- Vehicle -----------------------------------------------
+          Row(
+            children: [
+              const Icon(Icons.local_shipping_outlined,
+                  size: 18, color: Colors.black54),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  vehicleLine,
+                  style: theme.textTheme.bodyMedium?.copyWith(
+                    color: theme.colorScheme.onSurfaceVariant,
+                  ),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+            ],
+          ),
+
+          // ----- CALL RIDER button (only when a phone is on file) ------
+          if (order.hasRiderPhone) ...[
+            const SizedBox(height: 12),
+            SizedBox(
+              width: double.infinity,
+              child: FilledButton.icon(
+                onPressed: () =>
+                    _launchPhoneCall(context, order.riderPhone!),
+                style: FilledButton.styleFrom(
+                  backgroundColor: _kFarmerGreen,
+                  foregroundColor: Colors.white,
+                  padding: const EdgeInsets.symmetric(vertical: 12),
+                  textStyle: const TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w700,
+                    letterSpacing: 0.6,
+                  ),
+                ),
+                icon: const Icon(Icons.phone, size: 18),
+                label: const Text('CALL RIDER'),
+              ),
+            ),
+          ],
+
+          const SizedBox(height: 12),
+
+          // ----- Pickup OTP badge --------------------------------------
+          // Amber badge the farmer reads out to the rider at handoff.
+          // Shown for any active trip; falls back to "----" if the backend
+          // hasn't populated pickup_otp yet.
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            decoration: BoxDecoration(
+              color: Colors.amber.shade100,
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: Row(
+              children: [
+                Icon(Icons.lock_outline,
+                    size: 18, color: Colors.amber.shade900),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    'Pickup OTP: ${order.pickupOtp ?? '----'}',
+                    style: TextStyle(
+                      fontWeight: FontWeight.bold,
+                      color: Colors.amber.shade900,
+                      letterSpacing: 0.5,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -363,6 +587,7 @@ class _StatusChip extends StatelessWidget {
     'PENDING': (Color(0xFFB45309), Color(0x26F59E0B)), // amber
     'ACCEPTED': (Color(0xFF1D4ED8), Color(0x261D4ED8)), // blue
     'PICKED_UP': (Color(0xFF6D28D9), Color(0x266D28D9)), // purple
+    'IN_TRANSIT': (Color(0xFF6D28D9), Color(0x266D28D9)), // purple
     'DELIVERED': (Color(0xFF166534), Color(0x2616A34A)), // green
     'COMPLETED': (Color(0xFF166534), Color(0x2616A34A)), // green
     'CANCELLED': (Color(0xFF991B1B), Color(0x26DC2626)), // red

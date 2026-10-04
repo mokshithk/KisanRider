@@ -46,10 +46,9 @@ async def lifespan(app: FastAPI):
 
     create_all() only issues CREATE TABLE IF NOT EXISTS for tables it
     doesn't find — it never alters an existing table. New columns on the
-    `users` table (both the farmer-account set and the rider-account set)
-    must be applied to an existing database with a manual ALTER TABLE.
-    See the migration snippets in the Farmer Account and Rider Account
-    sections below.
+    `users` table must be applied to an existing database with a manual
+    ALTER TABLE. See the migration snippets in the Farmer Account and
+    Rider Account sections below.
 
     Farmer account migration:
 
@@ -76,6 +75,14 @@ async def lifespan(app: FastAPI):
           ADD COLUMN IF NOT EXISTS vehicle_number      VARCHAR(20),
           ADD COLUMN IF NOT EXISTS payload_capacity_kg DOUBLE PRECISION,
           ADD COLUMN IF NOT EXISTS operating_routes    VARCHAR(255);
+
+    Contact-phone migration:
+
+        ALTER TABLE users
+          ADD COLUMN IF NOT EXISTS phone_number VARCHAR(15);
+
+        CREATE INDEX IF NOT EXISTS ix_users_phone_number
+          ON users (phone_number);
     """
     models.Base.metadata.create_all(bind=engine)
     yield
@@ -738,16 +745,6 @@ def register_user(user: schemas.UserCreate, db: Session = Depends(get_db)):
 
 # ---------------------------------------------------------------------------
 # Farmer Account
-#
-# All four PUTs follow the same shape:
-#   - payload.model_dump(exclude_unset=True) so omitted fields are left
-#     untouched and explicit nulls clear the stored value;
-#   - crud.apply_user_updates commits the change;
-#   - the full updated account is returned so the client can refresh its
-#     local copy without a follow-up GET.
-#
-# Every endpoint is gated on role FARMER, so a rider token gets a 403 —
-# the schema shape is farmer-specific (farm size, payouts, etc.).
 # ---------------------------------------------------------------------------
 
 @app.get(
@@ -770,7 +767,7 @@ def get_farmer_account(
 @app.put(
     "/farmer/profile",
     response_model=schemas.FarmerAccountOut,
-    summary="Update basic profile info (name, district, taluk/village)",
+    summary="Update basic profile info (name, phone, district, taluk/village)",
 )
 def update_farmer_profile(
     payload: schemas.FarmerProfileUpdate,
@@ -778,7 +775,7 @@ def update_farmer_profile(
     db: Session = Depends(get_db),
 ):
     """
-    Update the name and location fields.
+    Update the name, contact phone, and location fields.
 
     `email` is intentionally NOT updatable here. Changing it is a
     privileged operation that needs re-verification via the OTP flow —
@@ -887,22 +884,44 @@ def update_farmer_payouts(
 
 
 # ---------------------------------------------------------------------------
+# Farmer Orders (single-order detail with phone-number privacy)
+# ---------------------------------------------------------------------------
+
+@app.get(
+    "/farmer/orders/{order_id}",
+    response_model=schemas.TripActiveOut,
+    summary="Get a single farmer order with phone-number privacy applied",
+)
+def get_farmer_order_detail(
+    order_id: UUID,
+    current_user: models.User = Depends(auth.require_role("FARMER")),
+    db: Session = Depends(get_db),
+):
+    """
+    Return a single order (ProduceRequest) owned by the authenticated
+    farmer.
+
+    ## Privacy rules
+
+    - While the order is PENDING (no rider assigned yet), every rider
+      field — `rider_phone_number`, `rider_full_name`, `vehicle_number`,
+      `vehicle_type` — is null. There is no rider to contact.
+    - Once a rider accepts, those fields are populated so the farmer can
+      coordinate the pickup and track the vehicle.
+    - The farmer's own contact fields (`farmer_phone_number`,
+      `farmer_full_name`) follow the same visibility window: they're
+      populated only once a rider is assigned. Hiding them before
+      assignment is technically redundant for the caller (who knows their
+      own number) but keeps the schema's semantics uniform.
+    """
+    result = crud.get_farmer_order(db, order_id, current_user.id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Order not found")
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Rider Account
-#
-# Mirrors the Farmer Account endpoints, with two differences:
-#
-#   1. `is_on_duty` is toggled via PATCH rather than PUT. It's a state
-#      transition the client performs with a single explicit boolean, not
-#      a partial update of a record — PUT semantics would be misleading.
-#
-#   2. Every endpoint is gated on role RIDER, so a farmer token gets a 403.
-#      The RiderAccountOut shape carries vehicle/license fields a farmer
-#      has no use for.
-#
-# As with the farmer endpoints, all updates use
-# `payload.model_dump(exclude_unset=True)` so omitted fields stay as
-# stored and explicit nulls clear, and every response returns the full
-# updated account record.
 # ---------------------------------------------------------------------------
 
 @app.get(
@@ -916,8 +935,7 @@ def get_rider_account(
     """
     Return every account field the rider-side UI needs: identity, duty
     status, vehicle details, operating routes, payout info, and
-    preferences. No DB query is issued here — `require_role` already
-    resolved the User row via `get_current_user`.
+    preferences.
     """
     return current_user
 
@@ -950,7 +968,7 @@ def update_rider_duty_status(
 @app.put(
     "/rider/profile",
     response_model=schemas.RiderAccountOut,
-    summary="Update basic rider profile info (name, district)",
+    summary="Update basic rider profile info (name, phone, district)",
 )
 def update_rider_profile(
     payload: schemas.RiderProfileUpdate,
@@ -958,12 +976,10 @@ def update_rider_profile(
     db: Session = Depends(get_db),
 ):
     """
-    Update the rider's name and district.
+    Update the rider's name, contact phone, and district.
 
     `email` is intentionally NOT updatable here — same reasoning as the
-    farmer profile endpoint. Changing the login identifier needs the OTP
-    flow. `state` is fixed at Karnataka for the MVP and isn't exposed as
-    an editable field.
+    farmer profile endpoint.
     """
     updates = payload.model_dump(exclude_unset=True)
 
@@ -1024,8 +1040,7 @@ def update_rider_routes(
     Update the rider's preferred operating routes.
 
     Stored as a single comma-separated string; the schema validator
-    normalizes whitespace and strips empty entries. A rider who clears the
-    field ends up with `None`, which the client renders as "any route".
+    normalizes whitespace and strips empty entries.
     """
     updates = payload.model_dump(exclude_unset=True)
 
@@ -1049,9 +1064,7 @@ def update_rider_payouts(
     Update the rider's payout destination.
 
     Values are stored as plain text — no checksum or penny-drop
-    verification runs here. `ifsc_code`, `upi_id`, and `account_number`
-    are normalized/validated at the schema layer (uppercase IFSC,
-    lowercase UPI, digits-only account number with spaces stripped).
+    verification runs here.
     """
     updates = payload.model_dump(exclude_unset=True)
 
@@ -1129,7 +1142,12 @@ def nearby_produce_requests(
     radius_km: float = Query(10, gt=0, le=200, description="Search radius in kilometers"),
     db: Session = Depends(get_db),
 ) -> List[schemas.NearbyProduceRequestResponse]:
-    """Return PENDING produce requests within radius_km of the given point."""
+    """
+    Return PENDING produce requests within radius_km of the given point.
+
+    NOTE: this is the legacy browse feed. For the privacy-safe rider feed
+    that withholds farmer contact info, use `GET /trips/available`.
+    """
     try:
         return crud.get_nearby_produce_requests(
             db, lat=lat, lng=lng, radius_km=radius_km
@@ -1205,20 +1223,122 @@ def get_my_trip_requests(
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@app.post("/trips/accept", response_model=schemas.TripResponse, status_code=201)
-def accept_trip(
+# ---------------------------------------------------------------------------
+# Privacy-aware trip browsing + acceptance
+# ---------------------------------------------------------------------------
+#
+# The rider-facing UI calls trips "trips" and the farmer-facing UI calls
+# them "orders", but both refer to the same ProduceRequest row. A Trip
+# row only exists AFTER a rider accepts — so a `trip_id` in the URLs
+# below is the ProduceRequest's id when the trip is still PENDING, and
+# the Trip's id once accepted. Clients should use `produce_request_id`
+# from TripActiveOut for stable cross-lookups.
+# ---------------------------------------------------------------------------
+
+@app.get(
+    "/trips/available",
+    response_model=List[schemas.TripAvailableOut],
+    summary="Browse pending trips near the rider (farmer contact hidden)",
+)
+def list_available_trips(
+    lat: float = Query(..., ge=-90, le=90, description="Rider's current latitude"),
+    lng: float = Query(..., ge=-180, le=180, description="Rider's current longitude"),
+    radius_km: float = Query(10, gt=0, le=200, description="Search radius in kilometers"),
+    current_user: models.User = Depends(auth.require_role("RIDER")),
+    db: Session = Depends(get_db),
+) -> List[schemas.TripAvailableOut]:
+    """
+    Return PENDING trips within radius_km, shaped for the rider-facing
+    browse feed.
+
+    ## Privacy
+
+    The farmer's phone number is never included in this view. Only the
+    farmer's first name is surfaced, so the rider has a human reference
+    without an identifier they can act on out of band. Contact details
+    unlock the moment the rider accepts — see `POST /trips/{trip_id}/accept`.
+    """
+    try:
+        return crud.get_available_trips_for_rider(
+            db, lat=lat, lng=lng, radius_km=radius_km
+        )
+    except (SQLAlchemyError, ValueError) as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post(
+    "/trips/{trip_id}/accept",
+    response_model=schemas.TripActiveOut,
+    status_code=201,
+    summary="Accept a pending trip (rider); returns contact-unlocked details",
+)
+def accept_trip_by_id(
+    trip_id: UUID,
+    current_user: models.User = Depends(auth.require_role("RIDER")),
+    db: Session = Depends(get_db),
+):
+    """
+    Accept a PENDING trip as the authenticated rider.
+
+    ## About the `trip_id` parameter
+
+    In the current data model a Trip row only exists AFTER a rider
+    accepts — the thing being accepted is the ProduceRequest. So
+    `trip_id` here is the ProduceRequest's id. The rider-facing client
+    receives that id from `GET /trips/available` (as `trip_id`) and
+    passes it straight back here — the mapping is transparent to
+    consumers.
+
+    ## What happens on success
+
+    1. The ProduceRequest flips from PENDING to ACCEPTED.
+    2. A new Trip row is created with `rider_id` bound to the caller.
+    3. The response includes both parties' contact details, which are
+       unlocked the moment a rider is assigned.
+
+    ## Error cases
+
+    - 400 if the request doesn't exist, is already accepted, or is in a
+      terminal state.
+    - 403 if the caller isn't a RIDER (handled by `require_role`).
+    """
+    try:
+        trip = crud.accept_produce_request(db, trip_id, current_user.id)
+    except (SQLAlchemyError, ValueError) as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    result = crud.get_trip_active_by_request_id(db, trip.produce_request_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Order not found after accept")
+    return result
+
+
+@app.post(
+    "/trips/accept",
+    response_model=schemas.TripActiveOut,
+    status_code=201,
+    summary="Legacy alias for POST /trips/{trip_id}/accept",
+)
+def accept_trip_legacy(
     request_id: UUID = Query(..., description="ID of the produce request being accepted"),
     current_user: models.User = Depends(auth.require_role("RIDER")),
     db: Session = Depends(get_db),
 ):
     """
-    The authenticated rider accepts a PENDING produce request, creating a
-    Trip and moving the request to 'ACCEPTED'.
+    Legacy path for accepting a trip, kept for existing clients.
+
+    Prefer `POST /trips/{trip_id}/accept` in new code. Both endpoints
+    share the same behaviour and response shape.
     """
     try:
-        return crud.accept_produce_request(db, request_id, current_user.id)
+        trip = crud.accept_produce_request(db, request_id, current_user.id)
     except (SQLAlchemyError, ValueError) as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+    result = crud.get_trip_active_by_request_id(db, trip.produce_request_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Order not found after accept")
+    return result
 
 
 @app.patch("/trips/{trip_id}/status", response_model=schemas.TripResponse)
@@ -1257,28 +1377,30 @@ def update_trip_status(
     return result
 
 
-@app.get("/trips/active", response_model=List[schemas.ActiveTripResponse])
+@app.get(
+    "/trips/active",
+    response_model=List[schemas.TripActiveOut],
+    summary="The rider's active trips, with farmer contact info unlocked",
+)
 def get_active_trips(
     current_user: models.User = Depends(auth.require_role("RIDER")),
     db: Session = Depends(get_db),
-):
+) -> List[schemas.TripActiveOut]:
     """
     All of the authenticated rider's currently active trips (status
     ACCEPTED or PICKED_UP), newest first.
+
+    Each entry carries the assigned farmer's phone number and full name,
+    because a rider assigned to a trip needs to coordinate the pickup.
+
+    ## Response shape change
+
+    This endpoint previously returned `ActiveTripResponse` (with a
+    nested `produce_request` object and an `id` field). It now returns
+    the flat `TripActiveOut` shape with privacy-aware contact fields.
+    Clients reading the old nested structure need to be updated.
     """
-    trips = crud.get_active_trips_for_rider(db, current_user.id)
-    return [
-        schemas.ActiveTripResponse(
-            id=t.id,
-            produce_request_id=t.produce_request_id,
-            rider_id=t.rider_id,
-            status=t.status,
-            created_at=t.created_at,
-            completed_at=t.completed_at,
-            produce_request=crud._to_response(t.produce_request),
-        )
-        for t in trips
-    ]
+    return crud.get_active_trips_out_for_rider(db, current_user.id)
 
 
 # ---------------------------------------------------------------------------
