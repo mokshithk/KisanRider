@@ -741,12 +741,46 @@ class TripActiveOut(BaseModel):
 # ---------------------------------------------------------------------------
 
 class RiderSummary(BaseModel):
-    """Minimal rider identity shown to a farmer once their request is picked up."""
+    """
+    Minimal rider identity shown to a farmer once their request has been
+    accepted.
+
+    ## Which phone field is the "real" one
+
+    The User model carries two phone columns:
+
+      - `phone` — the legacy login identifier. Only populated for accounts
+        created before the email-OTP signup flow; empty string for every
+        modern account. Kept here for backward compatibility so older
+        clients that read `phone` don't break.
+      - `phone_number` — the modern contact number, editable from the
+        Account screens. This is the field the CALL RIDER button should
+        use; clients should prefer it and fall back to `phone`.
+
+    Both are exposed so the client can pick the right one without a
+    schema change. The Flutter `FarmerOrder.fromJson` in
+    `farmer_orders_tab.dart` already does `rider['phone_number'] ??
+    rider['phone']`.
+
+    Vehicle fields are also nullable: a rider who hasn't filled in the
+    Vehicle & License section on their Account screen has neither, and
+    the farmer-side card renders "—" for those rows.
+    """
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
     full_name: str
-    phone: str
+
+    # Legacy login identifier — kept for back-compat, may be empty.
+    phone: str = ""
+
+    # Modern contact number — what CALL RIDER should dial.
+    phone_number: Optional[str] = None
+
+    # Vehicle info — populated once the rider fills the Vehicle section
+    # of their Account screen.
+    vehicle_number: Optional[str] = None
+    vehicle_type: Optional[str] = None
 
 
 class TripSummary(BaseModel):

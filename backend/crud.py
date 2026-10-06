@@ -284,18 +284,49 @@ def get_produce_request_by_id(
 def _to_farmer_response(
     pr: models.ProduceRequest,
 ) -> schemas.FarmerProduceRequestResponse:
-    """Extend _to_response() with the request's trip (if any) and its rider."""
+    """
+    Extend _to_response() with the request's trip (if any) and its rider.
+
+    ## Why the rider summary carries so many phone fields
+
+    The User model has two phone columns and one legacy alias:
+
+      - `phone` — legacy login identifier, empty for modern accounts.
+      - `phone_number` — modern contact number, populated from the Account
+        screens.
+
+    Both are forwarded, plus the rider's vehicle details, so the farmer-
+    side client can render an actionable "assigned rider" card with a
+    working CALL button the moment the trip flips out of PENDING.
+
+    A trip exists on the ProduceRequest the instant a rider accepts, so
+    the summary is populated for every status other than PENDING. When
+    `pr.trip` is None (still PENDING), `trip` stays None and the client
+    shows the "Searching for nearby Rider…" state.
+    """
     base = _to_response(pr)
 
     trip_summary = None
     if pr.trip:
+        rider = pr.trip.rider
         rider_summary = (
             schemas.RiderSummary(
-                id=pr.trip.rider.id,
-                full_name=pr.trip.rider.full_name,
-                phone=pr.trip.rider.phone or "",
+                id=rider.id,
+                full_name=rider.full_name,
+                # Legacy column — may be null. Empty string keeps the
+                # field non-None in the response (the schema declares
+                # `phone: str`), which avoids a needless Optional in the
+                # client model.
+                phone=rider.phone or "",
+                # Modern contact number — this is what the farmer should
+                # dial. `phone_number` is nullable, so a rider who hasn't
+                # set one yet yields None here and the client hides the
+                # CALL button rather than rendering a dead one.
+                phone_number=rider.phone_number,
+                vehicle_number=rider.vehicle_number,
+                vehicle_type=rider.vehicle_type,
             )
-            if pr.trip.rider
+            if rider
             else None
         )
         trip_summary = schemas.TripSummary(
