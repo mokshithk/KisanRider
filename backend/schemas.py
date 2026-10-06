@@ -637,8 +637,103 @@ class TripStatusUpdate(BaseModel):
 
 
 class ActiveTripResponse(TripResponse):
-    """Response for GET /trips/active, with the ProduceRequest nested."""
+    """
+    LEGACY response for GET /trips/active.
+
+    Kept for backward compatibility with older clients. New code should
+    use [TripActiveOut], which carries privacy-aware contact fields in a
+    flat shape and is what /trips/active now returns.
+    """
     produce_request: ProduceRequestResponse
+
+
+# ---------------------------------------------------------------------------
+# Privacy-aware trip views
+# ---------------------------------------------------------------------------
+
+class TripAvailableOut(BaseModel):
+    """
+    An unaccepted trip shown to riders browsing the nearby feed.
+
+    Farmer contact information is deliberately withheld until the rider
+    accepts: circulating a phone number to every rider in a 50 km radius
+    is both a privacy problem and a harassment vector. Only the farmer's
+    first name is included, so the rider has a human reference without an
+    identifier they can misuse.
+
+    ## Naming
+
+    `trip_id` here is the ProduceRequest's id in the current data model —
+    a Trip row only exists *after* a rider accepts. The rider-facing
+    client receives `trip_id` from this endpoint and passes it back to
+    `POST /trips/{trip_id}/accept`, which treats it as the ProduceRequest
+    id. The mapping is transparent to consumers.
+    """
+    trip_id: UUID
+    crop_type: str
+    crate_count: int
+    weight_kg: float
+    latitude: float
+    longitude: float
+    pickup_district: Optional[str] = None
+    pickup_locality: Optional[str] = None
+
+    # Estimated rider payout. Computed from the settlement formula using
+    # the default distance assumption — the authoritative number is
+    # calculated when the trip is marked delivered with a real distance.
+    payout_amount: float
+
+    status: Literal["PENDING"] = "PENDING"
+
+    # Farmer identity — phone is always null pre-acceptance; name is
+    # first-name only. See class docstring.
+    farmer_full_name: Optional[str] = None
+    farmer_phone_number: Optional[str] = None
+
+
+class TripActiveOut(BaseModel):
+    """
+    An accepted (or completed) trip shared with the assigned rider and
+    the owning farmer.
+
+    Both sides' contact info is exposed once a rider is assigned — the
+    rider needs the farmer's number to coordinate the pickup, and the
+    farmer needs the rider's number to track and receive the delivery.
+    Before assignment (order still PENDING), the rider fields are null
+    and the farmer's contact info is withheld from everyone (the farmer
+    already knows their own number; the rider isn't yet party to the
+    deal).
+
+    ## Status values
+
+    `status` is typed as `str` rather than a `Literal` because the model
+    carries trip statuses (ACCEPTED, PICKED_UP, DELIVERED, CANCELLED) and
+    ProduceRequest statuses (PENDING) through the same field, and new
+    states may be added. Clients should pattern-match on the values they
+    care about.
+    """
+    trip_id: UUID
+    produce_request_id: UUID
+    status: str
+
+    crop_type: str
+    crate_count: int
+    weight_kg: float
+    latitude: float
+    longitude: float
+
+    pickup_address: Optional[str] = None
+    dropoff_address: Optional[str] = None
+    dropoff_lat: Optional[float] = None
+    dropoff_lng: Optional[float] = None
+
+    # Contact & vehicle — null until a rider is assigned. See docstring.
+    farmer_full_name: Optional[str] = None
+    farmer_phone_number: Optional[str] = None
+    rider_full_name: Optional[str] = None
+    rider_phone_number: Optional[str] = None
+    vehicle_number: Optional[str] = None
+    vehicle_type: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -646,12 +741,46 @@ class ActiveTripResponse(TripResponse):
 # ---------------------------------------------------------------------------
 
 class RiderSummary(BaseModel):
-    """Minimal rider identity shown to a farmer once their request is picked up."""
+    """
+    Minimal rider identity shown to a farmer once their request has been
+    accepted.
+
+    ## Which phone field is the "real" one
+
+    The User model carries two phone columns:
+
+      - `phone` — the legacy login identifier. Only populated for accounts
+        created before the email-OTP signup flow; empty string for every
+        modern account. Kept here for backward compatibility so older
+        clients that read `phone` don't break.
+      - `phone_number` — the modern contact number, editable from the
+        Account screens. This is the field the CALL RIDER button should
+        use; clients should prefer it and fall back to `phone`.
+
+    Both are exposed so the client can pick the right one without a
+    schema change. The Flutter `FarmerOrder.fromJson` in
+    `farmer_orders_tab.dart` already does `rider['phone_number'] ??
+    rider['phone']`.
+
+    Vehicle fields are also nullable: a rider who hasn't filled in the
+    Vehicle & License section on their Account screen has neither, and
+    the farmer-side card renders "—" for those rows.
+    """
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
     full_name: str
-    phone: str
+
+    # Legacy login identifier — kept for back-compat, may be empty.
+    phone: str = ""
+
+    # Modern contact number — what CALL RIDER should dial.
+    phone_number: Optional[str] = None
+
+    # Vehicle info — populated once the rider fills the Vehicle section
+    # of their Account screen.
+    vehicle_number: Optional[str] = None
+    vehicle_type: Optional[str] = None
 
 
 class TripSummary(BaseModel):

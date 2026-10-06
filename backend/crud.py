@@ -157,9 +157,9 @@ def apply_user_updates(
     """
     Apply a dict of column-name -> value to `user` and commit.
 
-    Single chokepoint for every field-level update from the Farmer Account
-    screen so the four PUT endpoints don't each reimplement the same
-    setattr/commit/rollback dance.
+    Single chokepoint for every field-level update from the Farmer/Rider
+    Account screens so the profile endpoints don't each reimplement the
+    same setattr/commit/rollback dance.
 
     The caller is responsible for filtering the dict — pass only the keys
     the client actually sent. In the endpoints, that's achieved with
@@ -284,18 +284,49 @@ def get_produce_request_by_id(
 def _to_farmer_response(
     pr: models.ProduceRequest,
 ) -> schemas.FarmerProduceRequestResponse:
-    """Extend _to_response() with the request's trip (if any) and its rider."""
+    """
+    Extend _to_response() with the request's trip (if any) and its rider.
+
+    ## Why the rider summary carries so many phone fields
+
+    The User model has two phone columns and one legacy alias:
+
+      - `phone` — legacy login identifier, empty for modern accounts.
+      - `phone_number` — modern contact number, populated from the Account
+        screens.
+
+    Both are forwarded, plus the rider's vehicle details, so the farmer-
+    side client can render an actionable "assigned rider" card with a
+    working CALL button the moment the trip flips out of PENDING.
+
+    A trip exists on the ProduceRequest the instant a rider accepts, so
+    the summary is populated for every status other than PENDING. When
+    `pr.trip` is None (still PENDING), `trip` stays None and the client
+    shows the "Searching for nearby Rider…" state.
+    """
     base = _to_response(pr)
 
     trip_summary = None
     if pr.trip:
+        rider = pr.trip.rider
         rider_summary = (
             schemas.RiderSummary(
-                id=pr.trip.rider.id,
-                full_name=pr.trip.rider.full_name,
-                phone=pr.trip.rider.phone or "",
+                id=rider.id,
+                full_name=rider.full_name,
+                # Legacy column — may be null. Empty string keeps the
+                # field non-None in the response (the schema declares
+                # `phone: str`), which avoids a needless Optional in the
+                # client model.
+                phone=rider.phone or "",
+                # Modern contact number — this is what the farmer should
+                # dial. `phone_number` is nullable, so a rider who hasn't
+                # set one yet yields None here and the client hides the
+                # CALL button rather than rendering a dead one.
+                phone_number=rider.phone_number,
+                vehicle_number=rider.vehicle_number,
+                vehicle_type=rider.vehicle_type,
             )
-            if pr.trip.rider
+            if rider
             else None
         )
         trip_summary = schemas.TripSummary(
@@ -552,7 +583,12 @@ def update_trip_status(
 def get_active_trips_for_rider(
     db: Session, rider_id: UUID
 ) -> List[models.Trip]:
-    """All of the rider's active trips (ACCEPTED or PICKED_UP), newest first."""
+    """
+    All of the rider's active trips (ACCEPTED or PICKED_UP), newest first.
+
+    Returns ORM Trip rows. For the API-shaped view with privacy-aware
+    contact fields, use [get_active_trips_out_for_rider].
+    """
     return (
         db.query(models.Trip)
         .options(joinedload(models.Trip.produce_request))
@@ -563,6 +599,259 @@ def get_active_trips_for_rider(
         .order_by(models.Trip.created_at.desc())
         .all()
     )
+
+
+# ---------------------------------------------------------------------------
+# Privacy-aware trip views
+# ---------------------------------------------------------------------------
+
+def _first_name(full_name: Optional[str]) -> Optional[str]:
+    """
+    Return the first whitespace-delimited token of a full name, or None.
+
+    Used in the rider-facing browse feed to show a human reference (e.g.
+    "Ravi") without exposing the farmer's full name or phone number.
+    """
+    if not full_name:
+        return None
+    parts = full_name.strip().split()
+    return parts[0] if parts else None
+
+
+def _estimate_rider_fare(pr: models.ProduceRequest) -> float:
+    """
+    Best-effort rider payout estimate for a PENDING request.
+
+    Uses the same arithmetic a real Settlement applies, but with the
+    default distance assumption — the rider hasn't yet reported the
+    actual distance they'll drive. Good enough for the browse feed; the
+    authoritative number is computed when the trip is marked delivered.
+    """
+    weight_kg = float(pr.weight_kg or 0)
+    values = _compute_settlement_values(
+        weight_kg,
+        _DEFAULT_DISTANCE_KM,
+        _DEFAULT_RATE_PER_KG,
+    )
+    return round(values["rider_fare"], 2)
+
+
+def _pickup_latlng(pr: models.ProduceRequest) -> tuple[float, float]:
+    """Return (lat, lng) for the pickup location, or (0, 0) on decode failure."""
+    try:
+        point = to_shape(pr.pickup_location)
+        return point.y, point.x
+    except Exception:
+        return 0.0, 0.0
+
+
+def _to_trip_available(
+    pr: models.ProduceRequest,
+) -> schemas.TripAvailableOut:
+    """
+    Shape a PENDING ProduceRequest for the rider browse feed.
+
+    Farmer contact info is withheld by design. Only the farmer's first
+    name is included, so the rider has a human reference without an
+    identifier they could misuse.
+    """
+    farmer = pr.farmer
+    lat, lng = _pickup_latlng(pr)
+
+    return schemas.TripAvailableOut(
+        trip_id=pr.id,
+        crop_type=pr.crop_type,
+        crate_count=pr.crate_count,
+        weight_kg=float(pr.weight_kg or 0),
+        latitude=lat,
+        longitude=lng,
+        pickup_district=(farmer.district if farmer else None),
+        pickup_locality=(farmer.taluk_village if farmer else None),
+        payout_amount=_estimate_rider_fare(pr),
+        status="PENDING",
+        farmer_full_name=_first_name(farmer.full_name if farmer else None),
+        farmer_phone_number=None,
+    )
+
+
+def _to_trip_active(
+    pr: models.ProduceRequest,
+) -> schemas.TripActiveOut:
+    """
+    Shape a ProduceRequest (with optional Trip) for the active view.
+
+    Contact details are unlocked only when a rider has been assigned —
+    i.e. when the ProduceRequest has a Trip attached with a non-cancelled
+    status. Before that, both parties see nulls; after, both sides see
+    each other's phone number and the rider's vehicle info.
+
+    Handles the PENDING case gracefully: a ProduceRequest without a Trip
+    yields a response where `trip_id` falls back to the request id and
+    every contact field is null. This lets `GET /farmer/orders/{id}`
+    return the same schema before and after acceptance.
+    """
+    trip = pr.trip
+    farmer = pr.farmer
+    rider = trip.rider if trip else None
+
+    # A Trip exists as soon as a rider accepts. Cancelled trips keep the
+    # row but the parties no longer need to reach each other, so we treat
+    # only the active-and-completed states as "contactable".
+    has_rider = (
+        trip is not None
+        and trip.status in ("ACCEPTED", "PICKED_UP", "DELIVERED")
+    )
+
+    # Pickup address: prefer the farmer's free-text farm address; append
+    # the landmark as a second line when present.
+    parts: list[str] = []
+    if farmer and farmer.farm_address:
+        parts.append(farmer.farm_address.strip())
+    if farmer and farmer.landmark:
+        parts.append(farmer.landmark.strip())
+    pickup_address = "\n".join(p for p in parts if p) or None
+
+    lat, lng = _pickup_latlng(pr)
+
+    return schemas.TripActiveOut(
+        trip_id=(trip.id if trip else pr.id),
+        produce_request_id=pr.id,
+        status=(trip.status if trip else pr.status),
+        crop_type=pr.crop_type,
+        crate_count=pr.crate_count,
+        weight_kg=float(pr.weight_kg or 0),
+        latitude=lat,
+        longitude=lng,
+        pickup_address=pickup_address,
+        dropoff_address=pr.dropoff_location,
+        dropoff_lat=pr.dropoff_lat,
+        dropoff_lng=pr.dropoff_lng,
+        # Farmer contact: unlocked for the assigned rider (and the farmer
+        # themselves, who already knows their own number anyway).
+        farmer_full_name=(farmer.full_name if farmer and has_rider else None),
+        farmer_phone_number=(
+            farmer.phone_number if farmer and has_rider else None
+        ),
+        # Rider contact + vehicle: unlocked for the farmer once a rider is
+        # assigned.
+        rider_full_name=(rider.full_name if rider and has_rider else None),
+        rider_phone_number=(
+            rider.phone_number if rider and has_rider else None
+        ),
+        vehicle_number=(rider.vehicle_number if rider and has_rider else None),
+        vehicle_type=(rider.vehicle_type if rider and has_rider else None),
+    )
+
+
+def get_available_trips_for_rider(
+    db: Session,
+    lat: float,
+    lng: float,
+    radius_km: float,
+    limit: int = 50,
+) -> List[schemas.TripAvailableOut]:
+    """
+    PENDING produce requests within `radius_km` of (lat, lng), nearest
+    first, shaped as the rider-facing browse feed.
+
+    Mirrors `get_nearby_produce_requests` but returns the privacy-aware
+    TripAvailableOut shape instead of the raw ProduceRequest fields.
+    """
+    pr = models.ProduceRequest
+
+    query_point = ST_SetSRID(ST_MakePoint(lng, lat), 4326)
+    query_point_geog = cast(query_point, Geography)
+    stored_geog = cast(pr.pickup_location, Geography)
+
+    distance_km = (
+        ST_Distance(stored_geog, query_point_geog) / 1000.0
+    ).label("distance_km")
+
+    try:
+        rows = (
+            db.query(pr, distance_km)
+            .options(joinedload(pr.farmer))
+            .filter(pr.status == "PENDING")
+            .filter(ST_DWithin(stored_geog, query_point_geog, radius_km * 1000))
+            .order_by(distance_km.asc())
+            .limit(limit)
+            .all()
+        )
+    except SQLAlchemyError:
+        raise
+
+    return [_to_trip_available(row[0]) for row in rows]
+
+
+def get_active_trips_out_for_rider(
+    db: Session, rider_id: UUID
+) -> List[schemas.TripActiveOut]:
+    """
+    The rider's active trips (ACCEPTED or PICKED_UP) shaped as
+    TripActiveOut, with farmer contact info unlocked.
+    """
+    trips = (
+        db.query(models.Trip)
+        .options(
+            joinedload(models.Trip.produce_request).joinedload(
+                models.ProduceRequest.farmer
+            ),
+            joinedload(models.Trip.rider),
+        )
+        .filter(
+            models.Trip.rider_id == rider_id,
+            models.Trip.status.in_(("ACCEPTED", "PICKED_UP")),
+        )
+        .order_by(models.Trip.created_at.desc())
+        .all()
+    )
+    return [_to_trip_active(t.produce_request) for t in trips]
+
+
+def get_trip_active_by_request_id(
+    db: Session, request_id: UUID
+) -> Optional[schemas.TripActiveOut]:
+    """
+    Fetch a ProduceRequest by id and shape it as TripActiveOut.
+
+    Used by the accept endpoints to return the freshly-created trip with
+    contact info already unlocked, without a second round-trip from the
+    client.
+    """
+    pr = (
+        db.query(models.ProduceRequest)
+        .options(
+            joinedload(models.ProduceRequest.farmer),
+            joinedload(models.ProduceRequest.trip).joinedload(models.Trip.rider),
+        )
+        .filter(models.ProduceRequest.id == request_id)
+        .first()
+    )
+    return _to_trip_active(pr) if pr else None
+
+
+def get_farmer_order(
+    db: Session, order_id: UUID, farmer_id: UUID
+) -> Optional[schemas.TripActiveOut]:
+    """
+    Fetch a single order (ProduceRequest) belonging to `farmer_id`,
+    shaped as TripActiveOut.
+
+    Returns None if the order doesn't exist or belongs to a different
+    farmer (so the endpoint 404s rather than leaking existence).
+    """
+    pr = (
+        db.query(models.ProduceRequest)
+        .options(
+            joinedload(models.ProduceRequest.farmer),
+            joinedload(models.ProduceRequest.trip).joinedload(models.Trip.rider),
+        )
+        .filter(models.ProduceRequest.id == order_id)
+        .first()
+    )
+    if pr is None or pr.farmer_id != farmer_id:
+        return None
+    return _to_trip_active(pr)
 
 
 # ---------------------------------------------------------------------------

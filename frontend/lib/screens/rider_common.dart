@@ -51,6 +51,48 @@ Future<void> launchMaps(BuildContext context, String query) async {
 }
 
 // ---------------------------------------------------------------------------
+// Phone call helper
+// ---------------------------------------------------------------------------
+
+/// Opens the platform's phone dialer pre-filled with [phone].
+///
+/// The number is stripped of everything except digits and a leading `+` so
+/// a value like "+91 98765 43210" works without the caller pre-formatting
+/// it. Using `Uri(scheme: 'tel', ...)` rather than a raw string is what
+/// makes Android and iOS both recognise the intent.
+///
+/// Silent no-op if [phone] is empty — the call sites already gate on that,
+/// but a defensive check costs nothing.
+Future<void> launchPhoneCall(BuildContext context, String phone) async {
+  final cleaned = phone.replaceAll(RegExp(r'[^\d+]'), '');
+  if (cleaned.isEmpty) {
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No phone number available')),
+      );
+    }
+    return;
+  }
+
+  final Uri url = Uri(scheme: 'tel', path: cleaned);
+
+  try {
+    final ok = await launchUrl(url);
+    if (!ok && context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Could not open dialer for $cleaned')),
+      );
+    }
+  } catch (_) {
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Could not open the phone dialer')),
+      );
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // OTP submission result
 // ---------------------------------------------------------------------------
 
@@ -103,63 +145,135 @@ class AvailableRequest {
   final String? dropoffLocation;
 }
 
-/// Embedded produce-request info inside an active trip response.
-class ActiveTripProduceRequest {
-  ActiveTripProduceRequest({
+/// One of the rider's active trips, from `GET /trips/active`.
+///
+/// ## Two response shapes, one model
+///
+/// The backend has gone through two iterations for this endpoint:
+///
+///   1. **Old (`ActiveTripResponse`)** — nested shape:
+///      `{ id, status, produce_request: { id, crop_type, ... } }`
+///   2. **New (`TripActiveOut`)** — flat shape with privacy-aware contact:
+///      `{ trip_id, produce_request_id, status, crop_type, ..., farmer_full_name,
+///         farmer_phone_number, rider_full_name, rider_phone_number,
+///         vehicle_number, vehicle_type }`
+///
+/// [fromJson] sniffs which one it's looking at and normalizes both into the
+/// same Dart object. This keeps older sessions working during the transition
+/// and means the tab doesn't crash if a stale backend is running.
+///
+/// The `id` field on this class is always the Trip id (used for status
+/// PATCHes); `produceRequestId` is the ProduceRequest id (used for the OTP
+/// verify endpoint). Both are needed and they are NOT interchangeable.
+class ActiveTrip {
+  ActiveTrip({
     required this.id,
+    required this.produceRequestId,
+    required this.status,
     required this.cropType,
     required this.crateCount,
     required this.weightKg,
     required this.latitude,
     required this.longitude,
-    required this.status,
-    this.dropoffLocation,
+    this.dropoffAddress,
+    this.pickupAddress,
+    this.dropoffLat,
+    this.dropoffLng,
+    this.farmerFullName,
+    this.farmerPhoneNumber,
+    this.riderFullName,
+    this.riderPhoneNumber,
+    this.vehicleNumber,
+    this.vehicleType,
   });
 
-  factory ActiveTripProduceRequest.fromJson(Map<String, dynamic> json) {
-    return ActiveTripProduceRequest(
+  factory ActiveTrip.fromJson(Map<String, dynamic> json) {
+    // Sniff the shape: the new one has `trip_id` at the top level and no
+    // `produce_request` nested object. The old one has `id` + nested.
+    final hasNewShape = json.containsKey('trip_id') &&
+        !json.containsKey('produce_request');
+
+    if (hasNewShape) {
+      return ActiveTrip(
+        id: (json['trip_id'] ?? '').toString(),
+        produceRequestId: (json['produce_request_id'] ?? '').toString(),
+        status: (json['status'] ?? '') as String,
+        cropType: (json['crop_type'] ?? '') as String,
+        crateCount: ((json['crate_count'] ?? 0) as num).toInt(),
+        weightKg: ((json['weight_kg'] ?? 0) as num).toDouble(),
+        latitude: ((json['latitude'] ?? 0) as num).toDouble(),
+        longitude: ((json['longitude'] ?? 0) as num).toDouble(),
+        dropoffAddress: json['dropoff_address'] as String?,
+        pickupAddress: json['pickup_address'] as String?,
+        dropoffLat: (json['dropoff_lat'] as num?)?.toDouble(),
+        dropoffLng: (json['dropoff_lng'] as num?)?.toDouble(),
+        farmerFullName: json['farmer_full_name'] as String?,
+        farmerPhoneNumber: json['farmer_phone_number'] as String?,
+        riderFullName: json['rider_full_name'] as String?,
+        riderPhoneNumber: json['rider_phone_number'] as String?,
+        vehicleNumber: json['vehicle_number'] as String?,
+        vehicleType: json['vehicle_type'] as String?,
+      );
+    }
+
+    // Old shape fallback. Nested `produce_request` might be null on a
+    // malformed row; guard against it so we don't throw while parsing.
+    final pr = (json['produce_request'] as Map<String, dynamic>?) ?? const {};
+
+    return ActiveTrip(
       id: (json['id'] ?? '').toString(),
-      cropType: (json['crop_type'] ?? '') as String,
-      crateCount: ((json['crate_count'] ?? 0) as num).toInt(),
-      weightKg: ((json['weight_kg'] ?? 0) as num).toDouble(),
-      latitude: ((json['latitude'] ?? 0) as num).toDouble(),
-      longitude: ((json['longitude'] ?? 0) as num).toDouble(),
+      produceRequestId:
+          (pr['id'] ?? json['produce_request_id'] ?? '').toString(),
       status: (json['status'] ?? '') as String,
-      dropoffLocation: json['dropoff_location'] as String?,
+      cropType: (pr['crop_type'] ?? '') as String,
+      crateCount: ((pr['crate_count'] ?? 0) as num).toInt(),
+      weightKg: ((pr['weight_kg'] ?? 0) as num).toDouble(),
+      latitude: ((pr['latitude'] ?? 0) as num).toDouble(),
+      longitude: ((pr['longitude'] ?? 0) as num).toDouble(),
+      dropoffAddress: pr['dropoff_location'] as String?,
+      // The old shape has no farmer contact info — these stay null and
+      // the UI's farmer-contact card simply doesn't render.
     );
   }
 
   final String id;
+  final String produceRequestId;
+  final String status;
   final String cropType;
   final int crateCount;
   final double weightKg;
   final double latitude;
   final double longitude;
-  final String status;
-  final String? dropoffLocation;
-}
 
-/// One of the rider's active trips, from `GET /trips/active`.
-class ActiveTrip {
-  ActiveTrip({
-    required this.id,
-    required this.status,
-    required this.produceRequest,
-  });
+  /// Free-text address string from the backend. Preferred display value
+  /// over the raw lat/lng when present.
+  final String? dropoffAddress;
+  final String? pickupAddress;
 
-  factory ActiveTrip.fromJson(Map<String, dynamic> json) {
-    return ActiveTrip(
-      id: (json['id'] ?? '').toString(),
-      status: (json['status'] ?? '') as String,
-      produceRequest: ActiveTripProduceRequest.fromJson(
-        json['produce_request'] as Map<String, dynamic>,
-      ),
-    );
-  }
+  /// Coordinate fallbacks for the dropoff, when the backend provides them.
+  final double? dropoffLat;
+  final double? dropoffLng;
 
-  final String id;
-  final String status;
-  final ActiveTripProduceRequest produceRequest;
+  /// Farmer identity — unlocked once a rider is assigned. Null in the old
+  /// response shape or if the farmer has no contact details on file.
+  final String? farmerFullName;
+  final String? farmerPhoneNumber;
+
+  /// Rider identity on the response (i.e. the current user). Included so
+  /// the client can render the "you" context on shared views.
+  final String? riderFullName;
+  final String? riderPhoneNumber;
+
+  final String? vehicleNumber;
+  final String? vehicleType;
+
+  bool get isAccepted => status == 'ACCEPTED';
+  bool get isInTransit => status == 'PICKED_UP' || status == 'IN_TRANSIT';
+
+  /// True when we have enough farmer info to render the contact card. Phone
+  /// is the gate — a name alone isn't actionable.
+  bool get hasFarmerContact =>
+      farmerPhoneNumber != null && farmerPhoneNumber!.trim().isNotEmpty;
 }
 
 // ---------------------------------------------------------------------------
@@ -213,6 +327,7 @@ class StatusBadge extends StatelessWidget {
     'PENDING': (Color(0xFFB45309), Color(0x26F59E0B)),
     'ACCEPTED': (Color(0xFF1D4ED8), Color(0x261D4ED8)),
     'PICKED_UP': (Color(0xFF6D28D9), Color(0x266D28D9)),
+    'IN_TRANSIT': (Color(0xFF6D28D9), Color(0x266D28D9)),
     'COMPLETED': (Color(0xFF166534), Color(0x2616A34A)),
     'DELIVERED': (Color(0xFF166534), Color(0x2616A34A)),
     'CANCELLED': (Color(0xFF991B1B), Color(0x26DC2626)),

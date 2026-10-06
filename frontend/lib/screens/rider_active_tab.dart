@@ -41,8 +41,8 @@ class DeliveryResult {
 }
 
 /// Tab 1 of the rider shell: the rider's currently active trips (ACCEPTED or
-/// PICKED_UP), with status-transition actions, the pickup OTP dialog, and the
-/// proof-of-delivery photo upload flow.
+/// PICKED_UP), with status-transition actions, the pickup OTP dialog, the
+/// proof-of-delivery photo upload flow, and a CALL FARMER contact card.
 class RiderActiveTab extends StatefulWidget {
   const RiderActiveTab({super.key});
 
@@ -104,9 +104,8 @@ class _RiderActiveTabState extends State<RiderActiveTab>
       if (response.statusCode == 200) {
         final decoded = jsonDecode(response.body);
 
-        // Defensive: the endpoint currently returns a single object. When it
-        // is upgraded to return a list, this branch keeps working without a
-        // client change.
+        // The endpoint returns a list, but older versions returned a single
+        // object — treat both shapes the same way.
         final List<dynamic> items;
         if (decoded is List) {
           items = decoded;
@@ -165,7 +164,7 @@ class _RiderActiveTabState extends State<RiderActiveTab>
       if (response.statusCode == 200) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('${trip.produceRequest.cropType} → $newStatus'),
+            content: Text('${trip.cropType} → $newStatus'),
             backgroundColor: kRiderGreen,
           ),
         );
@@ -196,19 +195,14 @@ class _RiderActiveTabState extends State<RiderActiveTab>
 
   /// Verifies the 4-digit pickup OTP against the backend.
   ///
-  /// The verify endpoint targets the ProduceRequest id (not the Trip id) —
-  /// `trip.produceRequest.id`. On a successful verify, the ProduceRequest's
-  /// status flips to PICKED_UP on the server, but the Trip status stays
-  /// ACCEPTED (they're independent state machines). Since the rider's card
-  /// reads the Trip status, we follow up with a PATCH to sync the two —
-  /// otherwise the card would still say "ACCEPTED" and the OTP button would
-  /// keep appearing.
+  /// The verify endpoint targets the ProduceRequest id (not the Trip id).
+  /// On a successful verify, the ProduceRequest's status flips to
+  /// PICKED_UP on the server, but the Trip status stays ACCEPTED (they're
+  /// independent state machines). Since the rider's card reads the Trip
+  /// status, we follow up with a PATCH to sync the two.
   ///
   /// If the PATCH fails, we still return success — the OTP was verified,
-  /// which is the essential operation. The user sees the green SnackBar and
-  /// the list refreshes; the card may still show ACCEPTED until the next
-  /// successful status PATCH. Backend-side, folding the trip transition
-  /// into the verify endpoint would remove this two-call dance entirely.
+  /// which is the essential operation.
   Future<OtpSubmitResult> _submitOtp(ActiveTrip trip, String otp) async {
     final auth = context.read<AuthProvider>();
     if (auth.token == null) return OtpSubmitResult.otherError;
@@ -216,7 +210,7 @@ class _RiderActiveTabState extends State<RiderActiveTab>
     try {
       final verifyResp = await http.post(
         Uri.parse(
-          '$kApiBaseUrl/produce-requests/${trip.produceRequest.id}/verify-otp',
+          '$kApiBaseUrl/produce-requests/${trip.produceRequestId}/verify-otp',
         ),
         headers: _headers(auth, json: true),
         body: jsonEncode({'otp': otp}),
@@ -252,7 +246,7 @@ class _RiderActiveTabState extends State<RiderActiveTab>
       context: context,
       barrierDismissible: false,
       builder: (context) => _OtpDialog(
-        cropName: trip.produceRequest.cropType,
+        cropName: trip.cropType,
         onSubmit: (otp) => _submitOtp(trip, otp),
       ),
     );
@@ -275,40 +269,14 @@ class _RiderActiveTabState extends State<RiderActiveTab>
   ///
   /// Two-step flow (matches the backend contract):
   ///   1. POST /uploads/delivery-photo  — multipart file upload, returns
-  ///      {image_url}. We don't currently persist the URL against the Trip
-  ///      (no column for it), so it's simply uploaded for audit trail.
+  ///      {image_url}.
   ///   2. PATCH /trips/{id}/status with {"status": "DELIVERED"}.
-  ///
-  /// Takes `Uint8List` plus the source filename (not a `File`) so the same
-  /// code path works on Flutter Web, Android, and iOS — `File` isn't
-  /// available on Web, and reading the picked image into memory once here
-  /// avoids platform-specific branching.
-  ///
-  /// The multipart body is built with `MultipartFile.fromBytes` and an
-  /// explicit `contentType`, because `fromBytes` defaults to
-  /// `application/octet-stream` and the backend's content-type allowlist
-  /// (`image/jpeg`, `image/png`, `image/webp`) will reject that outright.
-  /// The MIME type is derived from the source filename's extension.
-  ///
-  /// Every network call is bounded by [_kUploadTimeout]; on expiry, the
-  /// returned [DeliveryResult.failure] carries a specific "Connection timed
-  /// out" message the dialog surfaces verbatim. Combined with the dialog's
-  /// own try-catch-finally, this guarantees the spinner never sticks.
-  ///
-  /// On any failure returns a [DeliveryResult.failure] whose `errorMessage`
-  /// is the backend's exact `detail` string when one is present — the dialog
-  /// surfaces it verbatim so the rider knows *why* the request was rejected
-  /// (e.g. "Unsupported file type: application/octet-stream.") rather than
-  /// seeing a generic "try again".
   Future<DeliveryResult> _uploadProofAndDeliver(
     ActiveTrip trip,
     Uint8List imageBytes,
     String sourceFilename,
   ) async {
-    // ----- Pre-condition: trip must be in a completable state -----------
-    // Mirrors the backend's own guard. Checking here too means the rider
-    // gets an instant, clear rejection instead of a wasted network round
-    // trip and a parsed 400.
+    // Pre-condition: trip must be in a completable state.
     if (!_kCompletableTripStatuses.contains(trip.status)) {
       return DeliveryResult.failure(
         'Trip must be in PICKED_UP status before completing '
@@ -330,11 +298,6 @@ class _RiderActiveTabState extends State<RiderActiveTab>
       request.headers['Authorization'] = 'Bearer ${auth.token}';
       request.headers['Accept'] = 'application/json';
 
-      // Derive the MIME subtype from the picked file's extension. The
-      // image_picker package returns whatever the platform gave it — on
-      // Android that's often a cache path ending in `.jpg`, on Web it's
-      // the original upload's name. We lowercase and normalize `.jpeg` /
-      // `.jpg` to the same value since both are `image/jpeg` on the wire.
       final extension = _mimeSubtypeFromFilename(sourceFilename);
 
       request.files.add(
@@ -346,16 +309,9 @@ class _RiderActiveTabState extends State<RiderActiveTab>
         ),
       );
 
-      // `.timeout` guards against a socket that accepts the connection but
-      // never responds — without it, `await` would hang indefinitely and
-      // the dialog's spinner would never clear. Throws TimeoutException on
-      // expiry, caught below with a specific message.
-      final streamed = await request
-          .send()
-          .timeout(_kUploadTimeout);
-
-      final uploadResp = await http.Response.fromStream(streamed)
-          .timeout(_kUploadTimeout);
+      final streamed = await request.send().timeout(_kUploadTimeout);
+      final uploadResp =
+          await http.Response.fromStream(streamed).timeout(_kUploadTimeout);
 
       if (uploadResp.statusCode != 200 && uploadResp.statusCode != 201) {
         return DeliveryResult.failure(
@@ -386,8 +342,6 @@ class _RiderActiveTabState extends State<RiderActiveTab>
 
       return const DeliveryResult.success();
     } on TimeoutException catch (e) {
-      // Specific message so the rider knows it's a network problem, not
-      // something wrong with their photo or the trip state.
       debugPrint('Upload Error (timeout): $e');
       // ignore: avoid_print
       print('Upload Error (timeout): $e');
@@ -395,7 +349,6 @@ class _RiderActiveTabState extends State<RiderActiveTab>
         'Connection timed out. Please check backend server.',
       );
     } catch (e) {
-      // Log to the browser console (F12) / device log for debugging.
       debugPrint('Upload Error: $e');
       // ignore: avoid_print
       print('Upload Error: $e');
@@ -404,15 +357,6 @@ class _RiderActiveTabState extends State<RiderActiveTab>
   }
 
   /// Maps a source filename to the MIME subtype the backend expects.
-  ///
-  /// `image/jpeg` is the canonical MIME for both `.jpg` and `.jpeg` — the
-  /// backend's allowlist only knows `image/jpeg`, so we normalize `.jpg` to
-  /// `jpeg` here rather than sending `image/jpg` (which is not a real MIME
-  /// type and would be rejected). Unknown extensions default to `jpeg`
-  /// because image_picker's own output on every platform we target is
-  /// either JPEG or, occasionally, PNG — and a JPEG-typed payload of PNG
-  /// bytes is still accepted by PIL/Flask on the server side for reading
-  /// dimensions, even if it's technically a mismatch.
   String _mimeSubtypeFromFilename(String filename) {
     final lower = filename.toLowerCase();
     final dot = lower.lastIndexOf('.');
@@ -428,18 +372,11 @@ class _RiderActiveTabState extends State<RiderActiveTab>
       case 'webp':
         return 'webp';
       default:
-        // Fall back to the safest option — see doc comment.
         return 'jpeg';
     }
   }
 
   /// Pulls the human-readable reason out of a FastAPI error response.
-  ///
-  /// FastAPI puts the actual explanation in `{"detail": "..."}`, so we look
-  /// for that field first. If the body isn't JSON or has no detail, we fall
-  /// back to the caller-supplied message (which usually embeds the HTTP
-  /// status code). Truncates very long bodies so a stack trace doesn't
-  /// overflow the dialog.
   String _extractErrorDetail(http.Response response, String fallback) {
     try {
       final decoded = jsonDecode(response.body);
@@ -454,9 +391,6 @@ class _RiderActiveTabState extends State<RiderActiveTab>
   }
 
   Future<void> _openDeliveryProofDialog(ActiveTrip trip) async {
-    // Guard at the entry point too — if the trip moved out of PICKED_UP
-    // between render and tap (e.g. another device cancelled it), we don't
-    // want to open the dialog at all.
     if (!_kCompletableTripStatuses.contains(trip.status)) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
@@ -567,17 +501,19 @@ class _ActiveTripCard extends StatelessWidget {
   final bool isUpdating;
   final void Function(String newStatus) onUpdateStatus;
   final VoidCallback onEnterOtp;
-
-  /// Called from the PICKED_UP branch. Opens the proof-of-delivery dialog,
-  /// which internally uploads the photo and PATCHes the status — so this
-  /// callback replaces the old direct `onUpdateStatus('DELIVERED')` call.
   final VoidCallback onMarkDelivered;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final pr = trip.produceRequest;
-    final dropoff = pr.dropoffLocation ?? '';
+    final dropoff = trip.dropoffAddress ?? '';
+
+    // Pickup display: prefer the free-text address; fall back to coords.
+    final pickupDisplay = (trip.pickupAddress != null &&
+            trip.pickupAddress!.trim().isNotEmpty)
+        ? trip.pickupAddress!.trim()
+        : '${trip.latitude.toStringAsFixed(4)}, '
+            '${trip.longitude.toStringAsFixed(4)}';
 
     return Card(
       elevation: 1,
@@ -588,11 +524,12 @@ class _ActiveTripCard extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            // ----- Header: crop | status ---------------------------------
             Row(
               children: [
                 Expanded(
                   child: Text(
-                    pr.cropType,
+                    trip.cropType,
                     style: theme.textTheme.titleMedium
                         ?.copyWith(fontWeight: FontWeight.bold),
                   ),
@@ -601,20 +538,20 @@ class _ActiveTripCard extends StatelessWidget {
               ],
             ),
             const SizedBox(height: 12),
+
+            // ----- Cargo & pickup ----------------------------------------
             InfoRow(
               icon: Icons.inventory_2_outlined,
-              label: '${pr.crateCount} crates · '
-                  '${pr.weightKg.toStringAsFixed(0)} kg',
+              label: '${trip.crateCount} crates · '
+                  '${trip.weightKg.toStringAsFixed(0)} kg',
             ),
             const SizedBox(height: 6),
             InfoRow(
               icon: Icons.location_on_outlined,
-              label: 'Pickup: '
-                  '${pr.latitude.toStringAsFixed(4)}, '
-                  '${pr.longitude.toStringAsFixed(4)}',
+              label: 'Pickup: $pickupDisplay',
               onNavigate: () => launchMaps(
                 context,
-                '${pr.latitude},${pr.longitude}',
+                '${trip.latitude},${trip.longitude}',
               ),
             ),
             const SizedBox(height: 6),
@@ -625,6 +562,19 @@ class _ActiveTripCard extends StatelessWidget {
                   ? null
                   : () => launchMaps(context, dropoff),
             ),
+
+            // ----- Farmer Contact Card -----------------------------------
+            // Rendered only when the backend has unlocked the farmer's
+            // contact info (i.e. a rider has been assigned and the farmer
+            // has a phone number on file). Handles the transition case:
+            // an ACCEPTED trip from an older session may not carry the
+            // new fields, in which case `hasFarmerContact` is false and
+            // the card is silently skipped.
+            if (trip.hasFarmerContact) ...[
+              const SizedBox(height: 14),
+              _FarmerContactCard(trip: trip),
+            ],
+
             const SizedBox(height: 16),
             _buildActionButton(),
           ],
@@ -635,8 +585,7 @@ class _ActiveTripCard extends StatelessWidget {
 
   Widget _buildActionButton() {
     if (trip.status == 'ACCEPTED') {
-      // Primary action: verify the 4-digit OTP the farmer reads out. This
-      // is what actually confirms the handoff on the backend.
+      // Primary action: verify the 4-digit OTP the farmer reads out.
       return SizedBox(
         width: double.infinity,
         child: FilledButton.icon(
@@ -661,8 +610,7 @@ class _ActiveTripCard extends StatelessWidget {
     }
 
     if (_kCompletableTripStatuses.contains(trip.status)) {
-      // Deliver requires proof of delivery — the dialog handles the photo
-      // upload and the status PATCH, then pops with success.
+      // Deliver requires proof of delivery.
       return SizedBox(
         width: double.infinity,
         child: FilledButton.icon(
@@ -693,20 +641,163 @@ class _ActiveTripCard extends StatelessWidget {
 }
 
 // ---------------------------------------------------------------------------
+// Farmer contact card
+// ---------------------------------------------------------------------------
+
+/// Small green-tinted card with the farmer's name, pickup address, and a
+/// prominent CALL FARMER button.
+///
+/// ## Why this is separate from the trip card
+///
+/// Contact info is a distinct concern from trip logistics — the trip card
+/// renders cargo, addresses, and status; this card renders "who to call and
+/// where to meet them". Separating them makes it easy to move the contact
+/// card to a different position (e.g. above the action button vs below),
+/// and makes it obvious where the privacy gating lives: if `hasFarmerContact`
+/// is false, nothing here renders at all.
+class _FarmerContactCard extends StatelessWidget {
+  const _FarmerContactCard({required this.trip});
+
+  final ActiveTrip trip;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+
+    // Fall back to a generic label if the backend didn't send a name.
+    final name = (trip.farmerFullName != null &&
+            trip.farmerFullName!.trim().isNotEmpty)
+        ? trip.farmerFullName!.trim()
+        : 'Farmer';
+
+    // Pickup display mirrors the trip card's fallback logic.
+    final pickup = (trip.pickupAddress != null &&
+            trip.pickupAddress!.trim().isNotEmpty)
+        ? trip.pickupAddress!.trim()
+        : null;
+
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: kRiderGreen.withOpacity(0.06),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: kRiderGreen.withOpacity(0.30)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // ----- Header ------------------------------------------------
+          Row(
+            children: [
+              const Icon(Icons.agriculture_outlined,
+                  color: kRiderGreen, size: 18),
+              const SizedBox(width: 8),
+              Text(
+                'Farmer Contact',
+                style: theme.textTheme.titleSmall?.copyWith(
+                  fontWeight: FontWeight.bold,
+                  color: kRiderGreen,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+
+          // ----- Name + phone ------------------------------------------
+          Row(
+            children: [
+              const Icon(Icons.person_outline,
+                  size: 18, color: Colors.black54),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  name,
+                  style: theme.textTheme.bodyLarge?.copyWith(
+                    fontWeight: FontWeight.w600,
+                  ),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          Row(
+            children: [
+              const Icon(Icons.phone_outlined,
+                  size: 18, color: Colors.black54),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  '+91 ${trip.farmerPhoneNumber}',
+                  style: theme.textTheme.bodyMedium?.copyWith(
+                    fontWeight: FontWeight.w600,
+                    letterSpacing: 0.4,
+                  ),
+                ),
+              ),
+            ],
+          ),
+
+          // ----- Pickup address (only if available) --------------------
+          if (pickup != null) ...[
+            const SizedBox(height: 6),
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Padding(
+                  padding: EdgeInsets.only(top: 2),
+                  child: Icon(Icons.location_on_outlined,
+                      size: 18, color: Colors.black54),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    pickup,
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: theme.colorScheme.onSurfaceVariant,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ],
+
+          const SizedBox(height: 12),
+
+          // ----- CALL FARMER button ------------------------------------
+          SizedBox(
+            width: double.infinity,
+            child: FilledButton.icon(
+              onPressed: () =>
+                  launchPhoneCall(context, trip.farmerPhoneNumber!),
+              style: FilledButton.styleFrom(
+                backgroundColor: kRiderGreen,
+                foregroundColor: Colors.white,
+                padding: const EdgeInsets.symmetric(vertical: 12),
+                textStyle: const TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w700,
+                  letterSpacing: 0.6,
+                ),
+              ),
+              icon: const Icon(Icons.phone, size: 18),
+              label: const Text('CALL FARMER'),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Delivery proof-of-photo dialog
 // ---------------------------------------------------------------------------
 
 class _DeliveryProofDialog extends StatefulWidget {
   const _DeliveryProofDialog({required this.onSubmit});
 
-  /// Uploads the photo and transitions the trip. Returns a [DeliveryResult]
-  /// the dialog uses to decide whether to close (success) or keep itself
-  /// open and show the backend's exact rejection reason.
-  ///
-  /// Takes raw bytes and the source filename (not a File) so the same
-  /// widget compiles and works identically on Flutter Web, Android, and iOS.
-  /// The filename is what the parent uses to derive the multipart
-  /// Content-Type — see `_mimeSubtypeFromFilename` in the parent state.
   final Future<DeliveryResult> Function(
     Uint8List photoBytes,
     String sourceFilename,
@@ -719,14 +810,7 @@ class _DeliveryProofDialog extends StatefulWidget {
 class _DeliveryProofDialogState extends State<_DeliveryProofDialog> {
   final ImagePicker _picker = ImagePicker();
 
-  /// The picked XFile. Kept alongside the bytes so we have the filename and
-  /// MIME metadata available when building the multipart request — the
-  /// parent uses its `.name` to decide the Content-Type it sends.
   XFile? _pickedFile;
-
-  /// Picked image bytes. `Uint8List` (not `dart:io File`) so `Image.memory`
-  /// renders it on every platform — Web has no filesystem paths, and
-  /// `Image.file` asserts `!kIsWeb`.
   Uint8List? _imageBytes;
 
   bool _isUploading = false;
@@ -736,18 +820,11 @@ class _DeliveryProofDialogState extends State<_DeliveryProofDialog> {
     try {
       final picked = await _picker.pickImage(
         source: source,
-        // Downscale before upload — a 12MP photo is 4–8MB and the backend
-        // caps at 10MB; 1600px at 85% quality is plenty for a proof shot
-        // and uploads in well under a second on 4G. On Web these options
-        // are applied via canvas during the picker round-trip.
         maxWidth: 1600,
         imageQuality: 85,
       );
       if (picked == null) return;
 
-      // Read bytes immediately while the platform file handle is still
-      // valid. On Web there's no path to reopen, so this is the only
-      // moment the bytes are guaranteed available.
       final bytes = await picked.readAsBytes();
       if (!mounted) return;
 
@@ -758,10 +835,6 @@ class _DeliveryProofDialogState extends State<_DeliveryProofDialog> {
       });
     } catch (e) {
       if (!mounted) return;
-      // On Web, the most common failure is the browser blocking camera
-      // access (permissions, no webcam on desktop, or an insecure origin).
-      // Surface a hint rather than the raw exception so the rider knows
-      // what to try next.
       final hint = kIsWeb
           ? ' (if using Camera, try Gallery instead — browsers often block '
               'camera access on non-HTTPS origins or desktops without a webcam)'
@@ -770,14 +843,6 @@ class _DeliveryProofDialogState extends State<_DeliveryProofDialog> {
     }
   }
 
-  /// Runs the upload and always clears [_isUploading] on the way out.
-  ///
-  /// The try-catch-finally structure is load-bearing: without it, an
-  /// exception thrown by `widget.onSubmit` (which shouldn't happen — the
-  /// parent catches everything — but defensive coding wins) would propagate
-  /// out and leave the spinner stuck. With `finally` guaranteeing the
-  /// `setState`, the loading UI clears no matter how the future resolves:
-  /// success, caught failure, or uncaught exception.
   Future<void> _submit() async {
     final bytes = _imageBytes;
     if (bytes == null || bytes.isEmpty) {
@@ -790,10 +855,6 @@ class _DeliveryProofDialogState extends State<_DeliveryProofDialog> {
       _error = null;
     });
 
-    // Pass the original filename along so the parent can derive a proper
-    // Content-Type. If the picker somehow gave us no name (shouldn't happen
-    // in practice), fall back to a `.jpg` default — the parent's MIME helper
-    // normalizes to `image/jpeg` from there.
     final filename = _pickedFile?.name ?? 'proof.jpg';
 
     try {
@@ -806,26 +867,17 @@ class _DeliveryProofDialogState extends State<_DeliveryProofDialog> {
         return;
       }
 
-      // Surface the backend's actual reason verbatim. Falls back to a
-      // generic message only if the server gave us nothing parseable.
       setState(() {
         _error = result.errorMessage ??
             'Could not complete delivery. Please try again.';
       });
     } catch (e) {
-      // Should never fire — the parent catches everything — but if it
-      // does, the finally block below still resets the spinner, and the
-      // error is shown inline so the rider isn't left staring at a
-      // disabled button.
       debugPrint('Dialog submit error: $e');
       // ignore: avoid_print
       print('Dialog submit error: $e');
       if (!mounted) return;
       setState(() => _error = 'Error: $e');
     } finally {
-      // Guarantee: if the dialog is still on screen, the loading state is
-      // cleared. If it's already been popped (success path), `mounted` is
-      // false and we skip the setState — harmless either way.
       if (mounted) {
         setState(() => _isUploading = false);
       }
@@ -836,11 +888,6 @@ class _DeliveryProofDialogState extends State<_DeliveryProofDialog> {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
 
-    // Explicit width on the content is load-bearing on Flutter Web: an
-    // AlertDialog's intrinsic sizing can collapse to zero when its child
-    // mixes CrossAxisAlignment.stretch with an Image whose width is
-    // `double.infinity`, producing a "blank modal". Pinning a width here
-    // removes the ambiguity.
     return AlertDialog(
       title: const Text('Upload Delivery Proof'),
       content: SizedBox(
@@ -857,7 +904,6 @@ class _DeliveryProofDialogState extends State<_DeliveryProofDialog> {
               ),
               const SizedBox(height: 16),
 
-              // ----- Preview ----------------------------------------------
               if (_imageBytes == null)
                 Container(
                   height: 180,
@@ -880,12 +926,7 @@ class _DeliveryProofDialogState extends State<_DeliveryProofDialog> {
                     height: 200,
                     width: 320,
                     fit: BoxFit.cover,
-                    // Web rendering sometimes flickers when the widget
-                    // rebuilds mid-decode; gaplessPlayback keeps the
-                    // previous frame visible instead of a flash of blank.
                     gaplessPlayback: true,
-                    // If the bytes aren't a decodable image for any reason,
-                    // show a placeholder instead of the red Flutter error box.
                     errorBuilder: (_, __, ___) => Container(
                       height: 200,
                       width: 320,
@@ -899,7 +940,6 @@ class _DeliveryProofDialogState extends State<_DeliveryProofDialog> {
 
               const SizedBox(height: 12),
 
-              // ----- Pick buttons -----------------------------------------
               Row(
                 children: [
                   Expanded(
@@ -924,7 +964,6 @@ class _DeliveryProofDialogState extends State<_DeliveryProofDialog> {
                 ],
               ),
 
-              // ----- Upload progress --------------------------------------
               if (_isUploading) ...[
                 const SizedBox(height: 16),
                 Row(
@@ -1014,10 +1053,6 @@ class _OtpDialog extends StatefulWidget {
   });
 
   final String cropName;
-
-  /// Performs the actual network calls. Returns a result the dialog uses
-  /// to decide whether to close (success) or show an inline error and let
-  /// the rider retry without losing the dialog.
   final Future<OtpSubmitResult> Function(String otp) onSubmit;
 
   @override
@@ -1059,8 +1094,6 @@ class _OtpDialogState extends State<_OtpDialog> {
             : 'Could not verify OTP. Please try again.';
       });
     } catch (e) {
-      // Same defensive guarantee as the delivery dialog — if the parent
-      // ever throws, the spinner still clears.
       debugPrint('OTP dialog submit error: $e');
       // ignore: avoid_print
       print('OTP dialog submit error: $e');
