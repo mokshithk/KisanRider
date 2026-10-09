@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart' show kIsWeb;   // <-- ADDED
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:provider/provider.dart';
@@ -11,12 +12,10 @@ import 'farmer_home_tab.dart';
 import 'farmer_orders_tab.dart';
 
 /// Base URL of the FastAPI backend.
-///
-/// NOTE: `127.0.0.1` only works from Flutter Desktop / Chrome on the same
-/// machine. On an Android emulator the host is reachable at `10.0.2.2`, and
-/// on a physical device you need your machine's LAN IP (e.g. 192.168.x.x).
-/// Change this one constant when you switch targets.
-const String _kApiBaseUrl = 'http://127.0.0.1:8000';
+String get _kApiBaseUrl {
+  if (kIsWeb) return 'http://localhost:8000';
+  return 'http://10.28.1.142:8000';
+}
 
 /// Rough weight estimate the backend needs but the form doesn't collect.
 const double _kKgPerCrate = 25.0;

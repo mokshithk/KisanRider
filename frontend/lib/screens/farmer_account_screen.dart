@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart' show kIsWeb;   // <-- ADD THIS LINE
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
@@ -10,11 +11,12 @@ import 'login_screen.dart';
 
 /// Base URL of the FastAPI backend.
 ///
-/// NOTE: `127.0.0.1` only works from Flutter Desktop / Chrome on the same
-/// machine. On an Android emulator use `10.0.2.2`, on a physical device
-/// use your machine's LAN IP. Matches the constant in the other farmer
-/// tab files.
-const String _kApiBaseUrl = 'http://127.0.0.1:8000';
+/// - Web/Chrome uses `localhost`.
+/// - Physical Android/iOS devices use your laptop's Wi-Fi IP.
+String get _kApiBaseUrl {
+  if (kIsWeb) return 'http://localhost:8000';
+  return 'http://10.28.1.142:8000';
+}
 
 /// Kisan Green — the primary brand color used throughout the farmer UI.
 const Color _kFarmerGreen = Color(0xFF2E7D32);

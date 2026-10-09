@@ -1,15 +1,14 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;   // <-- ADDED
 import 'package:url_launcher/url_launcher.dart';
 
 /// Base URL of the FastAPI backend.
-///
-/// NOTE: `127.0.0.1` only works from Flutter Desktop / Chrome on the same
-/// machine. On an Android emulator use `10.0.2.2`, on a physical device use
-/// your machine's LAN IP.
-const String kApiBaseUrl = 'http://127.0.0.1:8000';
+String get kApiBaseUrl {
+  if (kIsWeb) return 'http://localhost:8000';
+  return 'http://10.28.1.142:8000';
+}
 
-/// Rider's current position — used as the center point for the nearby search.
-/// Mocked for MVP; swap for a real geolocation lookup later.
+/// Rider's current position.
 const double kRiderLat = 13.1362;
 const double kRiderLng = 78.1291;
 const double kSearchRadiusKm = 50.0;
@@ -146,25 +145,6 @@ class AvailableRequest {
 }
 
 /// One of the rider's active trips, from `GET /trips/active`.
-///
-/// ## Two response shapes, one model
-///
-/// The backend has gone through two iterations for this endpoint:
-///
-///   1. **Old (`ActiveTripResponse`)** — nested shape:
-///      `{ id, status, produce_request: { id, crop_type, ... } }`
-///   2. **New (`TripActiveOut`)** — flat shape with privacy-aware contact:
-///      `{ trip_id, produce_request_id, status, crop_type, ..., farmer_full_name,
-///         farmer_phone_number, rider_full_name, rider_phone_number,
-///         vehicle_number, vehicle_type }`
-///
-/// [fromJson] sniffs which one it's looking at and normalizes both into the
-/// same Dart object. This keeps older sessions working during the transition
-/// and means the tab doesn't crash if a stale backend is running.
-///
-/// The `id` field on this class is always the Trip id (used for status
-/// PATCHes); `produceRequestId` is the ProduceRequest id (used for the OTP
-/// verify endpoint). Both are needed and they are NOT interchangeable.
 class ActiveTrip {
   ActiveTrip({
     required this.id,
@@ -188,8 +168,6 @@ class ActiveTrip {
   });
 
   factory ActiveTrip.fromJson(Map<String, dynamic> json) {
-    // Sniff the shape: the new one has `trip_id` at the top level and no
-    // `produce_request` nested object. The old one has `id` + nested.
     final hasNewShape = json.containsKey('trip_id') &&
         !json.containsKey('produce_request');
 
@@ -216,8 +194,6 @@ class ActiveTrip {
       );
     }
 
-    // Old shape fallback. Nested `produce_request` might be null on a
-    // malformed row; guard against it so we don't throw while parsing.
     final pr = (json['produce_request'] as Map<String, dynamic>?) ?? const {};
 
     return ActiveTrip(
@@ -231,8 +207,6 @@ class ActiveTrip {
       latitude: ((pr['latitude'] ?? 0) as num).toDouble(),
       longitude: ((pr['longitude'] ?? 0) as num).toDouble(),
       dropoffAddress: pr['dropoff_location'] as String?,
-      // The old shape has no farmer contact info — these stay null and
-      // the UI's farmer-contact card simply doesn't render.
     );
   }
 
@@ -245,22 +219,15 @@ class ActiveTrip {
   final double latitude;
   final double longitude;
 
-  /// Free-text address string from the backend. Preferred display value
-  /// over the raw lat/lng when present.
   final String? dropoffAddress;
   final String? pickupAddress;
 
-  /// Coordinate fallbacks for the dropoff, when the backend provides them.
   final double? dropoffLat;
   final double? dropoffLng;
 
-  /// Farmer identity — unlocked once a rider is assigned. Null in the old
-  /// response shape or if the farmer has no contact details on file.
   final String? farmerFullName;
   final String? farmerPhoneNumber;
 
-  /// Rider identity on the response (i.e. the current user). Included so
-  /// the client can render the "you" context on shared views.
   final String? riderFullName;
   final String? riderPhoneNumber;
 
@@ -270,8 +237,6 @@ class ActiveTrip {
   bool get isAccepted => status == 'ACCEPTED';
   bool get isInTransit => status == 'PICKED_UP' || status == 'IN_TRANSIT';
 
-  /// True when we have enough farmer info to render the contact card. Phone
-  /// is the gate — a name alone isn't actionable.
   bool get hasFarmerContact =>
       farmerPhoneNumber != null && farmerPhoneNumber!.trim().isNotEmpty;
 }

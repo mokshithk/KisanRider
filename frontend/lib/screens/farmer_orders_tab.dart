@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart' show kIsWeb;   // <-- ADDED
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:provider/provider.dart';
@@ -9,10 +10,12 @@ import '../providers/auth_provider.dart';
 
 /// Base URL of the FastAPI backend.
 ///
-/// NOTE: `127.0.0.1` only works from Flutter Desktop / Chrome on the same
-/// machine. On an Android emulator use `10.0.2.2`, on a physical device
-/// use your machine's LAN IP.
-const String _kApiBaseUrl = 'http://127.0.0.1:8000';
+/// - Web/Chrome uses `localhost`.
+/// - Physical Android/iOS devices use your laptop's Wi-Fi IP.
+String get _kApiBaseUrl {
+  if (kIsWeb) return 'http://localhost:8000';
+  return 'http://10.28.1.142:8000';
+}
 
 /// Brand green used across the farmer-side UI. Kept local so this file has
 /// no dependency on farmer_dashboard.dart.
