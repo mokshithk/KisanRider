@@ -1,6 +1,7 @@
+import 'dart:async';
 import 'dart:convert';
 
-import 'package:flutter/foundation.dart' show kIsWeb;   // <-- ADDED
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:provider/provider.dart';
@@ -20,6 +21,13 @@ String get _kApiBaseUrl {
 /// Brand green used across the farmer-side UI. Kept local so this file has
 /// no dependency on farmer_dashboard.dart.
 const Color _kFarmerGreen = Color(0xFF2E7D32);
+
+/// Polling cadence while at least one order is PENDING.
+///
+/// 5 seconds matches the spec and is short enough that the farmer sees a
+/// rider's acceptance almost instantly, long enough that we aren't hammering
+/// the backend or burning mobile data on an idle screen.
+const Duration _kPollingInterval = Duration(seconds: 5);
 
 // ---------------------------------------------------------------------------
 // Phone call helper
@@ -160,6 +168,18 @@ class FarmerOrder {
 /// cards, newest first. Pull-to-refresh re-fetches. Empty state offers a
 /// shortcut into the Book Transport tab via [onBookTransport].
 ///
+/// ## Live polling
+///
+/// While ANY order in the list is in status `PENDING`, a [Timer.periodic]
+/// fires every [_kPollingInterval] seconds and re-fetches the list. The
+/// moment a rider accepts, the next tick sees `ACCEPTED` on that order,
+/// the assigned-rider card is rendered, and the timer is cancelled (no
+/// more PENDING orders means nothing to wait for).
+///
+/// The periodic fetch is silent — `isLoading` is not flipped, so the
+/// spinner doesn't flash every 5 seconds. Only the initial load and
+/// pull-to-refresh show the loading state.
+///
 /// ## Conditional rendering
 ///
 /// Each card reflects the order's lifecycle:
@@ -186,10 +206,24 @@ class _FarmerOrdersTabState extends State<FarmerOrdersTab> {
   bool isLoading = true;
   String? _error;
 
+  /// The periodic timer that drives live polling. Non-null exactly while
+  /// there is at least one PENDING order to wait on. Cancelled in
+  /// [dispose] so no callback fires after the widget is torn down.
+  Timer? _pollTimer;
+
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) => _fetchOrders());
+  }
+
+  @override
+  void dispose() {
+    // Cancel BEFORE the framework tears down the widget — a fired timer
+    // after dispose would call setState on a dead State and throw.
+    _pollTimer?.cancel();
+    _pollTimer = null;
+    super.dispose();
   }
 
   Map<String, String> _headers(AuthProvider auth) {
@@ -199,20 +233,63 @@ class _FarmerOrdersTabState extends State<FarmerOrdersTab> {
     };
   }
 
-  Future<void> _fetchOrders() async {
+  // -------------------------------------------------------------------------
+  // Polling control
+  // -------------------------------------------------------------------------
+
+  /// Starts or stops the polling timer based on the current order list.
+  ///
+  /// Idempotent: calling it when the state already matches the desired
+  /// state is a no-op. Called after every successful fetch so the timer's
+  /// lifetime tracks the list's contents.
+  void _syncPolling() {
+    final hasPending = myRequests.any((o) => o.isPending);
+
+    if (hasPending && (_pollTimer == null || !_pollTimer!.isActive)) {
+      _pollTimer = Timer.periodic(_kPollingInterval, (_) {
+        // Silent fetch — we don't want a spinner flashing every 5s.
+        _fetchOrders(silent: true);
+      });
+    } else if (!hasPending && _pollTimer != null) {
+      _pollTimer!.cancel();
+      _pollTimer = null;
+    }
+
+    // The indicator widget depends on _pollTimer's state, so rebuild.
+    if (mounted) setState(() {});
+  }
+
+  // -------------------------------------------------------------------------
+  // Networking
+  // -------------------------------------------------------------------------
+
+  /// Fetches the farmer's orders.
+  ///
+  /// [silent] controls whether the loading spinner is shown. Polling ticks
+  /// pass `true` so the UI stays stable between refreshes; manual triggers
+  /// (init, pull-to-refresh, retry button) pass the default `false`.
+  ///
+  /// Network errors on a silent tick are ignored — the user's connection
+  /// flickering shouldn't blank out a list they were just looking at. They
+  /// still see errors on the next manual refresh.
+  Future<void> _fetchOrders({bool silent = false}) async {
     final auth = context.read<AuthProvider>();
     if (auth.token == null) {
-      setState(() {
-        isLoading = false;
-        _error = 'Not signed in.';
-      });
+      if (!silent) {
+        setState(() {
+          isLoading = false;
+          _error = 'Not signed in.';
+        });
+      }
       return;
     }
 
-    setState(() {
-      isLoading = true;
-      _error = null;
-    });
+    if (!silent) {
+      setState(() {
+        isLoading = true;
+        _error = null;
+      });
+    }
 
     try {
       final response = await http.get(
@@ -237,20 +314,29 @@ class _FarmerOrdersTabState extends State<FarmerOrdersTab> {
         setState(() {
           myRequests = parsed;
           isLoading = false;
+          _error = null;
         });
+
+        // Re-evaluate polling: a status may have flipped from PENDING to
+        // ACCEPTED (started) or an order may have just gone DELIVERED (end).
+        _syncPolling();
       } else {
-        setState(() {
-          _error = _extractError(response) ??
-              'Failed to load orders (HTTP ${response.statusCode}).';
-          isLoading = false;
-        });
+        if (!silent) {
+          setState(() {
+            _error = _extractError(response) ??
+                'Failed to load orders (HTTP ${response.statusCode}).';
+            isLoading = false;
+          });
+        }
       }
     } catch (e) {
       if (!mounted) return;
-      setState(() {
-        _error = 'Network error: $e';
-        isLoading = false;
-      });
+      if (!silent) {
+        setState(() {
+          _error = 'Network error: $e';
+          isLoading = false;
+        });
+      }
     }
   }
 
@@ -263,6 +349,10 @@ class _FarmerOrdersTabState extends State<FarmerOrdersTab> {
     } catch (_) {}
     return null;
   }
+
+  // -------------------------------------------------------------------------
+  // Build
+  // -------------------------------------------------------------------------
 
   @override
   Widget build(BuildContext context) {
@@ -282,14 +372,72 @@ class _FarmerOrdersTabState extends State<FarmerOrdersTab> {
       );
     }
 
+    final isPolling = _pollTimer != null && _pollTimer!.isActive;
+
     return RefreshIndicator(
       onRefresh: _fetchOrders,
       color: _kFarmerGreen,
-      child: ListView.builder(
-        padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
-        itemCount: myRequests.length,
-        itemBuilder: (context, index) =>
-            _OrderCard(order: myRequests[index]),
+      child: Column(
+        children: [
+          // A thin "auto-refreshing" strip that appears only while the
+          // timer is live. Green tint matches the brand; the small spinner
+          // signals activity without being distracting.
+          if (isPolling) const _PollingBanner(),
+          Expanded(
+            child: ListView.builder(
+              padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
+              itemCount: myRequests.length,
+              itemBuilder: (context, index) =>
+                  _OrderCard(order: myRequests[index]),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Polling indicator
+// ---------------------------------------------------------------------------
+
+/// A slim strip shown above the order list while polling is active.
+///
+/// Why show it at all: without any visual cue, a farmer staring at a
+/// PENDING order has no way to know the app is actively waiting for a
+/// rider on their behalf — they might pull-to-refresh unnecessarily or
+/// think the app is stuck. A subtle "looking for riders" strip closes
+/// that loop.
+class _PollingBanner extends StatelessWidget {
+  const _PollingBanner();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      color: _kFarmerGreen.withOpacity(0.08),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          const SizedBox(
+            width: 12,
+            height: 12,
+            child: CircularProgressIndicator(
+              strokeWidth: 2,
+              valueColor: AlwaysStoppedAnimation<Color>(_kFarmerGreen),
+            ),
+          ),
+          const SizedBox(width: 10),
+          Text(
+            'Waiting for a rider to accept…',
+            style: TextStyle(
+              color: _kFarmerGreen,
+              fontSize: 12.5,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ],
       ),
     );
   }
