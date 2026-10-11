@@ -1,7 +1,9 @@
 import 'dart:convert';
 
-import 'package:flutter/foundation.dart' show kIsWeb;   // <-- ADDED
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
+import 'package:geocoding/geocoding.dart';
+import 'package:geolocator/geolocator.dart';
 import 'package:http/http.dart' as http;
 import 'package:provider/provider.dart';
 
@@ -20,11 +22,13 @@ String get _kApiBaseUrl {
 /// Rough weight estimate the backend needs but the form doesn't collect.
 const double _kKgPerCrate = 25.0;
 
-/// Mock pickup coordinates (Kolar-area) — the farmer's own field isn't
-/// captured yet, so pickup stays hard-coded for MVP. Dropoff comes from the
-/// mandi the farmer picks in the form.
-const double _kMockPickupLat = 13.1362;
-const double _kMockPickupLng = 78.1291;
+/// Fallback coordinates if the farmer picks a mode but the client can't
+/// resolve a real position — Kolar-area mock used by the previous MVP so
+/// a booking still succeeds if GPS is denied or a saved address has no
+/// coordinates. The backend requires lat/lng, so we always have *some*
+/// value to send.
+const double _kFallbackPickupLat = 13.1362;
+const double _kFallbackPickupLng = 78.1291;
 
 /// Fixed list of districts for the dropdown. Extend as coverage grows.
 const List<String> _kDistricts = [
@@ -63,6 +67,11 @@ const List<String> _kDistricts = [
 
 /// Brand color used across the farmer-side UI.
 const Color _kFarmerGreen = Color(0xFF2E7D32);
+
+/// The three pickup-source modes the farmer can pick from. The enum
+/// keeps the toggle's index arithmetic readable — the UI iterates over
+/// `PickupMode.values` and renders one segment per entry.
+enum PickupMode { gps, saved, manual }
 
 // ---------------------------------------------------------------------------
 // Root dashboard with bottom navigation
@@ -211,11 +220,43 @@ class FarmerBookTransportTab extends StatefulWidget {
 class _FarmerBookTransportTabState extends State<FarmerBookTransportTab> {
   final _formKey = GlobalKey<FormState>();
 
+  // ----- Produce details --------------------------------------------------
   final TextEditingController _cropController = TextEditingController();
   final TextEditingController _crateCountController = TextEditingController();
+
+  // ----- Pickup (3-way selector) ------------------------------------------
+  PickupMode _pickupMode = PickupMode.gps;
+
+  /// Landmark field, shared by the GPS and Manual modes. Saved mode fills
+  /// it from the chip the farmer taps. Always sent to the backend.
+  final TextEditingController _pickupLandmarkController =
+      TextEditingController();
+
+  /// Manual mode's address field. Ignored (and hidden) in GPS mode.
+  final TextEditingController _manualAddressController = TextEditingController();
+
+  /// Manual mode's "save for next time" checkbox.
+  bool _saveAddressForFuture = false;
+
+  /// GPS state.
+  bool _isFetchingLocation = false;
+  String? _gpsAddress;
+  double? _gpsLat;
+  double? _gpsLng;
+  String? _gpsError;
+
+  /// Saved-addresses state.
+  List<Map<String, dynamic>> _savedAddresses = [];
+  bool _isLoadingAddresses = false;
+  String? _savedAddressesError;
+
+  /// Index into `_savedAddresses` for the currently-picked chip, or null
+  /// when the farmer hasn't picked one yet.
+  int? _selectedSavedIndex;
+
+  // ----- Dropoff ----------------------------------------------------------
   final TextEditingController _shopController = TextEditingController();
 
-  // District / mandi state.
   String? _selectedDistrict;
   List<Map<String, dynamic>> _mandis = [];
   int? _selectedMandiIndex;
@@ -226,9 +267,23 @@ class _FarmerBookTransportTabState extends State<FarmerBookTransportTab> {
   String? _submitError;
 
   @override
+  void initState() {
+    super.initState();
+    // Provider/context is only safe after the first frame.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _loadSavedAddresses();
+      // GPS fetch is opportunistic: if the farmer leaves it alone, we
+      // fall back to the mock coordinates on submit.
+      _fetchCurrentLocation();
+    });
+  }
+
+  @override
   void dispose() {
     _cropController.dispose();
     _crateCountController.dispose();
+    _pickupLandmarkController.dispose();
+    _manualAddressController.dispose();
     _shopController.dispose();
     super.dispose();
   }
@@ -244,6 +299,143 @@ class _FarmerBookTransportTabState extends State<FarmerBookTransportTab> {
     };
     if (json) h['Content-Type'] = 'application/json';
     return h;
+  }
+
+  // -------------------------------------------------------------------------
+  // GPS mode
+  // -------------------------------------------------------------------------
+
+  /// Asks the platform for the current position, then reverse-geocodes
+  /// the coordinates into a readable address. Every failure path is
+  /// rendered as a status line under the toggle — the farmer can still
+  /// fall back to Manual or Saved without losing the form.
+  Future<void> _fetchCurrentLocation() async {
+    setState(() {
+      _isFetchingLocation = true;
+      _gpsError = null;
+    });
+
+    try {
+      // 1. Permission. If the user hasn't decided yet, request it now;
+      //    if they've denied it permanently, we can only point them at
+      //    the settings screen, which we surface as an error.
+      LocationPermission permission = await Geolocator.checkPermission();
+      if (permission == LocationPermission.denied) {
+        permission = await Geolocator.requestPermission();
+      }
+      if (permission == LocationPermission.denied ||
+          permission == LocationPermission.deniedForever) {
+        if (!mounted) return;
+        setState(() {
+          _isFetchingLocation = false;
+          _gpsError = 'Location permission denied. Switch to Manual Entry '
+              'or Saved Places.';
+        });
+        return;
+      }
+
+      // 2. Fix. `getCurrentPosition` with a medium accuracy hint is fast
+      //    enough for a farm address and precise enough for the 50 km
+      //    rider search radius.
+      final Position pos = await Geolocator.getCurrentPosition(
+        desiredAccuracy: LocationAccuracy.medium,
+      );
+
+      // 3. Reverse geocode. Failures here are non-fatal — we still have
+      //    usable coordinates, we just can't pretty-print them.
+      String? readable;
+      try {
+        final placemarks = await placemarkFromCoordinates(
+          pos.latitude,
+          pos.longitude,
+        );
+        if (placemarks.isNotEmpty) {
+          final p = placemarks.first;
+          final parts = <String>[
+            if ((p.name ?? '').isNotEmpty) p.name!,
+            if ((p.subLocality ?? '').isNotEmpty) p.subLocality!,
+            if ((p.locality ?? '').isNotEmpty) p.locality!,
+            if ((p.subAdministrativeArea ?? '').isNotEmpty)
+              p.subAdministrativeArea!,
+            if ((p.administrativeArea ?? '').isNotEmpty) p.administrativeArea!,
+          ];
+          readable = parts.join(', ');
+        }
+      } catch (_) {
+        // Swallow — coordinates are still valid.
+      }
+
+      if (!mounted) return;
+      setState(() {
+        _isFetchingLocation = false;
+        _gpsLat = pos.latitude;
+        _gpsLng = pos.longitude;
+        _gpsAddress = (readable == null || readable.isEmpty)
+            ? '${pos.latitude.toStringAsFixed(4)}, '
+                '${pos.longitude.toStringAsFixed(4)}'
+            : readable;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _isFetchingLocation = false;
+        _gpsError = 'Could not fetch location: $e';
+      });
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // Saved addresses
+  // -------------------------------------------------------------------------
+
+  Future<void> _loadSavedAddresses() async {
+    final auth = context.read<AuthProvider>();
+    if (auth.token == null) return;
+
+    setState(() {
+      _isLoadingAddresses = true;
+      _savedAddressesError = null;
+    });
+
+    try {
+      final response = await http.get(
+        Uri.parse('$_kApiBaseUrl/farmer/addresses'),
+        headers: _headers(auth),
+      );
+      if (!mounted) return;
+
+      if (response.statusCode == 200) {
+        final List<dynamic> decoded =
+            jsonDecode(response.body) as List<dynamic>;
+        setState(() {
+          _savedAddresses = decoded
+              .whereType<Map<String, dynamic>>()
+              .toList(growable: false);
+          _isLoadingAddresses = false;
+        });
+      } else {
+        setState(() {
+          _savedAddressesError = _extractError(response) ??
+              'Failed to load saved addresses '
+              '(HTTP ${response.statusCode}).';
+          _isLoadingAddresses = false;
+        });
+      }
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _savedAddressesError = 'Network error: $e';
+        _isLoadingAddresses = false;
+      });
+    }
+  }
+
+  void _selectSavedAddress(int index) {
+    final a = _savedAddresses[index];
+    setState(() {
+      _selectedSavedIndex = index;
+      _pickupLandmarkController.text = (a['landmark'] ?? '').toString();
+    });
   }
 
   // -------------------------------------------------------------------------
@@ -308,9 +500,68 @@ class _FarmerBookTransportTabState extends State<FarmerBookTransportTab> {
   // Submit
   // -------------------------------------------------------------------------
 
+  /// Resolve the pickup (address, landmark, lat, lng) that will be sent
+  /// to the backend, based on which mode is active.
+  ///
+  /// Returns null on a validation failure — the caller has already set
+  /// `_submitError` by then, so it just needs to bail out.
+  ({String address, String landmark, double lat, double lng})? _resolvePickup() {
+    switch (_pickupMode) {
+      case PickupMode.gps:
+        // GPS is optional in practice — if the fix failed we still send
+        // the fallback coordinates with an empty address, and the
+        // backend stores a valid booking.
+        return (
+          address: _gpsAddress ?? '',
+          landmark: _pickupLandmarkController.text.trim(),
+          lat: _gpsLat ?? _kFallbackPickupLat,
+          lng: _gpsLng ?? _kFallbackPickupLng,
+        );
+
+      case PickupMode.saved:
+        if (_selectedSavedIndex == null) {
+          setState(() => _submitError =
+              'Please pick one of your saved places, or switch to another '
+              'pickup option.');
+          return null;
+        }
+        final a = _savedAddresses[_selectedSavedIndex!];
+        return (
+          address: (a['address_text'] ?? '').toString(),
+          landmark: _pickupLandmarkController.text.trim(),
+          lat: (a['latitude'] as num?)?.toDouble() ?? _kFallbackPickupLat,
+          lng: (a['longitude'] as num?)?.toDouble() ?? _kFallbackPickupLng,
+        );
+
+      case PickupMode.manual:
+        final address = _manualAddressController.text.trim();
+        if (address.isEmpty) {
+          setState(() => _submitError =
+              'Please enter the village or area name.');
+          return null;
+        }
+        return (
+          address: address,
+          landmark: _pickupLandmarkController.text.trim(),
+          lat: _kFallbackPickupLat,
+          lng: _kFallbackPickupLng,
+        );
+    }
+  }
+
   Future<void> _submit() async {
+    setState(() => _submitError = null);
     if (!_formKey.currentState!.validate()) return;
-    if (_selectedMandiIndex == null) return;
+
+    // Pickup resolution happens before the "select a mandi" check because
+    // it's a smaller, more targeted error to surface first.
+    final pickup = _resolvePickup();
+    if (pickup == null) return;
+
+    if (_selectedMandiIndex == null) {
+      setState(() => _submitError = 'Please select an APMC mandi.');
+      return;
+    }
 
     final auth = context.read<AuthProvider>();
     if (auth.token == null) {
@@ -323,9 +574,14 @@ class _FarmerBookTransportTabState extends State<FarmerBookTransportTab> {
     final shop = _shopController.text.trim();
     final dropoff = shop.isEmpty ? mandiName : '$mandiName - $shop';
 
+    // The auto-save flag is only meaningful for Manual and GPS — saved
+    // mode is already booked. We still send `true` for those so the
+    // backend can decide.
+    final saveForFuture =
+        _pickupMode != PickupMode.saved && _saveAddressForFuture;
+
     setState(() {
       _isSubmitting = true;
-      _submitError = null;
     });
 
     try {
@@ -337,8 +593,11 @@ class _FarmerBookTransportTabState extends State<FarmerBookTransportTab> {
           'crate_count': int.parse(_crateCountController.text.trim()),
           'weight_kg':
               int.parse(_crateCountController.text.trim()) * _kKgPerCrate,
-          'latitude': _kMockPickupLat,
-          'longitude': _kMockPickupLng,
+          'latitude': pickup.lat,
+          'longitude': pickup.lng,
+          'pickup_address': pickup.address,
+          'pickup_landmark': pickup.landmark,
+          'save_address_for_future': saveForFuture,
           'dropoff_location': dropoff,
         }),
       );
@@ -346,7 +605,9 @@ class _FarmerBookTransportTabState extends State<FarmerBookTransportTab> {
       if (!mounted) return;
 
       if (response.statusCode == 201) {
-        // Reset the form for the next booking.
+        // Reset produce + dropoff state; keep the pickup selection alive
+        // since a farmer booking a second load from the same barn almost
+        // always uses the same pickup.
         _cropController.clear();
         _crateCountController.clear();
         _shopController.clear();
@@ -356,6 +617,11 @@ class _FarmerBookTransportTabState extends State<FarmerBookTransportTab> {
           _selectedMandiIndex = null;
           _isSubmitting = false;
         });
+
+        // A freshly-saved address should show up in the chip row.
+        if (saveForFuture) {
+          unawaited(_loadSavedAddresses());
+        }
 
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
@@ -425,7 +691,11 @@ class _FarmerBookTransportTabState extends State<FarmerBookTransportTab> {
               ),
               const SizedBox(height: 24),
 
-              // ----- Crop name ---------------------------------------------
+              // ============================================================
+              // PRODUCE DETAILS
+              // ============================================================
+
+              // ----- Crop name --------------------------------------------
               TextFormField(
                 controller: _cropController,
                 enabled: !_isSubmitting,
@@ -445,7 +715,7 @@ class _FarmerBookTransportTabState extends State<FarmerBookTransportTab> {
               ),
               const SizedBox(height: 16),
 
-              // ----- Crate count -------------------------------------------
+              // ----- Crate count ------------------------------------------
               TextFormField(
                 controller: _crateCountController,
                 enabled: !_isSubmitting,
@@ -467,14 +737,24 @@ class _FarmerBookTransportTabState extends State<FarmerBookTransportTab> {
                   return null;
                 },
               ),
-              const SizedBox(height: 16),
+              const SizedBox(height: 24),
 
-              // ----- District dropdown -------------------------------------
+              // ============================================================
+              // PICKUP LOCATION
+              // ============================================================
+              _buildPickupSection(theme),
+              const SizedBox(height: 24),
+
+              // ============================================================
+              // DROPOFF / MANDI
+              // ============================================================
+
+              // ----- District dropdown ------------------------------------
               DropdownButtonFormField<String>(
                 value: _selectedDistrict,
                 isExpanded: true,
                 decoration: const InputDecoration(
-                  labelText: 'District',
+                  labelText: 'Dropoff District',
                   border: OutlineInputBorder(),
                   prefixIcon: Icon(Icons.map_outlined),
                 ),
@@ -489,12 +769,12 @@ class _FarmerBookTransportTabState extends State<FarmerBookTransportTab> {
               ),
               const SizedBox(height: 16),
 
-              // ----- Mandi dropdown ----------------------------------------
+              // ----- Mandi dropdown ---------------------------------------
               DropdownButtonFormField<int>(
                 value: _selectedMandiIndex,
                 isExpanded: true,
                 decoration: InputDecoration(
-                  labelText: 'APMC Mandi',
+                  labelText: 'Dropoff APMC Mandi',
                   border: const OutlineInputBorder(),
                   prefixIcon: const Icon(Icons.storefront_outlined),
                   hintText: _selectedDistrict == null
@@ -540,12 +820,12 @@ class _FarmerBookTransportTabState extends State<FarmerBookTransportTab> {
               ],
               const SizedBox(height: 16),
 
-              // ----- Shop / stall (optional) -------------------------------
+              // ----- Shop / stall (optional) ------------------------------
               TextFormField(
                 controller: _shopController,
                 enabled: !_isSubmitting,
                 decoration: const InputDecoration(
-                  labelText: 'Shop / Stall Number (optional)',
+                  labelText: 'Dropoff Shop / Stall Number (optional)',
                   hintText: 'e.g. Shop #14, Sri Lakshmi Traders',
                   border: OutlineInputBorder(),
                   prefixIcon: Icon(Icons.store_outlined),
@@ -584,4 +864,381 @@ class _FarmerBookTransportTabState extends State<FarmerBookTransportTab> {
       ),
     );
   }
+
+  // -------------------------------------------------------------------------
+  // Pickup section sub-widgets
+  // -------------------------------------------------------------------------
+
+  Widget _buildPickupSection(ThemeData theme) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: _kFarmerGreen.withOpacity(0.04),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: _kFarmerGreen.withOpacity(0.20)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.pin_drop_outlined,
+                  color: _kFarmerGreen, size: 20),
+              const SizedBox(width: 8),
+              Text(
+                'Pickup Location',
+                style: theme.textTheme.titleMedium?.copyWith(
+                  fontWeight: FontWeight.bold,
+                  color: _kFarmerGreen,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+
+          // ----- Toggle ---------------------------------------------------
+          _buildPickupToggle(theme),
+          const SizedBox(height: 16),
+
+          // ----- Body (mode-specific) ------------------------------------
+          AnimatedSize(
+            duration: const Duration(milliseconds: 220),
+            curve: Curves.easeOutCubic,
+            child: AnimatedSwitcher(
+              duration: const Duration(milliseconds: 220),
+              switchInCurve: Curves.easeOutCubic,
+              switchOutCurve: Curves.easeInCubic,
+              child: _pickupMode == PickupMode.gps
+                  ? _buildGpsBody(theme)
+                  : _pickupMode == PickupMode.saved
+                      ? _buildSavedBody(theme)
+                      : _buildManualBody(theme),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildPickupToggle(ThemeData theme) {
+    return SegmentedButton<PickupMode>(
+      segments: const [
+        ButtonSegment<PickupMode>(
+          value: PickupMode.gps,
+          icon: Icon(Icons.my_location, size: 16),
+          label: Text('Current GPS', style: TextStyle(fontSize: 12.5)),
+        ),
+        ButtonSegment<PickupMode>(
+          value: PickupMode.saved,
+          icon: Icon(Icons.bookmark_outline, size: 16),
+          label: Text('Saved Places', style: TextStyle(fontSize: 12.5)),
+        ),
+        ButtonSegment<PickupMode>(
+          value: PickupMode.manual,
+          icon: Icon(Icons.edit_location_alt_outlined, size: 16),
+          label: Text('Manual', style: TextStyle(fontSize: 12.5)),
+        ),
+      ],
+      selected: {_pickupMode},
+      onSelectionChanged: _isSubmitting
+          ? null
+          : (selection) {
+              if (selection.isEmpty) return;
+              setState(() {
+                _pickupMode = selection.first;
+                // Clear the submit error so a mode switch doesn't leave a
+                // stale "please enter the village name" from a prior
+                // attempt.
+                _submitError = null;
+              });
+            },
+      style: SegmentedButton.styleFrom(
+        selectedBackgroundColor: _kFarmerGreen,
+        selectedForegroundColor: Colors.white,
+        foregroundColor: _kFarmerGreen,
+        side: BorderSide(color: _kFarmerGreen.withOpacity(0.4)),
+        visualDensity: VisualDensity.compact,
+      ),
+    );
+  }
+
+  // ----- GPS mode body ----------------------------------------------------
+
+  Widget _buildGpsBody(ThemeData theme) {
+    return KeyedSubtree(
+      key: const ValueKey('pickup_gps'),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: Colors.grey.shade300),
+            ),
+            child: Row(
+              children: [
+                _isFetchingLocation
+                    ? const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : Icon(
+                        _gpsError != null
+                            ? Icons.error_outline
+                            : (_gpsAddress != null
+                                ? Icons.check_circle_outline
+                                : Icons.my_location),
+                        color: _gpsError != null
+                            ? theme.colorScheme.error
+                            : _kFarmerGreen,
+                        size: 20,
+                      ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Text(
+                    _isFetchingLocation
+                        ? 'Detecting your location…'
+                        : (_gpsError ??
+                            (_gpsAddress ??
+                                'Tap "Refresh" to detect your location.')),
+                    style: theme.textTheme.bodySmall,
+                  ),
+                ),
+                if (!_isFetchingLocation)
+                  IconButton(
+                    tooltip: 'Refresh location',
+                    icon: const Icon(Icons.refresh, size: 20),
+                    color: _kFarmerGreen,
+                    onPressed: _isSubmitting
+                        ? null
+                        : () => _fetchCurrentLocation(),
+                  ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 12),
+
+          // Landmark field, shared with Manual mode.
+          TextFormField(
+            controller: _pickupLandmarkController,
+            enabled: !_isSubmitting,
+            textCapitalization: TextCapitalization.sentences,
+            decoration: const InputDecoration(
+              labelText: 'Landmark / Pickup Notes',
+              hintText: 'e.g. Behind the canal, near the yellow gate',
+              border: OutlineInputBorder(),
+              prefixIcon: Icon(Icons.signpost_outlined),
+              isDense: true,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ----- Saved places body ------------------------------------------------
+
+  Widget _buildSavedBody(ThemeData theme) {
+    return KeyedSubtree(
+      key: const ValueKey('pickup_saved'),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          if (_isLoadingAddresses)
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 12),
+              child: Center(
+                child: SizedBox(
+                  width: 20,
+                  height: 20,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                ),
+              ),
+            )
+          else if (_savedAddressesError != null)
+            Text(
+              _savedAddressesError!,
+              style: TextStyle(
+                color: theme.colorScheme.error,
+                fontSize: 12,
+              ),
+            )
+          else if (_savedAddresses.isEmpty)
+            Container(
+              padding: const EdgeInsets.symmetric(
+                horizontal: 12,
+                vertical: 10,
+              ),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: Colors.grey.shade300),
+              ),
+              child: Row(
+                children: [
+                  Icon(Icons.info_outline,
+                      color: Colors.grey.shade600, size: 18),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      'No saved places yet. Use Manual Entry and tick '
+                      '"Save this location" to bookmark one for next time.',
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: Colors.grey.shade700,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            )
+          else
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: List.generate(_savedAddresses.length, (i) {
+                final a = _savedAddresses[i];
+                final title = (a['title'] ?? '').toString();
+                final selected = _selectedSavedIndex == i;
+                return ChoiceChip(
+                  label: Text(
+                    title.isEmpty ? 'Saved place' : title,
+                    style: TextStyle(
+                      fontSize: 12.5,
+                      color: selected ? Colors.white : _kFarmerGreen,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  avatar: Icon(
+                    Icons.bookmark,
+                    size: 16,
+                    color: selected ? Colors.white : _kFarmerGreen,
+                  ),
+                  selected: selected,
+                  onSelected: _isSubmitting
+                      ? null
+                      : (_) => _selectSavedAddress(i),
+                  selectedColor: _kFarmerGreen,
+                  backgroundColor: Colors.white,
+                  side: BorderSide(
+                    color: _kFarmerGreen.withOpacity(0.4),
+                  ),
+                );
+              }),
+            ),
+
+          if (_selectedSavedIndex != null) ...[
+            const SizedBox(height: 12),
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: Colors.grey.shade300),
+              ),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Padding(
+                    padding: EdgeInsets.only(top: 2),
+                    child: Icon(Icons.location_on_outlined,
+                        size: 18, color: Colors.black54),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      (_savedAddresses[_selectedSavedIndex!]['address_text'] ??
+                              '')
+                          .toString(),
+                      style: theme.textTheme.bodyMedium,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+          const SizedBox(height: 12),
+          TextFormField(
+            controller: _pickupLandmarkController,
+            enabled: !_isSubmitting,
+            textCapitalization: TextCapitalization.sentences,
+            decoration: const InputDecoration(
+              labelText: 'Landmark / Pickup Notes (optional)',
+              hintText: 'e.g. Opposite the borewell',
+              border: OutlineInputBorder(),
+              prefixIcon: Icon(Icons.signpost_outlined),
+              isDense: true,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ----- Manual entry body ------------------------------------------------
+
+  Widget _buildManualBody(ThemeData theme) {
+    return KeyedSubtree(
+      key: const ValueKey('pickup_manual'),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          TextFormField(
+            controller: _manualAddressController,
+            enabled: !_isSubmitting,
+            textCapitalization: TextCapitalization.words,
+            decoration: const InputDecoration(
+              labelText: 'Village / Area Name',
+              hintText: 'e.g. Bangarpet, Kolar',
+              border: OutlineInputBorder(),
+              prefixIcon: Icon(Icons.holiday_village_outlined),
+              isDense: true,
+            ),
+          ),
+          const SizedBox(height: 12),
+          TextFormField(
+            controller: _pickupLandmarkController,
+            enabled: !_isSubmitting,
+            textCapitalization: TextCapitalization.sentences,
+            decoration: const InputDecoration(
+              labelText: 'Landmark / Pickup Notes',
+              hintText: 'e.g. Second gate on the left after the bridge',
+              border: OutlineInputBorder(),
+              prefixIcon: Icon(Icons.signpost_outlined),
+              isDense: true,
+            ),
+          ),
+          const SizedBox(height: 6),
+          CheckboxListTile(
+            value: _saveAddressForFuture,
+            onChanged: _isSubmitting
+                ? null
+                : (v) => setState(
+                      () => _saveAddressForFuture = v ?? false,
+                    ),
+            controlAffinity: ListTileControlAffinity.leading,
+            contentPadding: EdgeInsets.zero,
+            dense: true,
+            activeColor: _kFarmerGreen,
+            title: Text(
+              'Save this location for future bookings',
+              style: theme.textTheme.bodySmall,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Small helper — `unawaited` is available from dart:async but importing it
+// here pulls in a lot of surface area for one call. Define a tiny wrapper.
+// ---------------------------------------------------------------------------
+
+void unawaited(Future<void> future) {
+  // Fire-and-forget: we don't care about the result.
+  future.catchError((_) {});
 }

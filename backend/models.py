@@ -135,6 +135,52 @@ class User(Base):
         back_populates="rider",
         foreign_keys="Trip.rider_id",
     )
+    saved_addresses = relationship(
+        "SavedAddress",
+        back_populates="farmer",
+        foreign_keys="SavedAddress.farmer_id",
+        cascade="all, delete-orphan",
+    )
+
+
+class SavedAddress(Base):
+    """
+    A reusable pickup location a farmer has bookmarked for future
+    bookings. Populated in two ways:
+
+      1. Automatically, when a booking is submitted with
+         `save_address_for_future=True` — the same address/landmark/
+         coordinates used on that booking are persisted here.
+      2. Manually, via `POST /farmer/addresses`, so a farmer can pre-seed
+         their list without booking a trip.
+
+    `title` is a short label the farmer picks ("Home Barn", "Sugarcane
+    Field"), shown as a chip in the Book Transport form. Latitude/longitude
+    are optional — a farmer who types a manual address without tapping
+    "Use current location" leaves them null, and the booking falls back to
+    the last-known coordinates (or the profile default).
+    """
+    __tablename__ = "saved_addresses"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    farmer_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    title = Column(String(80), nullable=False)
+    address_text = Column(String(500), nullable=False)
+    landmark = Column(String(255), nullable=True)
+    latitude = Column(Float, nullable=True)
+    longitude = Column(Float, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    farmer = relationship(
+        "User",
+        back_populates="saved_addresses",
+        foreign_keys=[farmer_id],
+    )
 
 
 class ProduceRequest(Base):
@@ -145,7 +191,20 @@ class ProduceRequest(Base):
     crop_type = Column(String(50), nullable=False)
     crate_count = Column(Integer, nullable=False)
     weight_kg = Column(Numeric(10, 2))
+
+    # PostGIS point — the actual spatial coordinate used for
+    # distance queries. Kept alongside the free-text `pickup_address`
+    # below, which is what the rider reads.
     pickup_location = Column(Geometry("POINT", srid=4326), nullable=False)
+
+    # ----- Pickup display fields (new) ------------------------------------
+    # Farmer-entered at booking time: a human-readable address and a
+    # short landmark. Either can be null — a farmer who only sends the
+    # GPS coordinates still gets a valid booking; the rider sees the
+    # raw lat/lng in that case.
+    pickup_address = Column(String(500), nullable=True)
+    pickup_landmark = Column(String(255), nullable=True)
+
     dropoff_location = Column(String(255), nullable=True)
     dropoff_lat = Column(Float, nullable=True)
     dropoff_lng = Column(Float, nullable=True)
@@ -173,6 +232,14 @@ class Trip(Base):
     point before DELIVERED). `completed_at` is set when the trip reaches a
     terminal state (DELIVERED or CANCELLED); it stays NULL while the trip
     is in progress.
+
+    ## Pickup fields
+
+    These are copied from the ProduceRequest at accept time. Storing them
+    on the Trip too means a rider viewing their active trip doesn't need
+    to join back to the ProduceRequest to display "where am I picking up
+    from?", and a completed trip keeps a frozen snapshot of the address
+    even if the farmer later edits their saved addresses.
     """
 
     __tablename__ = "trips"
@@ -191,6 +258,12 @@ class Trip(Base):
     status = Column(String(20), nullable=False, default="ACCEPTED")
     created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
     completed_at = Column(DateTime(timezone=True), nullable=True)
+
+    # ----- Pickup snapshot (copied at accept time) ------------------------
+    pickup_address = Column(String(500), nullable=True)
+    pickup_landmark = Column(String(255), nullable=True)
+    pickup_latitude = Column(Float, nullable=True)
+    pickup_longitude = Column(Float, nullable=True)
 
     produce_request = relationship(
         "ProduceRequest",

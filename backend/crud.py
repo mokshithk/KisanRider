@@ -186,6 +186,65 @@ def apply_user_updates(
 
 
 # ---------------------------------------------------------------------------
+# SavedAddress CRUD
+# ---------------------------------------------------------------------------
+
+def get_saved_addresses_for_farmer(
+    db: Session, farmer_id: UUID
+) -> List[models.SavedAddress]:
+    """
+    All bookmarked pickup locations for a farmer, newest first.
+
+    Ordered by `created_at DESC` so the most recently added address
+    appears first in the chip row — that's usually what a farmer who
+    just saved an address wants to reuse.
+    """
+    return (
+        db.query(models.SavedAddress)
+        .filter(models.SavedAddress.farmer_id == farmer_id)
+        .order_by(models.SavedAddress.created_at.desc())
+        .all()
+    )
+
+
+def create_saved_address(
+    db: Session,
+    farmer_id: UUID,
+    *,
+    title: str,
+    address_text: str,
+    landmark: Optional[str],
+    latitude: Optional[float],
+    longitude: Optional[float],
+) -> models.SavedAddress:
+    """
+    Insert a bookmarked pickup location. Used by both the manual
+    POST /farmer/addresses endpoint and the auto-save side effect of
+    create_produce_request (when `save_address_for_future=True`).
+
+    Commits on success, rolls back and re-raises on failure. Callers
+    that batch this with other writes (like create_produce_request) must
+    handle the commit ordering — see the note in create_produce_request.
+    """
+    db_address = models.SavedAddress(
+        farmer_id=farmer_id,
+        title=title.strip(),
+        address_text=address_text.strip(),
+        landmark=(landmark.strip() if landmark else None) or None,
+        latitude=latitude,
+        longitude=longitude,
+    )
+    try:
+        db.add(db_address)
+        db.commit()
+        db.refresh(db_address)
+        return db_address
+    except SQLAlchemyError:
+        db.rollback()
+        raise
+
+
+# ---------------------------------------------------------------------------
 # ProduceRequest CRUD
 # ---------------------------------------------------------------------------
 
@@ -206,6 +265,8 @@ def _to_response(pr: models.ProduceRequest) -> schemas.ProduceRequestResponse:
         weight_kg=float(pr.weight_kg),
         latitude=point.y,
         longitude=point.x,
+        pickup_address=pr.pickup_address,
+        pickup_landmark=pr.pickup_landmark,
         dropoff_location=pr.dropoff_location,
         dropoff_lat=pr.dropoff_lat,
         dropoff_lng=pr.dropoff_lng,
@@ -219,7 +280,31 @@ def create_produce_request(
     request_schema: schemas.ProduceRequestCreate,
     farmer_id: UUID,
 ) -> schemas.ProduceRequestResponse:
-    """Insert a produce request; generates the pickup OTP."""
+    """
+    Insert a produce request; generates the pickup OTP.
+
+    ## Pickup 3-way selector side effect
+
+    When `save_address_for_future` is True AND a non-empty
+    `pickup_address` was provided, this function also creates a
+    SavedAddress for the farmer. The auto-saved title is derived from
+    the address (first 60 chars), since the booking form doesn't collect
+    a title.
+
+    ## Transaction shape
+
+    The ProduceRequest and the optional SavedAddress are written in
+    separate transactions. That's intentional: if the auto-save fails for
+    some reason (e.g. the address is malformed), the booking itself
+    still succeeds — the farmer gets their trip, just without the
+    bookmark. Losing the bookmark is a much smaller problem than losing
+    the booking.
+
+    ## PostGIS
+
+    The `pickup_location` WKT string uses `POINT(lng lat)` ordering —
+    the opposite of the (lat, lng) convention the client uses.
+    """
     try:
         point_wkt = WKTElement(
             f"POINT({request_schema.longitude} {request_schema.latitude})",
@@ -239,6 +324,8 @@ def create_produce_request(
         crate_count=request_schema.crate_count,
         weight_kg=request_schema.weight_kg,
         pickup_location=point_wkt,
+        pickup_address=request_schema.pickup_address,
+        pickup_landmark=request_schema.pickup_landmark,
         dropoff_location=request_schema.dropoff_location,
         dropoff_lat=request_schema.dropoff_lat,
         dropoff_lng=request_schema.dropoff_lng,
@@ -254,6 +341,30 @@ def create_produce_request(
         db.rollback()
         raise
 
+    # Side effect: bookmark the address if the farmer asked us to.
+    # Failures here are swallowed — the booking already succeeded, and
+    # the farmer would rather keep their trip than see an error about a
+    # bookmark they may not even remember ticking.
+    if (
+        request_schema.save_address_for_future
+        and request_schema.pickup_address
+        and request_schema.pickup_address.strip()
+    ):
+        try:
+            title = request_schema.pickup_address.strip()[:60]
+            create_saved_address(
+                db,
+                farmer_id,
+                title=title,
+                address_text=request_schema.pickup_address,
+                landmark=request_schema.pickup_landmark,
+                latitude=request_schema.latitude,
+                longitude=request_schema.longitude,
+            )
+        except SQLAlchemyError:
+            # Deliberately swallowed — see docstring above.
+            pass
+
     return schemas.ProduceRequestResponse(
         id=db_request.id,
         farmer_id=db_request.farmer_id,
@@ -262,6 +373,8 @@ def create_produce_request(
         weight_kg=float(db_request.weight_kg),
         latitude=request_schema.latitude,
         longitude=request_schema.longitude,
+        pickup_address=db_request.pickup_address,
+        pickup_landmark=db_request.pickup_landmark,
         dropoff_location=db_request.dropoff_location,
         dropoff_lat=db_request.dropoff_lat,
         dropoff_lng=db_request.dropoff_lng,
@@ -404,6 +517,8 @@ def get_nearby_produce_requests(
             pr.weight_kg,
             pr.status,
             pr.created_at,
+            pr.pickup_address,
+            pr.pickup_landmark,
             pr.dropoff_location,
             pr.dropoff_lat,
             pr.dropoff_lng,
@@ -433,6 +548,8 @@ def get_nearby_produce_requests(
             weight_kg=float(row.weight_kg),
             latitude=row.latitude,
             longitude=row.longitude,
+            pickup_address=row.pickup_address,
+            pickup_landmark=row.pickup_landmark,
             dropoff_location=row.dropoff_location,
             dropoff_lat=row.dropoff_lat,
             dropoff_lng=row.dropoff_lng,
@@ -492,7 +609,19 @@ def get_trip_by_id(db: Session, trip_id: UUID) -> Optional[models.Trip]:
 def accept_produce_request(
     db: Session, request_id: UUID, rider_id: UUID
 ) -> models.Trip:
-    """A rider accepts a PENDING produce request, creating a Trip."""
+    """
+    A rider accepts a PENDING produce request, creating a Trip.
+
+    ## Pickup snapshot
+
+    The ProduceRequest's `pickup_address`, `pickup_landmark`, and the
+    (lat, lng) decoded from `pickup_location` are copied onto the new
+    Trip row. This lets the rider-side UI read pickup details directly
+    off the Trip without joining back, and — more importantly — freezes
+    the pickup address as it was at accept time. If the farmer later
+    edits or deletes a SavedAddress, the completed trip still shows the
+    address the rider actually drove to.
+    """
     try:
         pr = (
             db.query(models.ProduceRequest)
@@ -506,10 +635,27 @@ def accept_produce_request(
 
         pr.status = "ACCEPTED"
 
+        # Decode the PostGIS point into plain floats for the snapshot.
+        pickup_lat: Optional[float] = None
+        pickup_lng: Optional[float] = None
+        try:
+            point = to_shape(pr.pickup_location)
+            pickup_lat = float(point.y)
+            pickup_lng = float(point.x)
+        except Exception:
+            # A malformed geometry shouldn't block the accept — the
+            # Trip just won't carry coordinates, which the client
+            # handles by falling back to the ProduceRequest's point.
+            pass
+
         db_trip = models.Trip(
             produce_request_id=request_id,
             rider_id=rider_id,
             status="ACCEPTED",
+            pickup_address=pr.pickup_address,
+            pickup_landmark=pr.pickup_landmark,
+            pickup_latitude=pickup_lat,
+            pickup_longitude=pickup_lng,
         )
         db.add(db_trip)
         db.commit()
@@ -654,6 +800,9 @@ def _to_trip_available(
     Farmer contact info is withheld by design. Only the farmer's first
     name is included, so the rider has a human reference without an
     identifier they could misuse.
+
+    Pickup address/landmark are exposed (they're not sensitive — the
+    rider needs to know where to drive) but the farmer's phone is not.
     """
     farmer = pr.farmer
     lat, lng = _pickup_latlng(pr)
@@ -667,11 +816,46 @@ def _to_trip_available(
         longitude=lng,
         pickup_district=(farmer.district if farmer else None),
         pickup_locality=(farmer.taluk_village if farmer else None),
+        pickup_address=pr.pickup_address,
+        pickup_landmark=pr.pickup_landmark,
         payout_amount=_estimate_rider_fare(pr),
         status="PENDING",
         farmer_full_name=_first_name(farmer.full_name if farmer else None),
         farmer_phone_number=None,
     )
+
+
+def _compose_pickup_address(pr: models.ProduceRequest) -> Optional[str]:
+    """
+    Build the human-readable pickup display string for TripActiveOut.
+
+    Priority order:
+      1. The farmer-entered address from the booking (`pickup_address`),
+         with `pickup_landmark` appended as a second line when present.
+      2. The farmer's profile `farm_address` + `landmark` — a fallback
+         for bookings made before the 3-way pickup picker existed.
+      3. None — the client falls back to displaying raw coordinates.
+
+    Doing this on the server means the exact same string is shown to
+    both sides (rider on their Active Trips tab, farmer on their Orders
+    tab), which avoids the "rider saw X, farmer saw Y" class of bug.
+    """
+    farmer = pr.farmer
+
+    parts: list[str] = []
+    if pr.pickup_address:
+        parts.append(pr.pickup_address.strip())
+    if pr.pickup_landmark:
+        parts.append(pr.pickup_landmark.strip())
+
+    if not parts and farmer:
+        # Fallback for pre-picker bookings.
+        if farmer.farm_address:
+            parts.append(farmer.farm_address.strip())
+        if farmer.landmark:
+            parts.append(farmer.landmark.strip())
+
+    return "\n".join(p for p in parts if p) or None
 
 
 def _to_trip_active(
@@ -702,14 +886,19 @@ def _to_trip_active(
         and trip.status in ("ACCEPTED", "PICKED_UP", "DELIVERED")
     )
 
-    # Pickup address: prefer the farmer's free-text farm address; append
-    # the landmark as a second line when present.
-    parts: list[str] = []
-    if farmer and farmer.farm_address:
-        parts.append(farmer.farm_address.strip())
-    if farmer and farmer.landmark:
-        parts.append(farmer.landmark.strip())
-    pickup_address = "\n".join(p for p in parts if p) or None
+    # Prefer the Trip's frozen pickup snapshot when it exists (rider has
+    # accepted), then fall back to the ProduceRequest's current values.
+    # The Trip snapshot is what the rider actually drove to; using it
+    # keeps the completed-trip view stable even if the farmer later
+    # edits their saved addresses.
+    pickup_address = (
+        trip.pickup_address if trip and trip.pickup_address
+        else _compose_pickup_address(pr)
+    )
+    pickup_landmark = (
+        trip.pickup_landmark if trip and trip.pickup_landmark
+        else pr.pickup_landmark
+    )
 
     lat, lng = _pickup_latlng(pr)
 
@@ -723,6 +912,7 @@ def _to_trip_active(
         latitude=lat,
         longitude=lng,
         pickup_address=pickup_address,
+        pickup_landmark=pickup_landmark,
         dropoff_address=pr.dropoff_location,
         dropoff_lat=pr.dropoff_lat,
         dropoff_lng=pr.dropoff_lng,

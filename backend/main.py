@@ -42,15 +42,13 @@ print(f"[startup] ENABLE_REAL_EMAIL_OTP = {config.ENABLE_REAL_EMAIL_OTP}")
 async def lifespan(app: FastAPI):
     """
     Create any tables defined in models.py that don't exist yet in Postgres
-    (e.g. crate_scans) on startup.
+    (e.g. crate_scans, saved_addresses) on startup.
 
     create_all() only issues CREATE TABLE IF NOT EXISTS for tables it
     doesn't find — it never alters an existing table. New columns on the
-    `users` table must be applied to an existing database with a manual
-    ALTER TABLE. See the migration snippets in the Farmer Account and
-    Rider Account sections below.
-
-    Farmer account migration:
+    `users`, `produce_requests`, and `trips` tables must be applied to an
+    existing database with a manual ALTER TABLE. See the migration
+    snippets in the module docstrings of models.py, or run:
 
         ALTER TABLE users
           ADD COLUMN IF NOT EXISTS taluk_village      VARCHAR(120),
@@ -63,26 +61,28 @@ async def lifespan(app: FastAPI):
           ADD COLUMN IF NOT EXISTS ifsc_code          VARCHAR(20),
           ADD COLUMN IF NOT EXISTS upi_id             VARCHAR(100),
           ADD COLUMN IF NOT EXISTS preferred_language VARCHAR(10)
-            NOT NULL DEFAULT 'en';
-
-    Rider account migration:
-
-        ALTER TABLE users
+            NOT NULL DEFAULT 'en',
           ADD COLUMN IF NOT EXISTS is_on_duty          BOOLEAN
             NOT NULL DEFAULT FALSE,
           ADD COLUMN IF NOT EXISTS license_number      VARCHAR(30),
           ADD COLUMN IF NOT EXISTS vehicle_type        VARCHAR(80),
           ADD COLUMN IF NOT EXISTS vehicle_number      VARCHAR(20),
           ADD COLUMN IF NOT EXISTS payload_capacity_kg DOUBLE PRECISION,
-          ADD COLUMN IF NOT EXISTS operating_routes    VARCHAR(255);
-
-    Contact-phone migration:
-
-        ALTER TABLE users
-          ADD COLUMN IF NOT EXISTS phone_number VARCHAR(15);
+          ADD COLUMN IF NOT EXISTS operating_routes    VARCHAR(255),
+          ADD COLUMN IF NOT EXISTS phone_number        VARCHAR(15);
 
         CREATE INDEX IF NOT EXISTS ix_users_phone_number
           ON users (phone_number);
+
+        ALTER TABLE produce_requests
+          ADD COLUMN IF NOT EXISTS pickup_address   VARCHAR(500),
+          ADD COLUMN IF NOT EXISTS pickup_landmark  VARCHAR(255);
+
+        ALTER TABLE trips
+          ADD COLUMN IF NOT EXISTS pickup_address   VARCHAR(500),
+          ADD COLUMN IF NOT EXISTS pickup_landmark  VARCHAR(255),
+          ADD COLUMN IF NOT EXISTS pickup_latitude  DOUBLE PRECISION,
+          ADD COLUMN IF NOT EXISTS pickup_longitude DOUBLE PRECISION;
     """
     models.Base.metadata.create_all(bind=engine)
     yield
@@ -884,6 +884,62 @@ def update_farmer_payouts(
 
 
 # ---------------------------------------------------------------------------
+# Farmer Saved Addresses (pickup bookmarks)
+# ---------------------------------------------------------------------------
+
+@app.get(
+    "/farmer/addresses",
+    response_model=List[schemas.SavedAddressOut],
+    summary="List the farmer's saved pickup addresses",
+)
+def list_farmer_addresses(
+    current_user: models.User = Depends(auth.require_role("FARMER")),
+    db: Session = Depends(get_db),
+):
+    """
+    Return the farmer's saved pickup locations, newest first.
+
+    Drives the "Saved Places" chip row in the Book Transport form. An
+    empty list is normal and valid — the client renders the two
+    remaining pickup options (Current GPS / Manual Entry) in that case.
+    """
+    return crud.get_saved_addresses_for_farmer(db, current_user.id)
+
+
+@app.post(
+    "/farmer/addresses",
+    response_model=schemas.SavedAddressOut,
+    status_code=201,
+    summary="Create a saved pickup address",
+)
+def create_farmer_address(
+    payload: schemas.SavedAddressCreate,
+    current_user: models.User = Depends(auth.require_role("FARMER")),
+    db: Session = Depends(get_db),
+):
+    """
+    Manually save a pickup location. Independent of any booking.
+
+    The auto-save path (booking with `save_address_for_future=True`)
+    doesn't go through this endpoint — it's a side effect inside
+    `crud.create_produce_request` — but both write the same row shape
+    and appear in the same GET response.
+    """
+    try:
+        return crud.create_saved_address(
+            db,
+            current_user.id,
+            title=payload.title,
+            address_text=payload.address_text,
+            landmark=payload.landmark,
+            latitude=payload.latitude,
+            longitude=payload.longitude,
+        )
+    except SQLAlchemyError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+# ---------------------------------------------------------------------------
 # Farmer Orders (single-order detail with phone-number privacy)
 # ---------------------------------------------------------------------------
 
@@ -1095,6 +1151,11 @@ def create_produce_request(
     """
     Create a produce pickup request tied to the authenticated farmer,
     storing a PostGIS point and generating a 4-digit pickup OTP.
+
+    The pickup fields (`pickup_address`, `pickup_landmark`) capture what
+    the farmer entered in the 3-way pickup picker (Current GPS / Saved
+    Places / Manual Entry). When `save_address_for_future=True`, the
+    address is also bookmarked for reuse — see crud.create_produce_request.
     """
     try:
         return crud.create_produce_request(db, request, current_user.id)
@@ -1203,7 +1264,9 @@ def create_trip_request(
     Create a produce pickup request for the authenticated farmer.
 
     NOTE: despite the URL, this creates a ProduceRequest row (status
-    PENDING), not a Trip.
+    PENDING), not a Trip. Same behaviour as POST /produce-requests/ —
+    including the pickup-address persistence and the
+    `save_address_for_future` side effect.
     """
     try:
         return crud.create_produce_request(db, request, current_user.id)
@@ -1257,6 +1320,12 @@ def list_available_trips(
     farmer's first name is surfaced, so the rider has a human reference
     without an identifier they can act on out of band. Contact details
     unlock the moment the rider accepts — see `POST /trips/{trip_id}/accept`.
+
+    ## Pickup address
+
+    The pickup address/landmark are exposed pre-acceptance — the rider
+    needs them to decide whether the trip is worth taking, and neither
+    is a sensitive identifier in the way a phone number is.
     """
     try:
         return crud.get_available_trips_for_rider(
@@ -1292,7 +1361,9 @@ def accept_trip_by_id(
     ## What happens on success
 
     1. The ProduceRequest flips from PENDING to ACCEPTED.
-    2. A new Trip row is created with `rider_id` bound to the caller.
+    2. A new Trip row is created with `rider_id` bound to the caller and
+       the ProduceRequest's pickup address/landmark/coordinates copied
+       onto it as a snapshot.
     3. The response includes both parties' contact details, which are
        unlocked the moment a rider is assigned.
 

@@ -221,6 +221,39 @@ class Token(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Saved Address schemas
+# ---------------------------------------------------------------------------
+
+class SavedAddressCreate(BaseModel):
+    """
+    Body for POST /farmer/addresses.
+
+    Manual creation of a bookmarked pickup location. `latitude` and
+    `longitude` are optional — a farmer can save an address without
+    geocoding it, and the booking form falls back to a default coordinate
+    when needed.
+    """
+    title: str = Field(..., min_length=1, max_length=80)
+    address_text: str = Field(..., min_length=1, max_length=500)
+    landmark: Optional[str] = Field(None, max_length=255)
+    latitude: Optional[float] = Field(None, ge=-90, le=90)
+    longitude: Optional[float] = Field(None, ge=-180, le=180)
+
+
+class SavedAddressOut(BaseModel):
+    """Response for GET /farmer/addresses and POST /farmer/addresses."""
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    title: str
+    address_text: str
+    landmark: Optional[str] = None
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
+    created_at: datetime
+
+
+# ---------------------------------------------------------------------------
 # Farmer Account schemas
 # ---------------------------------------------------------------------------
 
@@ -554,11 +587,52 @@ class DutyStatusUpdate(BaseModel):
 # ---------------------------------------------------------------------------
 
 class ProduceRequestCreate(BaseModel):
+    """
+    Body for POST /produce-requests/ and POST /trips/.
+
+    ## Pickup fields
+
+    `latitude`/`longitude` are required — the spatial point used for
+    distance filtering must exist for a rider to see the request.
+
+    `pickup_address` and `pickup_landmark` are the free-text display fields
+    the farmer entered in the 3-way pickup picker (GPS / saved / manual).
+    Both optional: a farmer who only sends coordinates still creates a
+    valid booking, and the rider-side UI falls back to the raw lat/lng.
+
+    `save_address_for_future` is a one-shot flag: when True, the same
+    address/landmark/coordinates are persisted to the farmer's saved-
+    addresses list. Not stored on the ProduceRequest itself — it only
+    drives a side-effect inside `crud.create_produce_request`.
+
+    ## Dropoff fields
+
+    Unchanged from before: `dropoff_location`, `dropoff_lat`, `dropoff_lng`.
+    """
     crop_type: str = Field(..., min_length=1, max_length=80)
     crate_count: int = Field(..., gt=0, description="Number of crates, must be positive")
     weight_kg: float = Field(..., gt=0, description="Total weight in kilograms")
+
+    # ----- Pickup ----------------------------------------------------------
     latitude: float = Field(..., ge=-90, le=90)
     longitude: float = Field(..., ge=-180, le=180)
+    pickup_address: Optional[str] = Field(
+        None, max_length=500,
+        description="Free-text pickup address the farmer selected or typed.",
+    )
+    pickup_landmark: Optional[str] = Field(
+        None, max_length=255,
+        description="Short landmark line shown to the rider.",
+    )
+    save_address_for_future: bool = Field(
+        False,
+        description=(
+            "When True, persist this pickup as a reusable SavedAddress "
+            "for this farmer. Ignored if the address is empty."
+        ),
+    )
+
+    # ----- Dropoff ---------------------------------------------------------
     dropoff_location: Optional[str] = Field(
         None, max_length=255,
         description="Free-text dropoff address/landmark (MVP)",
@@ -577,6 +651,8 @@ class ProduceRequestResponse(BaseModel):
     weight_kg: float
     latitude: float
     longitude: float
+    pickup_address: Optional[str] = None
+    pickup_landmark: Optional[str] = None
     dropoff_location: Optional[str] = None
     dropoff_lat: Optional[float] = None
     dropoff_lng: Optional[float] = None
@@ -607,8 +683,22 @@ TripStatus = Literal["ACCEPTED", "PICKED_UP", "DELIVERED", "CANCELLED"]
 
 
 class TripCreate(BaseModel):
+    """
+    Body for POST /trips/.
+
+    Historical shape — kept for forward compatibility. The current
+    `POST /trips/` endpoint actually creates a ProduceRequest (see the
+    docstring in main.py), so this schema is not currently bound to a
+    live route. Pickup fields are mirrored here so a future direct
+    Trip-creation endpoint can accept them.
+    """
     produce_request_id: UUID
     rider_id: UUID
+    pickup_address: Optional[str] = Field(None, max_length=500)
+    pickup_landmark: Optional[str] = Field(None, max_length=255)
+    pickup_latitude: Optional[float] = Field(None, ge=-90, le=90)
+    pickup_longitude: Optional[float] = Field(None, ge=-180, le=180)
+    save_address_for_future: bool = False
 
 
 class TripResponse(BaseModel):
@@ -677,6 +767,8 @@ class TripAvailableOut(BaseModel):
     longitude: float
     pickup_district: Optional[str] = None
     pickup_locality: Optional[str] = None
+    pickup_address: Optional[str] = None
+    pickup_landmark: Optional[str] = None
 
     # Estimated rider payout. Computed from the settlement formula using
     # the default distance assumption — the authoritative number is
@@ -711,6 +803,14 @@ class TripActiveOut(BaseModel):
     ProduceRequest statuses (PENDING) through the same field, and new
     states may be added. Clients should pattern-match on the values they
     care about.
+
+    ## Pickup fields
+
+    `pickup_address` is the farmer-entered address from the booking (with
+    the landmark appended as a second line when present). When the farmer
+    didn't provide one, it falls back to the address stored on their
+    profile — so a rider always sees *something* human-readable, never
+    just a coordinate pair.
     """
     trip_id: UUID
     produce_request_id: UUID
@@ -723,6 +823,7 @@ class TripActiveOut(BaseModel):
     longitude: float
 
     pickup_address: Optional[str] = None
+    pickup_landmark: Optional[str] = None
     dropoff_address: Optional[str] = None
     dropoff_lat: Optional[float] = None
     dropoff_lng: Optional[float] = None
