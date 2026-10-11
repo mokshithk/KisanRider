@@ -1,5 +1,6 @@
 import 'package:dio/dio.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:flutter/foundation.dart' show kIsWeb, defaultTargetPlatform, TargetPlatform;
 
 /// Centralized API service for KisanRider.
 ///
@@ -11,9 +12,20 @@ class ApiService {
 
   /// Base URL for the FastAPI backend.
   ///
-  /// - Use `http://localhost:8000` for Web / Chrome testing.
-  /// - Use `http://10.0.2.2:8000` for Android Emulator.
-  static const String baseUrl = 'http://127.0.0.1:8000';
+  /// - Web/Chrome uses `localhost`.
+  /// - Physical Android/iOS devices use your laptop's Wi-Fi IP.
+  static String get baseUrl {
+    if (kIsWeb) {
+      // Running in Chrome / Web browser
+      return 'http://localhost:8000';
+    } else if (defaultTargetPlatform == TargetPlatform.android ||
+        defaultTargetPlatform == TargetPlatform.iOS) {
+      // Running on a physical phone
+      return 'http://10.28.1.142:8000';
+    }
+    // Fallback for desktop apps
+    return 'http://localhost:8000';
+  }
 
   static const FlutterSecureStorage _secureStorage = FlutterSecureStorage();
 
