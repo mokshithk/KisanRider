@@ -265,16 +265,35 @@ class _AvailableRequestCard extends StatelessWidget {
                   '${request.weightKg.toStringAsFixed(0)} kg',
             ),
             const SizedBox(height: 6),
+
+            // ----- Pickup -------------------------------------------------
+            // Prefer the farmer-entered address; fall back to the
+            // locality/district snapshot, then to raw coordinates. The
+            // "Navigate" button opens Google Maps with whatever string
+            // we ended up rendering (address when present, coords as
+            // the fallback) so a tap always does something useful.
             InfoRow(
               icon: Icons.location_on_outlined,
-              label: 'Pickup: '
-                  '${request.latitude.toStringAsFixed(4)}, '
-                  '${request.longitude.toStringAsFixed(4)}',
-              onNavigate: () => launchMaps(
-                context,
-                '${request.latitude},${request.longitude}',
-              ),
+              label: 'Pickup: ${request.displayPickup}',
+              onNavigate: () => launchMaps(context, request.mapsQuery),
             ),
+
+            // ----- Landmark (only when we didn't already use it above) ---
+            // If pickupAddress was present, the landmark is a useful
+            // extra line. If pickupAddress was empty and we fell back to
+            // the landmark for the main row, showing it twice would be
+            // redundant — skip it in that case.
+            if (request.pickupAddress != null &&
+                request.pickupAddress!.isNotEmpty &&
+                request.pickupLandmark != null &&
+                request.pickupLandmark!.isNotEmpty) ...[
+              const SizedBox(height: 6),
+              InfoRow(
+                icon: Icons.signpost_outlined,
+                label: 'Landmark: ${request.pickupLandmark}',
+              ),
+            ],
+
             const SizedBox(height: 6),
             InfoRow(
               icon: Icons.flag_outlined,
