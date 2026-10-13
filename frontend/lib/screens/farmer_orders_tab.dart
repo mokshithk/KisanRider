@@ -24,9 +24,9 @@ const Color _kFarmerGreen = Color(0xFF2E7D32);
 
 /// Polling cadence while at least one order is PENDING.
 ///
-/// 5 seconds matches the spec and is short enough that the farmer sees a
-/// rider's acceptance almost instantly, long enough that we aren't hammering
-/// the backend or burning mobile data on an idle screen.
+/// 5 seconds is short enough that the farmer sees a rider's acceptance
+/// almost instantly, long enough that we aren't hammering the backend or
+/// burning mobile data on an idle screen.
 const Duration _kPollingInterval = Duration(seconds: 5);
 
 // ---------------------------------------------------------------------------
@@ -168,22 +168,25 @@ class FarmerOrder {
 /// cards, newest first. Pull-to-refresh re-fetches. Empty state offers a
 /// shortcut into the Book Transport tab via [onBookTransport].
 ///
-/// ## Live polling
+/// ## Silent live polling
 ///
 /// While ANY order in the list is in status `PENDING`, a [Timer.periodic]
 /// fires every [_kPollingInterval] seconds and re-fetches the list. The
 /// moment a rider accepts, the next tick sees `ACCEPTED` on that order,
-/// the assigned-rider card is rendered, and the timer is cancelled (no
-/// more PENDING orders means nothing to wait for).
+/// the assigned-rider card renders, and the timer is cancelled (no more
+/// PENDING orders means nothing to wait for).
 ///
-/// The periodic fetch is silent — `isLoading` is not flipped, so the
-/// spinner doesn't flash every 5 seconds. Only the initial load and
-/// pull-to-refresh show the loading state.
+/// The periodic fetch is completely silent — `isLoading` is not flipped
+/// and no banner/indicator is shown. The list simply updates in place
+/// when new data arrives, so the farmer sees the rider's acceptance
+/// happen without any visible "refreshing" state. Only the initial load
+/// and pull-to-refresh show the loading spinner.
 ///
 /// ## Conditional rendering
 ///
 /// Each card reflects the order's lifecycle:
-///   - PENDING: shows "Searching for nearby Rider…" and no rider section.
+///   - PENDING: renders only the crop/crates header, the status chip, and
+///     the dropoff row. Nothing else — no "searching" strip.
 ///   - ACCEPTED / PICKED_UP / IN_TRANSIT: shows the assigned-rider card
 ///     with name, vehicle info, and a CALL RIDER button.
 ///   - DELIVERED / COMPLETED / CANCELLED: no rider section — the trip is over.
@@ -247,16 +250,13 @@ class _FarmerOrdersTabState extends State<FarmerOrdersTab> {
 
     if (hasPending && (_pollTimer == null || !_pollTimer!.isActive)) {
       _pollTimer = Timer.periodic(_kPollingInterval, (_) {
-        // Silent fetch — we don't want a spinner flashing every 5s.
+        // Silent fetch — we never want a spinner or banner flashing.
         _fetchOrders(silent: true);
       });
     } else if (!hasPending && _pollTimer != null) {
       _pollTimer!.cancel();
       _pollTimer = null;
     }
-
-    // The indicator widget depends on _pollTimer's state, so rebuild.
-    if (mounted) setState(() {});
   }
 
   // -------------------------------------------------------------------------
@@ -266,8 +266,9 @@ class _FarmerOrdersTabState extends State<FarmerOrdersTab> {
   /// Fetches the farmer's orders.
   ///
   /// [silent] controls whether the loading spinner is shown. Polling ticks
-  /// pass `true` so the UI stays stable between refreshes; manual triggers
-  /// (init, pull-to-refresh, retry button) pass the default `false`.
+  /// pass `true` so the UI stays perfectly stable between refreshes;
+  /// manual triggers (init, pull-to-refresh, retry button) pass the
+  /// default `false`.
   ///
   /// Network errors on a silent tick are ignored — the user's connection
   /// flickering shouldn't blank out a list they were just looking at. They
@@ -372,72 +373,14 @@ class _FarmerOrdersTabState extends State<FarmerOrdersTab> {
       );
     }
 
-    final isPolling = _pollTimer != null && _pollTimer!.isActive;
-
     return RefreshIndicator(
       onRefresh: _fetchOrders,
       color: _kFarmerGreen,
-      child: Column(
-        children: [
-          // A thin "auto-refreshing" strip that appears only while the
-          // timer is live. Green tint matches the brand; the small spinner
-          // signals activity without being distracting.
-          if (isPolling) const _PollingBanner(),
-          Expanded(
-            child: ListView.builder(
-              padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
-              itemCount: myRequests.length,
-              itemBuilder: (context, index) =>
-                  _OrderCard(order: myRequests[index]),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Polling indicator
-// ---------------------------------------------------------------------------
-
-/// A slim strip shown above the order list while polling is active.
-///
-/// Why show it at all: without any visual cue, a farmer staring at a
-/// PENDING order has no way to know the app is actively waiting for a
-/// rider on their behalf — they might pull-to-refresh unnecessarily or
-/// think the app is stuck. A subtle "looking for riders" strip closes
-/// that loop.
-class _PollingBanner extends StatelessWidget {
-  const _PollingBanner();
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-      color: _kFarmerGreen.withOpacity(0.08),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          const SizedBox(
-            width: 12,
-            height: 12,
-            child: CircularProgressIndicator(
-              strokeWidth: 2,
-              valueColor: AlwaysStoppedAnimation<Color>(_kFarmerGreen),
-            ),
-          ),
-          const SizedBox(width: 10),
-          Text(
-            'Waiting for a rider to accept…',
-            style: TextStyle(
-              color: _kFarmerGreen,
-              fontSize: 12.5,
-              fontWeight: FontWeight.w600,
-            ),
-          ),
-        ],
+      child: ListView.builder(
+        padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
+        itemCount: myRequests.length,
+        itemBuilder: (context, index) =>
+            _OrderCard(order: myRequests[index]),
       ),
     );
   }
@@ -491,54 +434,13 @@ class _OrderCard extends StatelessWidget {
                   '${(order.dropoffLocation ?? '').isEmpty ? "—" : order.dropoffLocation}',
             ),
 
-            // ----- PENDING: search-in-progress notice ---------------------
-            // Rendered instead of the assigned-rider card. Gives the farmer
-            // a clear state indicator ("we're looking") rather than leaving
-            // them wondering why no rider info is showing yet.
-            if (order.isPending) ...[
-              const SizedBox(height: 14),
-              Container(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 12,
-                  vertical: 10,
-                ),
-                decoration: BoxDecoration(
-                  color: Colors.amber.shade50,
-                  borderRadius: BorderRadius.circular(10),
-                  border: Border.all(color: Colors.amber.shade300),
-                ),
-                child: Row(
-                  children: [
-                    SizedBox(
-                      width: 16,
-                      height: 16,
-                      child: CircularProgressIndicator(
-                        strokeWidth: 2,
-                        valueColor: AlwaysStoppedAnimation<Color>(
-                          Colors.amber.shade800,
-                        ),
-                      ),
-                    ),
-                    const SizedBox(width: 10),
-                    Expanded(
-                      child: Text(
-                        'Searching for nearby Rider…',
-                        style: TextStyle(
-                          fontWeight: FontWeight.w600,
-                          fontSize: 13,
-                          color: Colors.amber.shade900,
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ],
-
             // ----- ACCEPTED / PICKED_UP: assigned-rider card --------------
             // Shown only once a rider has been assigned and the trip is
             // still active. Includes the CALL RIDER button (only when a
             // phone number is on file) and the pickup OTP badge.
+            //
+            // PENDING orders render nothing else — the card is intentionally
+            // minimal until a rider accepts.
             if (order.isActive) ...[
               const SizedBox(height: 14),
               _AssignedRiderCard(order: order),
