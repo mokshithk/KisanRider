@@ -94,6 +94,11 @@ enum OtpSubmitResult { success, invalidOtp, otherError }
 /// those are populated; when the farmer only provided coordinates (e.g.
 /// GPS failed, they fell back to the mock), the client falls back to
 /// showing the lat/lng pair — see [displayPickup].
+///
+/// [createdAt] drives newest-first ordering in the Available feed. The
+/// backend already sorts this way, but the client re-sorts defensively
+/// (see [RiderAvailableTab]) so a proxy or an older backend can't
+/// accidentally surface stale requests above fresh ones.
 class AvailableRequest {
   AvailableRequest({
     required this.id,
@@ -104,12 +109,25 @@ class AvailableRequest {
     required this.longitude,
     required this.distanceKm,
     required this.status,
+    required this.createdAt,
     this.dropoffLocation,
     this.pickupAddress,
     this.pickupLandmark,
   });
 
   factory AvailableRequest.fromJson(Map<String, dynamic> json) {
+    // A malformed or missing created_at shouldn't crash the whole list.
+    // Fall back to epoch so the row still renders (just at the bottom,
+    // after the sort).
+    DateTime parsedCreatedAt;
+    final rawCreated = json['created_at'];
+    if (rawCreated is String) {
+      parsedCreatedAt = DateTime.tryParse(rawCreated) ??
+          DateTime.fromMillisecondsSinceEpoch(0);
+    } else {
+      parsedCreatedAt = DateTime.fromMillisecondsSinceEpoch(0);
+    }
+
     return AvailableRequest(
       id: (json['id'] ?? '').toString(),
       cropType: (json['crop_type'] ?? '') as String,
@@ -119,6 +137,7 @@ class AvailableRequest {
       longitude: ((json['longitude'] ?? 0) as num).toDouble(),
       distanceKm: ((json['distance_km'] ?? 0) as num).toDouble(),
       status: (json['status'] ?? 'PENDING') as String,
+      createdAt: parsedCreatedAt,
       dropoffLocation: json['dropoff_location'] as String?,
       pickupAddress: (json['pickup_address'] as String?)?.trim(),
       pickupLandmark: (json['pickup_landmark'] as String?)?.trim(),
@@ -133,6 +152,11 @@ class AvailableRequest {
   final double longitude;
   final double distanceKm;
   final String status;
+
+  /// When the request was created, parsed from the backend's ISO-8601
+  /// `created_at` string. Used to keep the feed newest-first.
+  final DateTime createdAt;
+
   final String? dropoffLocation;
 
   /// Free-text pickup address entered by the farmer at booking time.

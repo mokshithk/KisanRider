@@ -20,6 +20,15 @@ const Duration _kPollingInterval = Duration(seconds: 3);
 /// Tab 0 of the rider shell: a feed of PENDING produce requests near the
 /// rider's (mocked) location, each accepting → POST /trips/accept.
 ///
+/// ## Ordering
+///
+/// The feed is rendered **newest first**. The backend query
+/// (`crud.get_nearby_produce_requests`) orders by `created_at DESC`, and
+/// this widget also re-sorts client-side after every fetch. The belt-and-
+/// suspenders approach means a proxy reordering the JSON array, or an
+/// older backend still sorting by distance, can't accidentally surface a
+/// stale request above a fresh one.
+///
 /// ## Auto-refresh
 ///
 /// A [Timer.periodic] fires every [_kPollingInterval] seconds and calls
@@ -147,7 +156,13 @@ class _RiderAvailableTabState extends State<RiderAvailableTab>
         final next = decoded
             .whereType<Map<String, dynamic>>()
             .map(AvailableRequest.fromJson)
-            .toList(growable: false);
+            // Growable list — we sort in place on the next line.
+            .toList();
+
+        // Newest first. The backend already orders by created_at DESC,
+        // but re-sorting here is cheap and defends against a proxy or
+        // an older backend that still returns distance-ordered rows.
+        next.sort((a, b) => b.createdAt.compareTo(a.createdAt));
 
         setState(() {
           _requests
