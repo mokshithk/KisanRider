@@ -13,22 +13,13 @@ import 'package:provider/provider.dart';
 import '../providers/auth_provider.dart';
 import 'rider_common.dart';
 
-/// Statuses from which a rider may complete a delivery. The backend rejects
-/// the PATCH unless the trip is in one of these — mirrored client-side so
-/// the "Mark Delivered" affordance is disabled when it would definitely fail.
+/// Statuses from which a rider may complete a delivery.
 const Set<String> _kCompletableTripStatuses = {'PICKED_UP', 'IN_TRANSIT'};
 
-/// Upload + status-PATCH timeout. Long enough to survive a slow 4G handoff,
-/// short enough that a hung connection doesn't leave the spinner spinning
-/// forever. On expiry, `_uploadProofAndDeliver` returns a specific
-/// "Connection timed out" failure that the dialog surfaces verbatim.
+/// Upload + status-PATCH timeout.
 const Duration _kUploadTimeout = Duration(seconds: 15);
 
 /// Outcome of a proof-of-delivery upload.
-///
-/// Distinct from [OtpSubmitResult] because the delivery flow needs to
-/// surface the backend's exact rejection reason to the rider (e.g. "Trip
-/// must be in PICKED_UP status"), not just a boolean-ish success/failure.
 class DeliveryResult {
   const DeliveryResult.success()
       : success = true,
@@ -194,15 +185,6 @@ class _RiderActiveTabState extends State<RiderActiveTab>
   }
 
   /// Verifies the 4-digit pickup OTP against the backend.
-  ///
-  /// The verify endpoint targets the ProduceRequest id (not the Trip id).
-  /// On a successful verify, the ProduceRequest's status flips to
-  /// PICKED_UP on the server, but the Trip status stays ACCEPTED (they're
-  /// independent state machines). Since the rider's card reads the Trip
-  /// status, we follow up with a PATCH to sync the two.
-  ///
-  /// If the PATCH fails, we still return success — the OTP was verified,
-  /// which is the essential operation.
   Future<OtpSubmitResult> _submitOtp(ActiveTrip trip, String otp) async {
     final auth = context.read<AuthProvider>();
     if (auth.token == null) return OtpSubmitResult.otherError;
@@ -223,8 +205,7 @@ class _RiderActiveTabState extends State<RiderActiveTab>
         return OtpSubmitResult.otherError;
       }
 
-      // OTP verified — now sync the trip status to PICKED_UP so the card
-      // reflects the handoff. Failure here is non-fatal for the OTP flow.
+      // OTP verified — now sync the trip status to PICKED_UP.
       try {
         await http.patch(
           Uri.parse('$kApiBaseUrl/trips/${trip.id}/status'),
@@ -266,11 +247,6 @@ class _RiderActiveTabState extends State<RiderActiveTab>
 
   /// Uploads a proof-of-delivery photo and, on success, transitions the trip
   /// to DELIVERED.
-  ///
-  /// Two-step flow (matches the backend contract):
-  ///   1. POST /uploads/delivery-photo  — multipart file upload, returns
-  ///      {image_url}.
-  ///   2. PATCH /trips/{id}/status with {"status": "DELIVERED"}.
   Future<DeliveryResult> _uploadProofAndDeliver(
     ActiveTrip trip,
     Uint8List imageBytes,
@@ -508,12 +484,9 @@ class _ActiveTripCard extends StatelessWidget {
     final theme = Theme.of(context);
     final dropoff = trip.dropoffAddress ?? '';
 
-    // Pickup display: prefer the free-text address; fall back to coords.
-    final pickupDisplay = (trip.pickupAddress != null &&
-            trip.pickupAddress!.trim().isNotEmpty)
-        ? trip.pickupAddress!.trim()
-        : '${trip.latitude.toStringAsFixed(4)}, '
-            '${trip.longitude.toStringAsFixed(4)}';
+    // Pickup display — the model's getter prefers the free-text address
+    // and falls back to coordinates only when none was provided.
+    final pickupDisplay = trip.displayPickup;
 
     return Card(
       elevation: 1,
@@ -546,13 +519,16 @@ class _ActiveTripCard extends StatelessWidget {
                   '${trip.weightKg.toStringAsFixed(0)} kg',
             ),
             const SizedBox(height: 6),
+
+            // Pickup row — Navigate uses `trip.mapsQuery`, which returns
+            // the free-text address when present and the raw lat/lng pair
+            // only as a last-resort fallback. This is what fixes the bug
+            // where tapping Navigate always landed on the mock Kolar
+            // coordinates instead of the farmer's actual address.
             InfoRow(
               icon: Icons.location_on_outlined,
               label: 'Pickup: $pickupDisplay',
-              onNavigate: () => launchMaps(
-                context,
-                '${trip.latitude},${trip.longitude}',
-              ),
+              onNavigate: () => launchMaps(context, trip.mapsQuery),
             ),
             const SizedBox(height: 6),
             InfoRow(
@@ -564,12 +540,6 @@ class _ActiveTripCard extends StatelessWidget {
             ),
 
             // ----- Farmer Contact Card -----------------------------------
-            // Rendered only when the backend has unlocked the farmer's
-            // contact info (i.e. a rider has been assigned and the farmer
-            // has a phone number on file). Handles the transition case:
-            // an ACCEPTED trip from an older session may not carry the
-            // new fields, in which case `hasFarmerContact` is false and
-            // the card is silently skipped.
             if (trip.hasFarmerContact) ...[
               const SizedBox(height: 14),
               _FarmerContactCard(trip: trip),
@@ -585,7 +555,6 @@ class _ActiveTripCard extends StatelessWidget {
 
   Widget _buildActionButton() {
     if (trip.status == 'ACCEPTED') {
-      // Primary action: verify the 4-digit OTP the farmer reads out.
       return SizedBox(
         width: double.infinity,
         child: FilledButton.icon(
@@ -610,7 +579,6 @@ class _ActiveTripCard extends StatelessWidget {
     }
 
     if (_kCompletableTripStatuses.contains(trip.status)) {
-      // Deliver requires proof of delivery.
       return SizedBox(
         width: double.infinity,
         child: FilledButton.icon(
@@ -634,8 +602,6 @@ class _ActiveTripCard extends StatelessWidget {
       );
     }
 
-    // Terminal state (shouldn't normally appear here — the endpoint filters
-    // to ACCEPTED/PICKED_UP — but render something sane if it does).
     return const SizedBox.shrink();
   }
 }
@@ -644,17 +610,6 @@ class _ActiveTripCard extends StatelessWidget {
 // Farmer contact card
 // ---------------------------------------------------------------------------
 
-/// Small green-tinted card with the farmer's name, pickup address, and a
-/// prominent CALL FARMER button.
-///
-/// ## Why this is separate from the trip card
-///
-/// Contact info is a distinct concern from trip logistics — the trip card
-/// renders cargo, addresses, and status; this card renders "who to call and
-/// where to meet them". Separating them makes it easy to move the contact
-/// card to a different position (e.g. above the action button vs below),
-/// and makes it obvious where the privacy gating lives: if `hasFarmerContact`
-/// is false, nothing here renders at all.
 class _FarmerContactCard extends StatelessWidget {
   const _FarmerContactCard({required this.trip});
 
@@ -664,13 +619,11 @@ class _FarmerContactCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
 
-    // Fall back to a generic label if the backend didn't send a name.
     final name = (trip.farmerFullName != null &&
             trip.farmerFullName!.trim().isNotEmpty)
         ? trip.farmerFullName!.trim()
         : 'Farmer';
 
-    // Pickup display mirrors the trip card's fallback logic.
     final pickup = (trip.pickupAddress != null &&
             trip.pickupAddress!.trim().isNotEmpty)
         ? trip.pickupAddress!.trim()
@@ -686,7 +639,6 @@ class _FarmerContactCard extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // ----- Header ------------------------------------------------
           Row(
             children: [
               const Icon(Icons.agriculture_outlined,
@@ -703,7 +655,6 @@ class _FarmerContactCard extends StatelessWidget {
           ),
           const SizedBox(height: 10),
 
-          // ----- Name + phone ------------------------------------------
           Row(
             children: [
               const Icon(Icons.person_outline,
@@ -739,7 +690,6 @@ class _FarmerContactCard extends StatelessWidget {
             ],
           ),
 
-          // ----- Pickup address (only if available) --------------------
           if (pickup != null) ...[
             const SizedBox(height: 6),
             Row(
@@ -765,7 +715,6 @@ class _FarmerContactCard extends StatelessWidget {
 
           const SizedBox(height: 12),
 
-          // ----- CALL FARMER button ------------------------------------
           SizedBox(
             width: double.infinity,
             child: FilledButton.icon(

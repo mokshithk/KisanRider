@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
@@ -7,8 +8,39 @@ import 'package:provider/provider.dart';
 import '../providers/auth_provider.dart';
 import 'rider_common.dart';
 
+/// How often the Available tab silently re-fetches the nearby feed.
+///
+/// 3 seconds is short enough that a freshly-posted request appears almost
+/// instantly while a rider is staring at the screen, long enough that an
+/// idle tab isn't hammering the backend. The fetch is silent — the list
+/// updates in place without flipping the full-screen spinner, so scroll
+/// position and in-flight taps are preserved.
+const Duration _kPollingInterval = Duration(seconds: 3);
+
 /// Tab 0 of the rider shell: a feed of PENDING produce requests near the
 /// rider's (mocked) location, each accepting → POST /trips/accept.
+///
+/// ## Ordering
+///
+/// The feed is rendered **newest first**. The backend query
+/// (`crud.get_nearby_produce_requests`) orders by `created_at DESC`, and
+/// this widget also re-sorts client-side after every fetch. The belt-and-
+/// suspenders approach means a proxy reordering the JSON array, or an
+/// older backend still sorting by distance, can't accidentally surface a
+/// stale request above a fresh one.
+///
+/// ## Auto-refresh
+///
+/// A [Timer.periodic] fires every [_kPollingInterval] seconds and calls
+/// `_fetch(silent: true)`. The silent path skips the `isLoading` flip and
+/// keeps the existing list rendered while the network call is in flight,
+/// so the UI never flickers or loses scroll position. Errors on a silent
+/// tick are swallowed (the previous list stays on screen) — the user
+/// still sees errors the moment they pull-to-refresh or open the tab.
+///
+/// The timer is cancelled in [dispose] so switching tabs (the shell uses
+/// an IndexedStack, so this widget stays alive) or leaving the dashboard
+/// doesn't leave a stray network loop running.
 class RiderAvailableTab extends StatefulWidget {
   const RiderAvailableTab({super.key});
 
@@ -23,14 +55,53 @@ class _RiderAvailableTabState extends State<RiderAvailableTab>
   String? _error;
   String? _acceptingId;
 
+  /// The background refresh timer. Non-null and active for the lifetime
+  /// of the widget; cancelled in [dispose].
+  Timer? _pollTimer;
+
   @override
   bool get wantKeepAlive => true;
 
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addPostFrameCallback((_) => _fetch());
+    // Provider/context is only safe after the first frame.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _fetch();
+      _startPolling();
+    });
   }
+
+  @override
+  void dispose() {
+    // Cancel BEFORE super.dispose() so no callback can fire on a dead
+    // State. Without this, a tick during teardown would call setState on
+    // a disposed widget and throw.
+    _pollTimer?.cancel();
+    _pollTimer = null;
+    super.dispose();
+  }
+
+  // -------------------------------------------------------------------------
+  // Polling control
+  // -------------------------------------------------------------------------
+
+  /// Starts the periodic background refresh. Idempotent — calling it twice
+  /// won't stack timers.
+  void _startPolling() {
+    _pollTimer?.cancel();
+    _pollTimer = Timer.periodic(_kPollingInterval, (_) {
+      // Skip a tick if an accept request is in flight. Otherwise the
+      // silent fetch would race the accept and could briefly re-render
+      // the card we're trying to remove.
+      if (_acceptingId != null) return;
+      _fetch(silent: true);
+    });
+  }
+
+  // -------------------------------------------------------------------------
+  // Networking
+  // -------------------------------------------------------------------------
 
   Map<String, String> _headers(AuthProvider auth, {bool json = false}) {
     final h = <String, String>{
@@ -41,20 +112,31 @@ class _RiderAvailableTabState extends State<RiderAvailableTab>
     return h;
   }
 
-  Future<void> _fetch() async {
+  /// Fetches the nearby feed.
+  ///
+  /// [silent] = true means "background tick" — the loading spinner is NOT
+  /// shown, and network/HTTP errors are swallowed (the existing list stays
+  /// on screen). [silent] = false (the default) is used for the first
+  /// load, pull-to-refresh, and the retry button, where the user needs
+  /// visual feedback.
+  Future<void> _fetch({bool silent = false}) async {
     final auth = context.read<AuthProvider>();
     if (auth.token == null) {
-      setState(() {
-        _isLoading = false;
-        _error = 'Not signed in.';
-      });
+      if (!silent) {
+        setState(() {
+          _isLoading = false;
+          _error = 'Not signed in.';
+        });
+      }
       return;
     }
 
-    setState(() {
-      _isLoading = true;
-      _error = null;
-    });
+    if (!silent) {
+      setState(() {
+        _isLoading = true;
+        _error = null;
+      });
+    }
 
     try {
       final uri = Uri.parse('$kApiBaseUrl/produce-requests/nearby').replace(
@@ -69,30 +151,46 @@ class _RiderAvailableTabState extends State<RiderAvailableTab>
       if (!mounted) return;
 
       if (response.statusCode == 200) {
-        final List<dynamic> decoded = jsonDecode(response.body) as List<dynamic>;
+        final List<dynamic> decoded =
+            jsonDecode(response.body) as List<dynamic>;
+        final next = decoded
+            .whereType<Map<String, dynamic>>()
+            .map(AvailableRequest.fromJson)
+            // Growable list — we sort in place on the next line.
+            .toList();
+
+        // Newest first. The backend already orders by created_at DESC,
+        // but re-sorting here is cheap and defends against a proxy or
+        // an older backend that still returns distance-ordered rows.
+        next.sort((a, b) => b.createdAt.compareTo(a.createdAt));
+
         setState(() {
           _requests
             ..clear()
-            ..addAll(
-              decoded.map(
-                (e) => AvailableRequest.fromJson(e as Map<String, dynamic>),
-              ),
-            );
-          _isLoading = false;
+            ..addAll(next);
+          // Only flip the loading flag on a non-silent fetch — silent
+          // ticks leave it as-is (it's already false by then).
+          if (!silent) _isLoading = false;
+          // A successful tick clears any stale error banner.
+          _error = null;
         });
       } else {
-        setState(() {
-          _error = _extractError(response) ??
-              'Failed to load requests (HTTP ${response.statusCode}).';
-          _isLoading = false;
-        });
+        if (!silent) {
+          setState(() {
+            _error = _extractError(response) ??
+                'Failed to load requests (HTTP ${response.statusCode}).';
+            _isLoading = false;
+          });
+        }
       }
     } catch (e) {
       if (!mounted) return;
-      setState(() {
-        _error = 'Network error: $e';
-        _isLoading = false;
-      });
+      if (!silent) {
+        setState(() {
+          _error = 'Network error: $e';
+          _isLoading = false;
+        });
+      }
     }
   }
 
@@ -132,6 +230,8 @@ class _RiderAvailableTabState extends State<RiderAvailableTab>
             backgroundColor: Colors.red.shade700,
           ),
         );
+        // Re-sync with the server after a failed accept — the request may
+        // have been grabbed by someone else in the meantime.
         await _fetch();
       }
     } catch (e) {
@@ -155,6 +255,10 @@ class _RiderAvailableTabState extends State<RiderAvailableTab>
     } catch (_) {}
     return null;
   }
+
+  // -------------------------------------------------------------------------
+  // Build
+  // -------------------------------------------------------------------------
 
   @override
   Widget build(BuildContext context) {
@@ -204,6 +308,10 @@ class _RiderAvailableTabState extends State<RiderAvailableTab>
     );
   }
 }
+
+// ============================================================================
+// Card
+// ============================================================================
 
 class _AvailableRequestCard extends StatelessWidget {
   const _AvailableRequestCard({
@@ -265,16 +373,28 @@ class _AvailableRequestCard extends StatelessWidget {
                   '${request.weightKg.toStringAsFixed(0)} kg',
             ),
             const SizedBox(height: 6),
+
+            // ----- Pickup -------------------------------------------------
+            // Prefer the farmer-entered address; fall back to the
+            // locality/district snapshot, then to raw coordinates.
             InfoRow(
               icon: Icons.location_on_outlined,
-              label: 'Pickup: '
-                  '${request.latitude.toStringAsFixed(4)}, '
-                  '${request.longitude.toStringAsFixed(4)}',
-              onNavigate: () => launchMaps(
-                context,
-                '${request.latitude},${request.longitude}',
-              ),
+              label: 'Pickup: ${request.displayPickup}',
+              onNavigate: () => launchMaps(context, request.mapsQuery),
             ),
+
+            // ----- Landmark (only when we didn't already use it above) ---
+            if (request.pickupAddress != null &&
+                request.pickupAddress!.isNotEmpty &&
+                request.pickupLandmark != null &&
+                request.pickupLandmark!.isNotEmpty) ...[
+              const SizedBox(height: 6),
+              InfoRow(
+                icon: Icons.signpost_outlined,
+                label: 'Landmark: ${request.pickupLandmark}',
+              ),
+            ],
+
             const SizedBox(height: 6),
             InfoRow(
               icon: Icons.flag_outlined,

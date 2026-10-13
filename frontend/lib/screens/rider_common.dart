@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/foundation.dart' show kIsWeb;   // <-- ADDED
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:url_launcher/url_launcher.dart';
 
 /// Base URL of the FastAPI backend.
@@ -20,11 +20,6 @@ const Color kRiderGreen = Color(0xFF2E7D32);
 // Google Maps helper
 // ---------------------------------------------------------------------------
 
-/// Opens Google Maps in the platform's external app, searching for [query].
-///
-/// [query] can be either a `"lat,lng"` string or a free-text address — the
-/// Maps search endpoint accepts both. Shows a SnackBar if the platform
-/// refuses to launch (no Maps app, no browser, etc.).
 Future<void> launchMaps(BuildContext context, String query) async {
   final trimmed = query.trim();
   if (trimmed.isEmpty) return;
@@ -53,15 +48,6 @@ Future<void> launchMaps(BuildContext context, String query) async {
 // Phone call helper
 // ---------------------------------------------------------------------------
 
-/// Opens the platform's phone dialer pre-filled with [phone].
-///
-/// The number is stripped of everything except digits and a leading `+` so
-/// a value like "+91 98765 43210" works without the caller pre-formatting
-/// it. Using `Uri(scheme: 'tel', ...)` rather than a raw string is what
-/// makes Android and iOS both recognise the intent.
-///
-/// Silent no-op if [phone] is empty — the call sites already gate on that,
-/// but a defensive check costs nothing.
 Future<void> launchPhoneCall(BuildContext context, String phone) async {
   final cleaned = phone.replaceAll(RegExp(r'[^\d+]'), '');
   if (cleaned.isEmpty) {
@@ -95,10 +81,6 @@ Future<void> launchPhoneCall(BuildContext context, String phone) async {
 // OTP submission result
 // ---------------------------------------------------------------------------
 
-/// Outcome of a POST to the pickup OTP verify endpoint.
-///
-/// Shared between the Active Trips tab (which owns the network call) and the
-/// OTP dialog (which decides what to render based on the result).
 enum OtpSubmitResult { success, invalidOtp, otherError }
 
 // ---------------------------------------------------------------------------
@@ -106,6 +88,17 @@ enum OtpSubmitResult { success, invalidOtp, otherError }
 // ---------------------------------------------------------------------------
 
 /// One PENDING produce request surfaced by `GET /produce-requests/nearby`.
+///
+/// The backend returns `pickup_address` and `pickup_landmark` on every
+/// row (both nullable). When the farmer's booking carried a real address
+/// those are populated; when the farmer only provided coordinates (e.g.
+/// GPS failed, they fell back to the mock), the client falls back to
+/// showing the lat/lng pair — see [displayPickup].
+///
+/// [createdAt] drives newest-first ordering in the Available feed. The
+/// backend already sorts this way, but the client re-sorts defensively
+/// (see [RiderAvailableTab]) so a proxy or an older backend can't
+/// accidentally surface stale requests above fresh ones.
 class AvailableRequest {
   AvailableRequest({
     required this.id,
@@ -116,10 +109,25 @@ class AvailableRequest {
     required this.longitude,
     required this.distanceKm,
     required this.status,
+    required this.createdAt,
     this.dropoffLocation,
+    this.pickupAddress,
+    this.pickupLandmark,
   });
 
   factory AvailableRequest.fromJson(Map<String, dynamic> json) {
+    // A malformed or missing created_at shouldn't crash the whole list.
+    // Fall back to epoch so the row still renders (just at the bottom,
+    // after the sort).
+    DateTime parsedCreatedAt;
+    final rawCreated = json['created_at'];
+    if (rawCreated is String) {
+      parsedCreatedAt = DateTime.tryParse(rawCreated) ??
+          DateTime.fromMillisecondsSinceEpoch(0);
+    } else {
+      parsedCreatedAt = DateTime.fromMillisecondsSinceEpoch(0);
+    }
+
     return AvailableRequest(
       id: (json['id'] ?? '').toString(),
       cropType: (json['crop_type'] ?? '') as String,
@@ -129,7 +137,10 @@ class AvailableRequest {
       longitude: ((json['longitude'] ?? 0) as num).toDouble(),
       distanceKm: ((json['distance_km'] ?? 0) as num).toDouble(),
       status: (json['status'] ?? 'PENDING') as String,
+      createdAt: parsedCreatedAt,
       dropoffLocation: json['dropoff_location'] as String?,
+      pickupAddress: (json['pickup_address'] as String?)?.trim(),
+      pickupLandmark: (json['pickup_landmark'] as String?)?.trim(),
     );
   }
 
@@ -141,7 +152,52 @@ class AvailableRequest {
   final double longitude;
   final double distanceKm;
   final String status;
+
+  /// When the request was created, parsed from the backend's ISO-8601
+  /// `created_at` string. Used to keep the feed newest-first.
+  final DateTime createdAt;
+
   final String? dropoffLocation;
+
+  /// Free-text pickup address entered by the farmer at booking time.
+  /// Null or empty when the farmer only supplied coordinates.
+  final String? pickupAddress;
+
+  /// Short landmark line shown to the rider, e.g. "Behind the canal".
+  final String? pickupLandmark;
+
+  /// What the card should render for the "Pickup:" row.
+  ///
+  /// Priority order:
+  ///   1. `pickupAddress` — the human-readable string the farmer typed.
+  ///   2. `pickupLandmark` — a fallback if only the landmark was filled.
+  ///   3. Formatted coordinates — last resort, still actionable.
+  String get displayPickup {
+    if (pickupAddress != null && pickupAddress!.isNotEmpty) {
+      return pickupAddress!;
+    }
+    if (pickupLandmark != null && pickupLandmark!.isNotEmpty) {
+      return pickupLandmark!;
+    }
+    return '${latitude.toStringAsFixed(4)}, ${longitude.toStringAsFixed(4)}';
+  }
+
+  /// What we hand to Google Maps when the rider taps "Navigate".
+  ///
+  /// Prefers the address string (Maps searches free-text happily) and
+  /// falls back to raw coordinates so the button always does something
+  /// useful.
+  String get mapsQuery {
+    if (pickupAddress != null && pickupAddress!.isNotEmpty) {
+      return pickupAddress!;
+    }
+    return '$latitude,$longitude';
+  }
+
+  /// True when a real pickup address (not just coords) is available.
+  bool get hasPickupAddress =>
+      (pickupAddress != null && pickupAddress!.isNotEmpty) ||
+      (pickupLandmark != null && pickupLandmark!.isNotEmpty);
 }
 
 /// One of the rider's active trips, from `GET /trips/active`.
@@ -239,14 +295,29 @@ class ActiveTrip {
 
   bool get hasFarmerContact =>
       farmerPhoneNumber != null && farmerPhoneNumber!.trim().isNotEmpty;
+
+  /// What the trip card should render for the pickup row — see the same
+  /// helper on [AvailableRequest] for the fallback rules.
+  String get displayPickup {
+    if (pickupAddress != null && pickupAddress!.trim().isNotEmpty) {
+      return pickupAddress!.trim();
+    }
+    return '${latitude.toStringAsFixed(4)}, ${longitude.toStringAsFixed(4)}';
+  }
+
+  /// Query string for Google Maps — address when available, else coords.
+  String get mapsQuery {
+    if (pickupAddress != null && pickupAddress!.trim().isNotEmpty) {
+      return pickupAddress!.trim();
+    }
+    return '$latitude,$longitude';
+  }
 }
 
 // ---------------------------------------------------------------------------
 // Shared widgets
 // ---------------------------------------------------------------------------
 
-/// One line of info (icon + label). If [onNavigate] is provided, a small
-/// "Navigate" button is rendered at the trailing end that opens Google Maps.
 class InfoRow extends StatelessWidget {
   const InfoRow({
     super.key,
@@ -282,7 +353,6 @@ class InfoRow extends StatelessWidget {
   }
 }
 
-/// Small colored chip showing a trip or request status.
 class StatusBadge extends StatelessWidget {
   const StatusBadge({super.key, required this.status});
 
@@ -323,7 +393,6 @@ class StatusBadge extends StatelessWidget {
   }
 }
 
-/// Full-screen error state with a Retry button.
 class ErrorView extends StatelessWidget {
   const ErrorView({
     super.key,

@@ -494,7 +494,19 @@ def get_nearby_produce_requests(
     status_filter: Optional[str] = "PENDING",
     limit: int = 50,
 ) -> List[schemas.NearbyProduceRequestResponse]:
-    """Find PENDING produce requests within `radius_km` of (lat, lng), nearest first."""
+    """
+    Find PENDING produce requests within `radius_km` of (lat, lng),
+    newest first.
+
+    The rider-facing Available feed calls this endpoint. Newest-first
+    ordering means a freshly-posted booking appears at the top of the
+    list the moment the client's background poll picks it up, which is
+    what the UI implies by "Available Requests".
+
+    `distance_km` is still computed and returned on every row — the
+    client renders it as a badge on each card. Only the *ordering* has
+    changed from the previous distance-based sort.
+    """
     pr = models.ProduceRequest
 
     query_point = ST_SetSRID(ST_MakePoint(lng, lat), 4326)
@@ -532,7 +544,8 @@ def get_nearby_produce_requests(
     if status_filter:
         query = query.filter(pr.status == status_filter)
 
-    query = query.order_by(distance_km.asc()).limit(limit)
+    # CHANGED: newest first. Was `order_by(distance_km.asc())`.
+    query = query.order_by(pr.created_at.desc()).limit(limit)
 
     try:
         rows = query.all()
@@ -941,10 +954,12 @@ def get_available_trips_for_rider(
     limit: int = 50,
 ) -> List[schemas.TripAvailableOut]:
     """
-    PENDING produce requests within `radius_km` of (lat, lng), nearest
-    first, shaped as the rider-facing browse feed.
+    PENDING produce requests within `radius_km` of (lat, lng), shaped as
+    the rider-facing browse feed.
 
-    Mirrors `get_nearby_produce_requests` but returns the privacy-aware
+    Newest-first ordering: a freshly-posted booking appears at the top
+    of the feed. Mirrors `get_nearby_produce_requests` (which serves the
+    actual rider Available tab) and returns the privacy-aware
     TripAvailableOut shape instead of the raw ProduceRequest fields.
     """
     pr = models.ProduceRequest
@@ -963,7 +978,8 @@ def get_available_trips_for_rider(
             .options(joinedload(pr.farmer))
             .filter(pr.status == "PENDING")
             .filter(ST_DWithin(stored_geog, query_point_geog, radius_km * 1000))
-            .order_by(distance_km.asc())
+            # CHANGED: newest first. Was `order_by(distance_km.asc())`.
+            .order_by(pr.created_at.desc())
             .limit(limit)
             .all()
         )
