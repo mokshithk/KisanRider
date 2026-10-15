@@ -940,13 +940,54 @@ def create_farmer_address(
 
 
 # ---------------------------------------------------------------------------
-# Farmer Orders (single-order detail with phone-number privacy)
+# Farmer Orders — Order History + Single-order Detail
+# ---------------------------------------------------------------------------
+#
+# NOTE ON ROUTE ORDERING: `/farmer/orders/history` is declared BEFORE
+# `/farmer/orders/{order_id}`. FastAPI matches routes in registration
+# order, and the path converter for `{order_id}` is UUID — "history" is
+# not a UUID, so if the parameterized route were registered first, the
+# history request would 422 on UUID validation instead of falling through.
+# Do not reorder these two decorators.
 # ---------------------------------------------------------------------------
 
 @app.get(
+    "/farmer/orders/history",
+    response_model=List[schemas.OrderHistoryItemResponse],
+    summary="List the authenticated farmer's order history (summary view)",
+)
+def get_farmer_order_history(
+    current_user: models.User = Depends(auth.require_role("FARMER")),
+    db: Session = Depends(get_db),
+):
+    """
+    Return every order belonging to the authenticated farmer, newest
+    first, in the compact 3-line summary shape the Order History list
+    renders.
+
+    Includes orders in every lifecycle state (PENDING, IN_TRANSIT,
+    COMPLETED, CANCELLED) — the client shows all of them so a farmer can
+    see in-flight shipments alongside their past ones.
+
+    Fields returned per row:
+      id, crop_name, weight_kg, status, created_at,
+      pickup_village, mandi_name, stall_number
+
+    `status` is normalized (PENDING / IN_TRANSIT / COMPLETED / CANCELLED).
+    `pickup_village` and `mandi_name` / `stall_number` are derived
+    server-side from the stored free-text fields — see
+    `crud.get_farmer_order_history` for the derivation rules.
+    """
+    try:
+        return crud.get_farmer_order_history(db, current_user.id)
+    except SQLAlchemyError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get(
     "/farmer/orders/{order_id}",
-    response_model=schemas.TripActiveOut,
-    summary="Get a single farmer order with phone-number privacy applied",
+    response_model=schemas.FarmerOrderDetailResponse,
+    summary="Get full nested details for a single farmer order",
 )
 def get_farmer_order_detail(
     order_id: UUID,
@@ -954,23 +995,24 @@ def get_farmer_order_detail(
     db: Session = Depends(get_db),
 ):
     """
-    Return a single order (ProduceRequest) owned by the authenticated
-    farmer.
+    Return the full nested detail view for one order owned by the
+    authenticated farmer.
 
-    ## Privacy rules
+    Response shape (see FarmerOrderDetailResponse for the full doc):
 
-    - While the order is PENDING (no rider assigned yet), every rider
-      field — `rider_phone_number`, `rider_full_name`, `vehicle_number`,
-      `vehicle_type` — is null. There is no rider to contact.
-    - Once a rider accepts, those fields are populated so the farmer can
-      coordinate the pickup and track the vehicle.
-    - The farmer's own contact fields (`farmer_phone_number`,
-      `farmer_full_name`) follow the same visibility window: they're
-      populated only once a rider is assigned. Hiding them before
-      assignment is technically redundant for the caller (who knows their
-      own number) but keeps the schema's semantics uniform.
+      - id / status / trip_status / created_at / completed_at
+        drive the header and the 4-step status timeline.
+      - rider         — None while no rider has accepted.
+      - pickup        — pickup address block (lat/lng when available).
+      - dropoff       — APMC mandi + stall block.
+      - crop          — crop type, weight, crate count.
+      - settlement    — None until the trip is DELIVERED (settlement is
+                        auto-created by the trip status transition).
+
+    404 if the order doesn't exist OR belongs to a different farmer —
+    order existence is deliberately not leaked across accounts.
     """
-    result = crud.get_farmer_order(db, order_id, current_user.id)
+    result = crud.get_farmer_order_detail(db, order_id, current_user.id)
     if result is None:
         raise HTTPException(status_code=404, detail="Order not found")
     return result
