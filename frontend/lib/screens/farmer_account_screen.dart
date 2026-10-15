@@ -1,6 +1,6 @@
 import 'dart:convert';
 
-import 'package:flutter/foundation.dart' show kIsWeb;   // <-- ADD THIS LINE
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
@@ -8,6 +8,7 @@ import 'package:provider/provider.dart';
 
 import '../providers/auth_provider.dart';
 import 'login_screen.dart';
+import 'order_history_screen.dart';
 
 /// Base URL of the FastAPI backend.
 ///
@@ -264,6 +265,16 @@ class _FarmerAccountScreenState extends State<FarmerAccountScreen>
     );
   }
 
+  /// Pushes the Order History screen. Extracted so the tile's onTap is a
+  /// one-liner and the pushed route has a single definition.
+  void _openOrderHistory() {
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => const OrderHistoryScreen(),
+      ),
+    );
+  }
+
   // -------------------------------------------------------------------------
   // Build
   // -------------------------------------------------------------------------
@@ -318,6 +329,22 @@ class _FarmerAccountScreenState extends State<FarmerAccountScreen>
                   onTap: () => _openSheet(
                     _FarmDetailsSheet(account: _account),
                   ),
+                ),
+              ],
+            ),
+
+            // ----- Orders & Logistics -----------------------------------
+            // NEW — sits between Personal Info and Locations, matching
+            // the task's placement spec. Contains the Order History tile
+            // that navigates to OrderHistoryScreen.
+            _SectionHeader(title: 'ORDERS & LOGISTICS'),
+            _SettingsCard(
+              children: [
+                _SettingsTile(
+                  icon: Icons.receipt_long_outlined,
+                  title: 'Order History',
+                  subtitle: 'View past shipments and delivery receipts',
+                  onTap: _openOrderHistory,
                 ),
               ],
             ),
