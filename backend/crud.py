@@ -40,6 +40,18 @@ _PLATFORM_FEE_RATE = 0.02  # 2%
 _DEFAULT_RATE_PER_KG = 40.0  # ₹ per kg
 _DEFAULT_DISTANCE_KM = 10.0
 
+# Rate at which the platform takes a cut of the rider's gross transport
+# fare. Distinct from `_PLATFORM_FEE_RATE` above, which is a percentage of
+# the *farmer's* gross crop value. Kept as its own constant so the two
+# sides of the marketplace can be tuned independently.
+_RIDER_PLATFORM_COMMISSION_RATE = 0.02  # 2% of gross transport fare
+
+# Inverse of the distance-fare coefficient in `_compute_settlement_values`
+# (distance_fare = distance_km * 15.0). Used to reconstruct distance_km
+# from a stored Settlement row when we need to display it on the rider
+# trip detail screen — the Trip table itself doesn't store distance.
+_DISTANCE_FARE_PER_KM = 15.0
+
 
 # ---------------------------------------------------------------------------
 # User CRUD
@@ -1045,6 +1057,11 @@ def get_farmer_order(
 
     Returns None if the order doesn't exist or belongs to a different
     farmer (so the endpoint 404s rather than leaking existence).
+
+    NOTE: This legacy accessor is still consumed by the phone-number-
+    privacy flow in some callers. New code should use
+    [get_farmer_order_detail], which returns the richer
+    FarmerOrderDetailResponse shape the Order Detail screen expects.
     """
     pr = (
         db.query(models.ProduceRequest)
@@ -1058,6 +1075,461 @@ def get_farmer_order(
     if pr is None or pr.farmer_id != farmer_id:
         return None
     return _to_trip_active(pr)
+
+
+# ---------------------------------------------------------------------------
+# Farmer Order History
+# ---------------------------------------------------------------------------
+
+def _order_display_status(pr: models.ProduceRequest) -> str:
+    """
+    Collapse the ProduceRequest / Trip status pair into one client-facing
+    value. See OrderHistoryItemResponse for the vocabulary:
+
+      PENDING / IN_TRANSIT / COMPLETED / CANCELLED
+    """
+    trip = pr.trip
+    if trip is not None:
+        if trip.status == "DELIVERED":
+            return "COMPLETED"
+        if trip.status == "CANCELLED":
+            return "CANCELLED"
+        if trip.status in ("ACCEPTED", "PICKED_UP"):
+            return "IN_TRANSIT"
+
+    if pr.status == "COMPLETED":
+        return "COMPLETED"
+    if pr.status == "CANCELLED":
+        return "CANCELLED"
+    return pr.status or "PENDING"
+
+
+def _extract_pickup_village(
+    pr: models.ProduceRequest,
+    farmer: Optional[models.User],
+) -> Optional[str]:
+    """
+    Best-effort pickup locality for the summary card.
+
+    Priority:
+      1. The farmer's profile `taluk_village` — structured, reliable.
+         We take the first comma-separated segment so "Koppa, Kolar"
+         displays as "Koppa" on the card.
+      2. The first comma-separated segment of the booking's
+         `pickup_address` — usually the village name when the farmer
+         typed a full address.
+    """
+    if farmer is not None and farmer.taluk_village:
+        first = farmer.taluk_village.strip().split(",")[0].strip()
+        if first:
+            return first
+
+    if pr.pickup_address:
+        first = pr.pickup_address.strip().split(",")[0].strip()
+        if first:
+            return first
+
+    return None
+
+
+def _split_dropoff(
+    dropoff_location: Optional[str],
+) -> tuple[Optional[str], Optional[str]]:
+    """
+    The Book Transport form packs the mandi name and stall into one
+    string formatted as 'MandiName - StallInfo' (see
+    FarmerBookTransportTab._submit in farmer_dashboard.dart). Split it
+    back apart so the history card can render them as discrete fields
+    without fragile client-side string surgery.
+
+    Returns (mandi_name, stall_number), either of which may be None.
+    """
+    if not dropoff_location:
+        return None, None
+
+    parts = dropoff_location.split(" - ", 1)
+    if len(parts) == 2:
+        mandi = parts[0].strip() or None
+        stall = parts[1].strip() or None
+        return mandi, stall
+
+    return (parts[0].strip() or None), None
+
+
+def get_farmer_order_history(
+    db: Session, farmer_id: UUID
+) -> List[schemas.OrderHistoryItemResponse]:
+    """
+    Summary list for the Order History screen: every order belonging to
+    `farmer_id`, newest first.
+
+    Eager-loads the trip and the farmer so the status normalization and
+    village derivation don't trigger an N+1 query per row.
+    """
+    rows = (
+        db.query(models.ProduceRequest)
+        .options(
+            joinedload(models.ProduceRequest.farmer),
+            joinedload(models.ProduceRequest.trip),
+        )
+        .filter(models.ProduceRequest.farmer_id == farmer_id)
+        .order_by(models.ProduceRequest.created_at.desc())
+        .all()
+    )
+
+    result: List[schemas.OrderHistoryItemResponse] = []
+    for pr in rows:
+        mandi_name, stall_number = _split_dropoff(pr.dropoff_location)
+        result.append(
+            schemas.OrderHistoryItemResponse(
+                id=pr.id,
+                crop_name=pr.crop_type or "—",
+                weight_kg=float(pr.weight_kg or 0),
+                status=_order_display_status(pr),
+                created_at=pr.created_at,
+                pickup_village=_extract_pickup_village(pr, pr.farmer),
+                mandi_name=mandi_name,
+                stall_number=stall_number,
+            )
+        )
+    return result
+
+
+def _decode_pickup_coords(
+    pr: models.ProduceRequest,
+) -> tuple[Optional[float], Optional[float]]:
+    """
+    Decode the stored PostGIS point into (lat, lng) floats, or
+    (None, None) if the geometry is malformed. Used by the detail view
+    where Optional is the correct contract — the client falls back to
+    the free-text address fields when coordinates aren't available.
+    """
+    try:
+        point = to_shape(pr.pickup_location)
+        return float(point.y), float(point.x)
+    except Exception:
+        return None, None
+
+
+def get_farmer_order_detail(
+    db: Session, order_id: UUID, farmer_id: UUID
+) -> Optional[schemas.FarmerOrderDetailResponse]:
+    """
+    Full nested detail view for a single order owned by `farmer_id`.
+
+    Returns None when the order doesn't exist OR belongs to a different
+    farmer — the endpoint surfaces a 404 in both cases so order existence
+    isn't leaked across accounts.
+
+    Eager-loads the trip, its rider, and its settlement so the response
+    can be built in one round-trip.
+    """
+    pr = (
+        db.query(models.ProduceRequest)
+        .options(
+            joinedload(models.ProduceRequest.farmer),
+            joinedload(models.ProduceRequest.trip).joinedload(models.Trip.rider),
+            joinedload(models.ProduceRequest.trip).joinedload(
+                models.Trip.settlement
+            ),
+        )
+        .filter(models.ProduceRequest.id == order_id)
+        .first()
+    )
+    if pr is None or pr.farmer_id != farmer_id:
+        return None
+
+    trip = pr.trip
+    rider = trip.rider if trip is not None else None
+    settlement = trip.settlement if trip is not None else None
+
+    pickup_lat, pickup_lng = _decode_pickup_coords(pr)
+
+    return schemas.FarmerOrderDetailResponse(
+        id=pr.id,
+        status=_order_display_status(pr),
+        trip_status=(trip.status if trip is not None else None),
+        created_at=pr.created_at,
+        completed_at=(trip.completed_at if trip is not None else None),
+        trip_id=(trip.id if trip is not None else None),
+        pickup_otp=pr.pickup_otp,
+        rider=(
+            schemas.OrderRiderInfo(
+                id=rider.id,
+                full_name=rider.full_name,
+                phone_number=rider.phone_number,
+                vehicle_type=rider.vehicle_type,
+                vehicle_number=rider.vehicle_number,
+            )
+            if rider is not None
+            else None
+        ),
+        pickup=schemas.OrderLocationInfo(
+            address=pr.pickup_address,
+            landmark=pr.pickup_landmark,
+            latitude=pickup_lat,
+            longitude=pickup_lng,
+        ),
+        dropoff=schemas.OrderLocationInfo(
+            address=pr.dropoff_location,
+            landmark=None,
+            latitude=pr.dropoff_lat,
+            longitude=pr.dropoff_lng,
+        ),
+        crop=schemas.OrderCropInfo(
+            crop_name=pr.crop_type or "—",
+            weight_kg=float(pr.weight_kg or 0),
+            crate_count=pr.crate_count or 0,
+        ),
+        settlement=(
+            schemas.OrderSettlementInfo(
+                status=settlement.status,
+                gross_amount=settlement.gross_amount,
+                rider_fare=settlement.rider_fare,
+                platform_fee=settlement.platform_fee,
+                net_payout=settlement.net_payout,
+                created_at=settlement.created_at,
+            )
+            if settlement is not None
+            else None
+        ),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Rider Trip History
+# ---------------------------------------------------------------------------
+
+def _rider_trip_payment_method_list(
+    trip: models.Trip,
+    settlement: Optional[models.Settlement],
+) -> str:
+    """
+    Payment-method label for the rider's Trip History summary card.
+
+      "Wallet Credited" — Settlement is PAID (funds went through the
+                           platform wallet)
+      "Cash Collected"  — Settlement exists but is still PENDING (rider
+                           was paid at the mandi)
+      "—"               — Cancelled trip, or no Settlement row
+    """
+    if trip.status == "CANCELLED":
+        return "—"
+    if settlement is None:
+        return "—"
+    if settlement.status == "PAID":
+        return "Wallet Credited"
+    return "Cash Collected"
+
+
+def _rider_trip_payment_method_detail(
+    trip: models.Trip,
+    settlement: Optional[models.Settlement],
+) -> str:
+    """
+    Payment-method label for the rider's Trip Detail screen. Same
+    underlying fact as the list label — phrased for the detail context.
+
+      "QR Payment at Mandi" — Settlement PAID (digital settlement)
+      "Cash in Hand"        — Settlement PENDING (rider collected cash)
+      "—"                   — Cancelled trip, or no Settlement row
+    """
+    if trip.status == "CANCELLED":
+        return "—"
+    if settlement is None:
+        return "—"
+    if settlement.status == "PAID":
+        return "QR Payment at Mandi"
+    return "Cash in Hand"
+
+
+def _rider_trip_distance_km(
+    settlement: Optional[models.Settlement],
+) -> Optional[float]:
+    """
+    Reconstruct distance in km from a Settlement row.
+
+    The Settlement table stores `distance_fare = distance_km *
+    _DISTANCE_FARE_PER_KM` (see `_compute_settlement_values`); the Trip
+    row itself doesn't carry a distance column. Reversing the formula
+    gives the rider the distance they actually drove without a schema
+    change.
+    """
+    if settlement is None or settlement.distance_fare is None:
+        return None
+    try:
+        return round(float(settlement.distance_fare) / _DISTANCE_FARE_PER_KM, 2)
+    except (TypeError, ValueError):
+        return None
+
+
+def get_rider_trip_history(
+    db: Session, rider_id: UUID
+) -> List[schemas.RiderTripHistoryItemResponse]:
+    """
+    Summary list for the Rider Trip History screen: DELIVERED and
+    CANCELLED trips assigned to `rider_id`, newest first.
+
+    Active trips (ACCEPTED, PICKED_UP) are deliberately excluded — the
+    rider's Active Trips tab is the right place for those, and this
+    screen is framed as a *history* of completed work.
+    """
+    trips = (
+        db.query(models.Trip)
+        .options(
+            joinedload(models.Trip.produce_request).joinedload(
+                models.ProduceRequest.farmer
+            ),
+            joinedload(models.Trip.settlement),
+        )
+        .filter(
+            models.Trip.rider_id == rider_id,
+            models.Trip.status.in_(("DELIVERED", "CANCELLED")),
+        )
+        .order_by(models.Trip.created_at.desc())
+        .all()
+    )
+
+    result: List[schemas.RiderTripHistoryItemResponse] = []
+    for trip in trips:
+        pr = trip.produce_request
+        if pr is None:
+            # Defensive: an orphaned Trip row (shouldn't happen thanks
+            # to the ondelete=CASCADE on the FK) shouldn't crash the
+            # whole list. Skip it.
+            continue
+
+        settlement = trip.settlement
+        fare_earned = (
+            float(settlement.total_payout or 0)
+            if settlement is not None and trip.status == "DELIVERED"
+            else 0.0
+        )
+
+        mandi_name, stall_number = _split_dropoff(pr.dropoff_location)
+
+        result.append(
+            schemas.RiderTripHistoryItemResponse(
+                id=trip.id,
+                crop_name=pr.crop_type or "—",
+                weight_kg=float(pr.weight_kg or 0),
+                fare_earned=fare_earned,
+                status=trip.status,
+                created_at=trip.created_at,
+                pickup_village=_extract_pickup_village(pr, pr.farmer),
+                mandi_name=mandi_name,
+                stall_number=stall_number,
+                payment_method=_rider_trip_payment_method_list(
+                    trip, settlement
+                ),
+            )
+        )
+    return result
+
+
+def get_rider_trip_detail(
+    db: Session, trip_id: UUID, rider_id: UUID
+) -> Optional[schemas.RiderTripDetailResponse]:
+    """
+    Full nested detail view for one of the rider's trips.
+
+    Returns None when the trip doesn't exist OR belongs to a different
+    rider — the endpoint surfaces a 404 in both cases, so trip existence
+    isn't leaked across accounts.
+    """
+    trip = (
+        db.query(models.Trip)
+        .options(
+            joinedload(models.Trip.produce_request).joinedload(
+                models.ProduceRequest.farmer
+            ),
+            joinedload(models.Trip.settlement),
+        )
+        .filter(models.Trip.id == trip_id)
+        .first()
+    )
+    if trip is None or trip.rider_id != rider_id:
+        return None
+
+    pr = trip.produce_request
+    farmer = pr.farmer if pr is not None else None
+    settlement = trip.settlement
+
+    # Pickup coordinates: prefer the Trip's frozen snapshot (set at
+    # accept time), fall back to the ProduceRequest's stored point.
+    pickup_lat = trip.pickup_latitude
+    pickup_lng = trip.pickup_longitude
+    if pickup_lat is None and pr is not None:
+        pickup_lat, pickup_lng = _decode_pickup_coords(pr)
+
+    # Dropoff coordinates only exist on the ProduceRequest.
+    dropoff_lat = pr.dropoff_lat if pr is not None else None
+    dropoff_lng = pr.dropoff_lng if pr is not None else None
+
+    mandi_name, stall_number = _split_dropoff(
+        pr.dropoff_location if pr is not None else None
+    )
+
+    distance_km = _rider_trip_distance_km(settlement)
+
+    # Fare block: only meaningful for DELIVERED trips with a settlement.
+    fare = None
+    if trip.status == "DELIVERED" and settlement is not None:
+        gross = float(settlement.total_payout or 0)
+        commission = round(gross * _RIDER_PLATFORM_COMMISSION_RATE, 2)
+        net = round(gross - commission, 2)
+        fare = schemas.RiderTripFareBreakdown(
+            gross_transport_fare=gross,
+            platform_commission=commission,
+            net_earnings=net,
+            payment_method=_rider_trip_payment_method_detail(trip, settlement),
+        )
+
+    return schemas.RiderTripDetailResponse(
+        id=trip.id,
+        status=trip.status,
+        completed_at=trip.completed_at,
+        distance_km=distance_km,
+        farmer=(
+            schemas.RiderTripFarmerInfo(
+                id=farmer.id,
+                full_name=farmer.full_name,
+                phone_number=farmer.phone_number,
+                # Prefer the structured `farm_address`, fall back to the
+                # shorter `landmark` line so the rider still sees a
+                # human-readable anchor when only that field is set.
+                farm_address=(farmer.farm_address or farmer.landmark),
+            )
+            if farmer is not None
+            else None
+        ),
+        pickup=schemas.RiderTripLocationInfo(
+            # Prefer the Trip's frozen pickup snapshot over the
+            # ProduceRequest's possibly-edited address.
+            address=(
+                trip.pickup_address
+                or (pr.pickup_address if pr is not None else None)
+            ),
+            landmark=(
+                trip.pickup_landmark
+                or (pr.pickup_landmark if pr is not None else None)
+            ),
+            latitude=pickup_lat,
+            longitude=pickup_lng,
+        ),
+        mandi=schemas.RiderTripMandiInfo(
+            mandi_name=mandi_name,
+            # Not collected anywhere yet — the client renders "—".
+            trader_name=None,
+            stall_number=stall_number,
+        ),
+        crop=schemas.RiderTripCropInfo(
+            crop_name=(pr.crop_type if pr is not None else "—"),
+            weight_kg=float(pr.weight_kg or 0) if pr is not None else 0.0,
+            crate_count=(pr.crate_count or 0) if pr is not None else 0,
+        ),
+        fare=fare,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1104,7 +1576,7 @@ def _compute_settlement_values(
 ) -> dict:
     """Single source of truth for the fare/payout arithmetic."""
     base_fare = 50.0
-    distance_fare = distance_km * 15.0
+    distance_fare = distance_km * _DISTANCE_FARE_PER_KM
     weight_surcharge = max(0.0, weight_kg - 50.0) * 2.0
     rider_fare = base_fare + distance_fare + weight_surcharge
 

@@ -8,6 +8,7 @@ import 'package:provider/provider.dart';
 import '../providers/auth_provider.dart';
 import 'login_screen.dart';
 import 'rider_common.dart';
+import 'rider_trip_history_screen.dart';
 
 // ============================================================================
 // Logout helper (public — reused by the dashboard AppBar icon)
@@ -344,6 +345,16 @@ class _RiderAccountScreenState extends State<RiderAccountScreen>
     );
   }
 
+  /// Pushes the Trip History screen. Extracted so the tile's onTap is a
+  /// one-liner and the pushed route has a single definition.
+  void _openTripHistory() {
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => const RiderTripHistoryScreen(),
+      ),
+    );
+  }
+
   // -------------------------------------------------------------------------
   // Build
   // -------------------------------------------------------------------------
@@ -430,6 +441,25 @@ class _RiderAccountScreenState extends State<RiderAccountScreen>
                   onTap: () => _openSheet(
                     _RoutesSheet(account: _account),
                   ),
+                ),
+              ],
+            ),
+
+            // ----- Trips & Earnings ---------------------------------------
+            // NEW — sits between the vehicle/routes sections and the
+            // payouts section, matching the task's "between VEHICLE
+            // DETAILS and PAYOUT BANK DETAILS" placement spec. Contains
+            // the Trip History tile that navigates to
+            // RiderTripHistoryScreen.
+            _SectionHeader(title: 'TRIPS & EARNINGS'),
+            _SettingsCard(
+              children: [
+                _SettingsTile(
+                  icon: Icons.history,
+                  title: 'Trip History',
+                  subtitle:
+                      'Past deliveries, fares earned & cash records',
+                  onTap: _openTripHistory,
                 ),
               ],
             ),
