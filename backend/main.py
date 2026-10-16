@@ -1177,6 +1177,87 @@ def update_rider_payouts(
 
 
 # ---------------------------------------------------------------------------
+# Rider Trips — Trip History + Single-trip Detail
+# ---------------------------------------------------------------------------
+#
+# NOTE ON ROUTE ORDERING: `/rider/trips/history` is declared BEFORE
+# `/rider/trips/{trip_id}`. FastAPI matches routes in registration
+# order, and the path converter for `{trip_id}` is UUID — "history" is
+# not a UUID, so if the parameterized route were registered first, the
+# history request would 422 on UUID validation instead of falling
+# through to the correct handler. Do not reorder these two decorators.
+# ---------------------------------------------------------------------------
+
+@app.get(
+    "/rider/trips/history",
+    response_model=List[schemas.RiderTripHistoryItemResponse],
+    summary="List the rider's completed and cancelled trips (summary view)",
+)
+def get_rider_trip_history(
+    current_user: models.User = Depends(auth.require_role("RIDER")),
+    db: Session = Depends(get_db),
+):
+    """
+    Return every DELIVERED or CANCELLED trip assigned to the
+    authenticated rider, newest first, in the compact 4-line summary
+    shape the Trip History list renders.
+
+    Active trips (ACCEPTED, PICKED_UP) are deliberately excluded — the
+    rider's Active Trips tab is the right place for those, and this
+    screen is framed as a *history* of completed work.
+
+    Fields returned per row:
+      id, crop_name, weight_kg, fare_earned, status, created_at,
+      pickup_village, mandi_name, stall_number, payment_method
+
+    `payment_method` is "Wallet Credited" (settlement PAID) or
+    "Cash Collected" (settlement still PENDING); it's "—" for cancelled
+    trips. `pickup_village` and `mandi_name` / `stall_number` are
+    derived server-side from the stored free-text fields — see
+    `crud.get_rider_trip_history` for the derivation rules.
+    """
+    try:
+        return crud.get_rider_trip_history(db, current_user.id)
+    except SQLAlchemyError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get(
+    "/rider/trips/{trip_id}",
+    response_model=schemas.RiderTripDetailResponse,
+    summary="Get full nested details for one of the rider's trips",
+)
+def get_rider_trip_detail(
+    trip_id: UUID,
+    current_user: models.User = Depends(auth.require_role("RIDER")),
+    db: Session = Depends(get_db),
+):
+    """
+    Return the full nested detail view for one of the authenticated
+    rider's trips.
+
+    Response shape (see RiderTripDetailResponse for the full doc):
+
+      - id / status / completed_at / distance_km
+        drive the completion header (delivery timestamp + distance).
+      - farmer        — name, phone, farm address.
+      - pickup        — pickup address block (lat/lng when available).
+      - mandi         — APMC mandi + stall number (parsed server-side
+                        out of the ProduceRequest's dropoff string).
+      - crop          — crop type, weight, crate count.
+      - fare          — fare breakdown (gross, commission, net) plus
+                        payment mode. None for CANCELLED trips.
+
+    404 if the trip doesn't exist OR belongs to a different rider —
+    trip existence is deliberately not leaked across accounts.
+    """
+    result = crud.get_rider_trip_detail(db, trip_id, current_user.id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Trip not found")
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Produce Requests
 # ---------------------------------------------------------------------------
 

@@ -1040,6 +1040,154 @@ class FarmerOrderDetailResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Rider Trip History schemas
+# ---------------------------------------------------------------------------
+
+class RiderTripHistoryItemResponse(BaseModel):
+    """
+    Compact summary card for one row in the rider's Trip History list.
+
+    Only trips with status DELIVERED or CANCELLED appear here — active
+    trips (ACCEPTED, PICKED_UP) are surfaced by `GET /trips/active`.
+
+    ## Status vocabulary
+
+      DELIVERED — the trip completed successfully
+      CANCELLED — the trip was cancelled before delivery
+
+    ## Payment method vocabulary
+
+      "Cash Collected"   — rider was paid in cash at delivery (the
+                            Settlement row exists but is still PENDING)
+      "Wallet Credited"  — rider's payout was credited via the platform
+                            wallet (Settlement PAID)
+      "—"                — no settlement (typically a CANCELLED trip)
+
+    ## Derived fields
+
+    `pickup_village` / `mandi_name` / `stall_number` follow the same
+    derivation rules as the farmer's Order History — see
+    `crud._extract_pickup_village` and `crud._split_dropoff`.
+    """
+    id: UUID
+    crop_name: str
+    weight_kg: float
+    fare_earned: float
+    status: str  # DELIVERED / CANCELLED
+    created_at: datetime
+    pickup_village: Optional[str] = None
+    mandi_name: Optional[str] = None
+    stall_number: Optional[str] = None
+    payment_method: str = "—"
+
+
+class RiderTripFarmerInfo(BaseModel):
+    """
+    Farmer identity shown to the assigned rider on the detail screen.
+
+    The rider already has the farmer's contact details unlocked the
+    moment they accepted the trip (see `TripActiveOut`); this schema
+    is the same information re-exposed through the trip-history lens.
+    """
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    full_name: str
+    phone_number: Optional[str] = None
+    farm_address: Optional[str] = None
+
+
+class RiderTripLocationInfo(BaseModel):
+    """
+    A pickup or dropoff location block for the rider's trip detail view.
+
+    Both `address` and `landmark` are optional — the farmer may have
+    shipped with only coordinates, in which case `latitude`/`longitude`
+    carry the information and the client renders those.
+    """
+    address: Optional[str] = None
+    landmark: Optional[str] = None
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
+
+
+class RiderTripMandiInfo(BaseModel):
+    """
+    The APMC mandi where the produce was unloaded.
+
+    `trader_name` isn't collected by the current booking flow — kept
+    Optional so the client renders "—" without a schema change once the
+    field is added downstream. `mandi_name` and `stall_number` are
+    parsed server-side out of the ProduceRequest's `dropoff_location`
+    string (formatted as "MandiName - StallInfo" by the Book Transport
+    form).
+    """
+    mandi_name: Optional[str] = None
+    trader_name: Optional[str] = None
+    stall_number: Optional[str] = None
+
+
+class RiderTripCropInfo(BaseModel):
+    """Produce that was carried on this trip."""
+    crop_name: str
+    weight_kg: float
+    crate_count: int
+
+
+class RiderTripFareBreakdown(BaseModel):
+    """
+    Fare breakdown shown on the trip detail screen.
+
+    `gross_transport_fare` is the Settlement's `total_payout` — what
+    the platform charges the farmer for the haul, and therefore what
+    the rider is nominally owed before commission.
+    `platform_commission` is the platform's cut, computed in crud.py
+    from `_RIDER_PLATFORM_COMMISSION_RATE`. `net_earnings` is what the
+    rider actually receives.
+
+    `payment_method` is "QR Payment at Mandi" when the settlement is
+    PAID (funds settled through the wallet), and "Cash in Hand" when
+    the settlement is still PENDING (rider collected at the mandi).
+
+    Cancelled trips carry no fare block at all — the parent response
+    sets `fare=None`.
+    """
+    gross_transport_fare: float
+    platform_commission: float
+    net_earnings: float
+    payment_method: str
+
+
+class RiderTripDetailResponse(BaseModel):
+    """
+    Full nested trip view for the Rider Trip Detail screen.
+
+    Structure mirrors the Flutter screen top-to-bottom:
+
+      - id / status / completed_at / distance_km
+        drive the completion header (delivery timestamp + total distance).
+      - farmer (None only in the theoretically-impossible case where the
+        owning ProduceRequest was hard-deleted) drives the "Farmer Info"
+        section.
+      - pickup drives the "Pickup" half of Location Details.
+      - mandi drives the "Mandi Unloading Info" section.
+      - crop drives the "Crop Load" section.
+      - fare is None for CANCELLED trips; otherwise drives the
+        "Fare & Earnings Breakdown" section.
+    """
+    id: UUID
+    status: str  # DELIVERED / CANCELLED
+    completed_at: Optional[datetime] = None
+    distance_km: Optional[float] = None
+
+    farmer: Optional[RiderTripFarmerInfo] = None
+    pickup: RiderTripLocationInfo
+    mandi: RiderTripMandiInfo
+    crop: RiderTripCropInfo
+    fare: Optional[RiderTripFareBreakdown] = None
+
+
+# ---------------------------------------------------------------------------
 # CrateScan schemas
 # ---------------------------------------------------------------------------
 
