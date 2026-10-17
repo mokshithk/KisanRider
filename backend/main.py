@@ -305,32 +305,59 @@ _DATA_GOV_BASE_URL = (
     "https://api.data.gov.in/resource/9ef84268-d588-465a-a308-a864a43d0070"
 )
 
-_MANDI_RATE_DISTRICTS = [
-    "Kolar",
-    "Bengaluru Urban",
-    "Mandya",
+# All 31 Karnataka districts. Used as the canonical list in the response's
+# `available_districts` field, so the frontend's dropdown is always in sync
+# with what the backend actually serves. Must stay aligned with
+# `_MOCK_MANDI_RATES` below — every district here should have an entry there.
+_MANDI_RATE_DISTRICTS: list[str] = [
+    "Bagalkot",
+    "Ballari",
     "Belagavi",
+    "Bengaluru Rural",
+    "Bengaluru Urban",
+    "Bidar",
+    "Chamarajanagar",
+    "Chikkaballapura",
+    "Chikkamagaluru",
+    "Chitradurga",
+    "Dakshina Kannada",
     "Davanagere",
+    "Dharwad",
+    "Gadag",
+    "Hassan",
+    "Haveri",
+    "Kalaburagi",
+    "Kodagu",
+    "Kolar",
+    "Koppal",
+    "Mandya",
+    "Mysuru",
+    "Raichur",
+    "Ramanagara",
+    "Shivamogga",
+    "Tumakuru",
+    "Udupi",
+    "Uttara Kannada",
+    "Vijayapura",
+    "Yadgir",
+    "Vijayanagara",
 ]
 
+# Mock rates for every district the dropdown offers. Each entry is a real
+# crop the district is known for, priced plausibly for a 2024-25 season.
+# Values are bare integers (₹ per quintal) — formatted into
+# "₹X / Qtl" at the API boundary so the wire format stays consistent
+# regardless of whether the row originated here or from Data.gov.in.
 _MOCK_MANDI_RATES: dict[str, list[dict]] = {
-    "Kolar": [
-        {"crop": "Tomato",  "modal_price": 2200, "mandi": "Kolar APMC"},
-        {"crop": "Onion",   "modal_price": 2800, "mandi": "Kolar APMC"},
-        {"crop": "Potato",  "modal_price": 1900, "mandi": "Bangarpet APMC"},
-        {"crop": "Beans",   "modal_price": 3400, "mandi": "Chintamani APMC"},
+    "Bagalkot": [
+        {"crop": "Sugarcane", "modal_price": 320, "mandi": "Bagalkot APMC"},
+        {"crop": "Onion",     "modal_price": 2600, "mandi": "Bagalkot APMC"},
+        {"crop": "Jowar",     "modal_price": 3100, "mandi": "Jamkhandi APMC"},
     ],
-    "Bengaluru Urban": [
-        {"crop": "Tomato",  "modal_price": 2100, "mandi": "Yeshwanthpur APMC"},
-        {"crop": "Carrot",  "modal_price": 3000, "mandi": "Yeshwanthpur APMC"},
-        {"crop": "Beans",   "modal_price": 3600, "mandi": "Binny Mill APMC"},
-        {"crop": "Onion",   "modal_price": 2600, "mandi": "Binny Mill APMC"},
-    ],
-    "Mandya": [
-        {"crop": "Sugarcane", "modal_price": 320, "mandi": "Mandya APMC"},
-        {"crop": "Ragi",      "modal_price": 3300, "mandi": "Mandya APMC"},
-        {"crop": "Paddy",     "modal_price": 2200, "mandi": "Maddur APMC"},
-        {"crop": "Coconut",   "modal_price": 1800, "mandi": "Maddur APMC"},
+    "Ballari": [
+        {"crop": "Onion",     "modal_price": 2400, "mandi": "Ballari APMC"},
+        {"crop": "Cotton",    "modal_price": 6800, "mandi": "Hospet APMC"},
+        {"crop": "Maize",     "modal_price": 1950, "mandi": "Ballari APMC"},
     ],
     "Belagavi": [
         {"crop": "Sugarcane", "modal_price": 310, "mandi": "Belagavi APMC"},
@@ -338,19 +365,186 @@ _MOCK_MANDI_RATES: dict[str, list[dict]] = {
         {"crop": "Soybean",   "modal_price": 4300, "mandi": "Bailhongal APMC"},
         {"crop": "Onion",     "modal_price": 2700, "mandi": "Bailhongal APMC"},
     ],
+    "Bengaluru Rural": [
+        {"crop": "Tomato",    "modal_price": 2050, "mandi": "Doddaballapura APMC"},
+        {"crop": "Beans",     "modal_price": 3500, "mandi": "Devanahalli APMC"},
+        {"crop": "Ragi",      "modal_price": 3300, "mandi": "Nelamangala APMC"},
+    ],
+    "Bengaluru Urban": [
+        {"crop": "Tomato",    "modal_price": 2100, "mandi": "Yeshwanthpur APMC"},
+        {"crop": "Carrot",    "modal_price": 3000, "mandi": "Yeshwanthpur APMC"},
+        {"crop": "Beans",     "modal_price": 3600, "mandi": "Binny Mill APMC"},
+        {"crop": "Onion",     "modal_price": 2600, "mandi": "Binny Mill APMC"},
+    ],
+    "Bidar": [
+        {"crop": "Tur dal",   "modal_price": 7200, "mandi": "Bidar APMC"},
+        {"crop": "Soybean",   "modal_price": 4400, "mandi": "Bidar APMC"},
+        {"crop": "Sugarcane", "modal_price": 305,  "mandi": "Bhalki APMC"},
+    ],
+    "Chamarajanagar": [
+        {"crop": "Ragi",      "modal_price": 3250, "mandi": "Chamarajanagar APMC"},
+        {"crop": "Paddy",     "modal_price": 2250, "mandi": "Chamarajanagar APMC"},
+        {"crop": "Banana",    "modal_price": 1800, "mandi": "Kollegal APMC"},
+    ],
+    "Chikkaballapura": [
+        {"crop": "Tomato",    "modal_price": 2150, "mandi": "Chikkaballapura APMC"},
+        {"crop": "Onion",     "modal_price": 2650, "mandi": "Chickballapur APMC"},
+        {"crop": "Ragi",      "modal_price": 3350, "mandi": "Gauribidanur APMC"},
+    ],
+    "Chikkamagaluru": [
+        {"crop": "Coffee",    "modal_price": 12500,  "mandi": "Chikkamagaluru APMC"},
+        {"crop": "Pepper",    "modal_price": 48000,  "mandi": "Chikkamagaluru APMC"},
+        {"crop": "Arecanut",  "modal_price": 38000,  "mandi": "Kadur APMC"},
+        {"crop": "Cardamom",  "modal_price": 180000, "mandi": "Chikkamagaluru APMC"},
+    ],
+    "Chitradurga": [
+        {"crop": "Onion",     "modal_price": 2500, "mandi": "Chitradurga APMC"},
+        {"crop": "Maize",     "modal_price": 2000, "mandi": "Chitradurga APMC"},
+        {"crop": "Ragi",      "modal_price": 3200, "mandi": "Hiriyur APMC"},
+    ],
+    "Dakshina Kannada": [
+        {"crop": "Arecanut",  "modal_price": 41000, "mandi": "Puttur APMC"},
+        {"crop": "Cashew",    "modal_price": 12500, "mandi": "Mangaluru APMC"},
+        {"crop": "Coconut",   "modal_price": 2100,  "mandi": "Puttur APMC"},
+        {"crop": "Cocoa",     "modal_price": 32000, "mandi": "Mangaluru APMC"},
+    ],
     "Davanagere": [
         {"crop": "Maize",     "modal_price": 2000, "mandi": "Davanagere APMC"},
         {"crop": "Paddy",     "modal_price": 2300, "mandi": "Davanagere APMC"},
         {"crop": "Cotton",    "modal_price": 6800, "mandi": "Harihar APMC"},
         {"crop": "Sunflower", "modal_price": 6000, "mandi": "Harihar APMC"},
     ],
+    "Dharwad": [
+        {"crop": "Onion",     "modal_price": 2600, "mandi": "Hubballi APMC"},
+        {"crop": "Maize",     "modal_price": 1980, "mandi": "Dharwad APMC"},
+        {"crop": "Cotton",    "modal_price": 6900, "mandi": "Dharwad APMC"},
+    ],
+    "Gadag": [
+        {"crop": "Onion",     "modal_price": 2550, "mandi": "Gadag APMC"},
+        {"crop": "Jowar",     "modal_price": 3150, "mandi": "Gadag APMC"},
+        {"crop": "Maize",     "modal_price": 1960, "mandi": "Ron APMC"},
+    ],
+    "Hassan": [
+        {"crop": "Coffee",    "modal_price": 12200, "mandi": "Hassan APMC"},
+        {"crop": "Paddy",     "modal_price": 2280,  "mandi": "Hassan APMC"},
+        {"crop": "Arecanut",  "modal_price": 39000, "mandi": "Sakleshpur APMC"},
+        {"crop": "Coconut",   "modal_price": 2050,  "mandi": "Arakalagud APMC"},
+    ],
+    "Haveri": [
+        {"crop": "Maize",     "modal_price": 1990, "mandi": "Haveri APMC"},
+        {"crop": "Onion",     "modal_price": 2620, "mandi": "Haveri APMC"},
+        {"crop": "Cotton",    "modal_price": 6750, "mandi": "Ranebennur APMC"},
+    ],
+    "Kalaburagi": [
+        {"crop": "Tur dal",   "modal_price": 7400, "mandi": "Kalaburagi APMC"},
+        {"crop": "Jowar",     "modal_price": 3200, "mandi": "Kalaburagi APMC"},
+        {"crop": "Sunflower", "modal_price": 6100, "mandi": "Afzalpur APMC"},
+    ],
+    "Kodagu": [
+        {"crop": "Coffee",    "modal_price": 12800,  "mandi": "Madikeri APMC"},
+        {"crop": "Pepper",    "modal_price": 49000,  "mandi": "Madikeri APMC"},
+        {"crop": "Cardamom",  "modal_price": 185000, "mandi": "Kushalnagar APMC"},
+        {"crop": "Arecanut",  "modal_price": 40000,  "mandi": "Virajpet APMC"},
+    ],
+    "Kolar": [
+        {"crop": "Tomato",  "modal_price": 2200, "mandi": "Kolar APMC"},
+        {"crop": "Onion",   "modal_price": 2800, "mandi": "Kolar APMC"},
+        {"crop": "Potato",  "modal_price": 1900, "mandi": "Bangarpet APMC"},
+        {"crop": "Beans",   "modal_price": 3400, "mandi": "Chintamani APMC"},
+    ],
+    "Koppal": [
+        {"crop": "Paddy",     "modal_price": 2320, "mandi": "Koppal APMC"},
+        {"crop": "Maize",     "modal_price": 2020, "mandi": "Koppal APMC"},
+        {"crop": "Onion",     "modal_price": 2580, "mandi": "Gangavathi APMC"},
+    ],
+    "Mandya": [
+        {"crop": "Sugarcane", "modal_price": 320,  "mandi": "Mandya APMC"},
+        {"crop": "Ragi",      "modal_price": 3300, "mandi": "Mandya APMC"},
+        {"crop": "Paddy",     "modal_price": 2200, "mandi": "Maddur APMC"},
+        {"crop": "Coconut",   "modal_price": 1800, "mandi": "Maddur APMC"},
+    ],
+    "Mysuru": [
+        {"crop": "Ragi",      "modal_price": 3280, "mandi": "Mysuru APMC"},
+        {"crop": "Paddy",     "modal_price": 2270, "mandi": "Mysuru APMC"},
+        {"crop": "Banana",    "modal_price": 1750, "mandi": "Nanjangud APMC"},
+        {"crop": "Sugarcane", "modal_price": 315,  "mandi": "Mysuru APMC"},
+    ],
+    "Raichur": [
+        {"crop": "Paddy",     "modal_price": 2340, "mandi": "Raichur APMC"},
+        {"crop": "Cotton",    "modal_price": 7000, "mandi": "Raichur APMC"},
+        {"crop": "Tur dal",   "modal_price": 7300, "mandi": "Sindhanur APMC"},
+    ],
+    "Ramanagara": [
+        {"crop": "Ragi",      "modal_price": 3320, "mandi": "Ramanagara APMC"},
+        {"crop": "Coconut",   "modal_price": 1950, "mandi": "Ramanagara APMC"},
+        {"crop": "Tomato",    "modal_price": 2080, "mandi": "Channapatna APMC"},
+    ],
+    "Shivamogga": [
+        {"crop": "Arecanut",  "modal_price": 38500, "mandi": "Shivamogga APMC"},
+        {"crop": "Paddy",     "modal_price": 2260,  "mandi": "Shivamogga APMC"},
+        {"crop": "Coconut",   "modal_price": 2050,  "mandi": "Bhadravathi APMC"},
+        {"crop": "Ginger",    "modal_price": 8500,  "mandi": "Sagar APMC"},
+    ],
+    "Tumakuru": [
+        {"crop": "Coconut",   "modal_price": 2000,  "mandi": "Tumakuru APMC"},
+        {"crop": "Ragi",      "modal_price": 3260,  "mandi": "Tumakuru APMC"},
+        {"crop": "Paddy",     "modal_price": 2240,  "mandi": "Tiptur APMC"},
+        {"crop": "Arecanut",  "modal_price": 37500, "mandi": "Tiptur APMC"},
+    ],
+    "Udupi": [
+        {"crop": "Paddy",     "modal_price": 2300,  "mandi": "Udupi APMC"},
+        {"crop": "Coconut",   "modal_price": 2100,  "mandi": "Udupi APMC"},
+        {"crop": "Arecanut",  "modal_price": 40000, "mandi": "Kundapura APMC"},
+        {"crop": "Cashew",    "modal_price": 12500, "mandi": "Karkala APMC"},
+    ],
+    "Uttara Kannada": [
+        {"crop": "Arecanut",  "modal_price": 40500, "mandi": "Sirsi APMC"},
+        {"crop": "Pepper",    "modal_price": 48500, "mandi": "Sirsi APMC"},
+        {"crop": "Coconut",   "modal_price": 2050,  "mandi": "Kumta APMC"},
+        {"crop": "Cashew",    "modal_price": 12300, "mandi": "Kumta APMC"},
+    ],
+    "Vijayapura": [
+        {"crop": "Sugarcane", "modal_price": 315,  "mandi": "Vijayapura APMC"},
+        {"crop": "Onion",     "modal_price": 2700, "mandi": "Vijayapura APMC"},
+        {"crop": "Grapes",    "modal_price": 8500, "mandi": "Vijayapura APMC"},
+        {"crop": "Jowar",     "modal_price": 3180, "mandi": "Indi APMC"},
+    ],
+    "Yadgir": [
+        {"crop": "Tur dal",   "modal_price": 7250, "mandi": "Yadgir APMC"},
+        {"crop": "Paddy",     "modal_price": 2310, "mandi": "Shahapur APMC"},
+        {"crop": "Cotton",    "modal_price": 6850, "mandi": "Yadgir APMC"},
+    ],
+    "Vijayanagara": [
+        {"crop": "Paddy",     "modal_price": 2280, "mandi": "Hosapete APMC"},
+        {"crop": "Jowar",     "modal_price": 3120, "mandi": "Hosapete APMC"},
+        {"crop": "Onion",     "modal_price": 2550, "mandi": "Hagaribommanahalli APMC"},
+    ],
 }
+
+# Sanity: the dropdown list and the mock dataset must cover exactly the same
+# districts. If you add a district to one, add it to the other.
+assert set(_MANDI_RATE_DISTRICTS) == set(_MOCK_MANDI_RATES.keys()), (
+    "District lists diverged — _MANDI_RATE_DISTRICTS and "
+    "_MOCK_MANDI_RATES must cover the same districts"
+)
 
 
 def _mock_rates_for(district: str) -> list[dict]:
-    chosen = _MOCK_MANDI_RATES.get(district) or _MOCK_MANDI_RATES["Kolar"]
+    """
+    Return mock rates for one district, each tagged with its `district`.
+
+    Returns an EMPTY list for a district we don't have data for. The old
+    behavior silently returned Kolar's data under the requested district's
+    label, which is misleading for a farmer who selected, say,
+    Dakshina Kannada. An honest empty list is the right contract — the
+    frontend renders a "no rates" message instead.
+    """
+    chosen = _MOCK_MANDI_RATES.get(district)
+    if chosen is None:
+        return []
     return [
         {
+            "district": district,
             "crop": r["crop"],
             "modal_price": f"₹{r['modal_price']} / Qtl",
             "mandi": r["mandi"],
@@ -359,129 +553,230 @@ def _mock_rates_for(district: str) -> list[dict]:
     ]
 
 
-@app.get("/mandi-rates/")
-async def get_mandi_rates(
-    district: Optional[str] = Query(None, max_length=80),
-):
+def _normalize_district_filter(raw: str) -> Optional[str]:
     """
-    Today's modal mandi prices for a Karnataka district.
+    Parse the incoming `district` query param.
 
-    Tries Data.gov.in's Agmarknet resource first when DATA_GOV_API_KEY is
-    set; falls back to a small local mock dataset on any failure.
+    Returns None when the caller wants "all districts" — either because
+    they omitted the param or because they sent a sentinel value the
+    Flutter client uses ("All Karnataka"). Everything else is passed
+    through trimmed.
     """
-    selected_district = (district or "Kolar").strip()
+    if not raw or not raw.strip():
+        return None
+    cleaned = raw.strip()
+    if cleaned.lower() in ("all", "all karnataka", "karnataka"):
+        return None
+    return cleaned
 
-    api_key = os.environ.get("DATA_GOV_API_KEY")
-    rates: list[dict] | None = None
 
-    if api_key:
+def _parse_live_records(
+    records: list[dict],
+    filter_district: Optional[str] = None,
+) -> list[dict]:
+    """
+    Parse a list of Data.gov.in Agmarknet records into the same shape
+    `_mock_rates_for` produces.
+
+    When `filter_district` is set, only rows matching that district survive.
+    When it's None, every Karnataka row is kept and tagged with whatever
+    district the source says it came from. This single helper handles both
+    the "single district" and "all Karnataka" live-data paths, so the
+    filtering logic exists in exactly one place.
+    """
+    parsed: list[dict] = []
+    for rec in records:
+        commodity = rec.get("commodity") or rec.get("Commodity")
+        modal = rec.get("modal_price") or rec.get("Modal_Price")
+        market = rec.get("market") or rec.get("Market")
+        rec_district = (
+            rec.get("district")
+            or rec.get("District")
+            or (filter_district or "")
+        )
+
+        if not commodity or not modal or not market:
+            continue
         try:
-            async with httpx.AsyncClient(timeout=25.0) as client:
-                resp = await client.get(
+            modal_val = float(modal)
+        except (TypeError, ValueError):
+            continue
+        if modal_val <= 0:
+            continue
+
+        rec_district_str = str(rec_district).strip()
+        if (
+            filter_district is not None
+            and rec_district_str.lower() != filter_district.lower()
+        ):
+            continue
+
+        parsed.append({
+            "district": rec_district_str.title() or (filter_district or "Karnataka"),
+            "crop": str(commodity).strip(),
+            "modal_price": f"₹{int(modal_val)} / Qtl",
+            "mandi": str(market).strip(),
+        })
+    return parsed
+
+
+async def _fetch_live_rates(
+    api_key: str,
+    district: Optional[str],
+) -> Optional[list[dict]]:
+    """
+    Try to fetch live Agmarknet rates from Data.gov.in.
+
+    Returns the parsed list on success, or None on any failure. `district`
+    = None means "all Karnataka". Failures are logged and swallowed; the
+    caller falls back to mock data.
+    """
+    try:
+        async with httpx.AsyncClient(timeout=25.0) as client:
+            params = {
+                "api-key": api_key,
+                "format": "json",
+                # All-mode asks for a bigger page — the whole state's
+                # rate table is bigger than any one district's.
+                "limit": 500 if district is None else 100,
+                "filters[state.keyword]": "Karnataka",
+            }
+            if district is not None:
+                params["filters[district]"] = district
+
+            resp = await client.get(
+                _DATA_GOV_BASE_URL,
+                params=params,
+                headers={"User-Agent": _OVERPASS_USER_AGENT},
+            )
+            print(f"[mandi-rates] filtered status={resp.status_code}")
+            resp.raise_for_status()
+            payload = resp.json()
+            records = (
+                payload.get("records") if isinstance(payload, dict) else None
+            )
+
+            # Unfiltered fallback: some districts return zero rows on the
+            # filtered endpoint even though they're present in the state
+            # feed. Retry without the district filter and match client-side.
+            # (Skipped for all-mode — that request is already unfiltered.)
+            if not records and district is not None:
+                print(
+                    "[mandi-rates] filtered returned nothing, retrying "
+                    "unfiltered..."
+                )
+                resp2 = await client.get(
                     _DATA_GOV_BASE_URL,
                     params={
                         "api-key": api_key,
                         "format": "json",
-                        "limit": 100,
-                        "filters[state.keyword]": "Karnataka",
-                        "filters[district]": selected_district,
+                        "limit": 500,
                     },
                     headers={"User-Agent": _OVERPASS_USER_AGENT},
                 )
-                print(f"[mandi-rates] filtered status={resp.status_code}")
-                resp.raise_for_status()
-                payload = resp.json()
-                print(
-                    f"[mandi-rates] filtered total={payload.get('total')} "
-                    f"count={payload.get('count')} "
-                    f"records={len(payload.get('records', []))}"
+                print(f"[mandi-rates] unfiltered status={resp2.status_code}")
+                resp2.raise_for_status()
+                payload2 = resp2.json()
+                all_records = (
+                    payload2.get("records", [])
+                    if isinstance(payload2, dict)
+                    else []
                 )
+                records = [
+                    r for r in all_records
+                    if (r.get("state") or r.get("State") or "")
+                    .strip().lower() == "karnataka"
+                ]
 
-                records = (
-                    payload.get("records")
-                    if isinstance(payload, dict)
-                    else None
-                )
+            if not records:
+                return None
 
-                if not records:
-                    print("[mandi-rates] filtered returned nothing, retrying unfiltered...")
-                    resp2 = await client.get(
-                        _DATA_GOV_BASE_URL,
-                        params={
-                            "api-key": api_key,
-                            "format": "json",
-                            "limit": 200,
-                        },
-                        headers={"User-Agent": _OVERPASS_USER_AGENT},
-                    )
-                    print(f"[mandi-rates] unfiltered status={resp2.status_code}")
-                    resp2.raise_for_status()
-                    payload2 = resp2.json()
-                    all_records = (
-                        payload2.get("records", [])
-                        if isinstance(payload2, dict)
-                        else []
-                    )
-                    print(f"[mandi-rates] unfiltered total records={len(all_records)}")
+            parsed = _parse_live_records(records, filter_district=district)
+            return parsed if parsed else None
+    except httpx.HTTPError as e:
+        print(f"[mandi-rates] HTTP error: {type(e).__name__}: {e}")
+        if hasattr(e, "response") and e.response is not None:
+            print(f"[mandi-rates] response body: {e.response.text[:500]}")
+        return None
+    except Exception as e:
+        print(f"[mandi-rates] unexpected error: {type(e).__name__}: {e}")
+        return None
 
-                    def _field(rec, *names):
-                        for n in names:
-                            v = rec.get(n)
-                            if v:
-                                return str(v).strip().lower()
-                        return ""
 
-                    records = [
-                        r for r in all_records
-                        if _field(r, "state", "State") == "karnataka"
-                        and _field(r, "district", "District")
-                        == selected_district.lower()
-                    ]
-                    print(f"[mandi-rates] client-side filtered to {len(records)} rows")
+@app.get("/mandi-rates/")
+async def get_mandi_rates(
+    district: Optional[str] = Query(
+        None,
+        max_length=80,
+        description=(
+            "District name, or omit for all Karnataka. Also accepts "
+            "'All Karnataka' / 'all' as sentinel values."
+        ),
+    ),
+):
+    """
+    Today's modal mandi prices for a Karnataka district — or all of them.
 
-            if records:
-                parsed: list[dict] = []
-                for rec in records:
-                    commodity = rec.get("commodity") or rec.get("Commodity")
-                    modal = rec.get("modal_price") or rec.get("Modal_Price")
-                    market = rec.get("market") or rec.get("Market")
+    Tries Data.gov.in's Agmarknet resource first when DATA_GOV_API_KEY is
+    set; falls back to a small local mock dataset on any failure.
 
-                    if not commodity or not modal or not market:
-                        continue
-                    try:
-                        modal_val = float(modal)
-                    except (TypeError, ValueError):
-                        continue
-                    if modal_val <= 0:
-                        continue
+    ## Response shape
 
-                    parsed.append({
-                        "crop": str(commodity).strip(),
-                        "modal_price": f"₹{int(modal_val)} / Qtl",
-                        "mandi": str(market).strip(),
-                    })
+      {
+        "status": "success",
+        "source": "live" | "mock",
+        "selected_district": "Kolar" | null,
+        "available_districts": ["Bagalkot", ..., "Vijayanagara"],
+        "rates": [
+          {
+            "district": "Kolar",
+            "crop": "Tomato",
+            "modal_price": "₹2200 / Qtl",
+            "mandi": "Kolar APMC"
+          },
+          ...
+        ]
+      }
 
-                if parsed:
-                    rates = parsed
-        except httpx.HTTPError as e:
-            print(f"[mandi-rates] HTTP error: {type(e).__name__}: {e}")
-            if hasattr(e, "response") and e.response is not None:
-                print(f"[mandi-rates] response body: {e.response.text[:500]}")
-            rates = None
-        except Exception as e:
-            print(f"[mandi-rates] unexpected error: {type(e).__name__}: {e}")
-            rates = None
+    ## "All Karnataka" mode
 
-    if not rates:
-        rates = _mock_rates_for(selected_district)
-        source = "mock"
-    else:
+    Omitting `district` — or sending `district=All Karnataka` — returns
+    rates across every district in one call. The client can then sort and
+    filter the merged list entirely client-side without fanning out to
+    per-district requests. `selected_district` is `null` in this mode.
+
+    ## Unknown districts
+
+    An unrecognized `district` returns `rates: []` rather than silently
+    substituting Kolar's data under a misleading label. The client's empty
+    state is the honest surface.
+    """
+    selected = _normalize_district_filter(district or "")
+
+    api_key = os.environ.get("DATA_GOV_API_KEY")
+    live_rates: Optional[list[dict]] = None
+    if api_key:
+        live_rates = await _fetch_live_rates(api_key, selected)
+
+    if live_rates:
+        rates = live_rates
         source = "live"
+    else:
+        if selected is None:
+            # All-Karnataka: merge every district's mock rates into one
+            # flat list. Each entry carries its own `district` field so
+            # the client can render it if it wants.
+            rates = []
+            for d in _MANDI_RATE_DISTRICTS:
+                rates.extend(_mock_rates_for(d))
+        else:
+            rates = _mock_rates_for(selected)
+        source = "mock"
 
     return {
         "status": "success",
         "source": source,
-        "selected_district": selected_district,
+        "selected_district": selected,
         "available_districts": _MANDI_RATE_DISTRICTS,
         "rates": rates,
     }
