@@ -12,6 +12,7 @@ import random  # noqa: F401  (kept for parity with downstream modules)
 import time
 import uuid
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import List, Optional
 from uuid import UUID
@@ -20,9 +21,9 @@ import httpx
 from fastapi import Depends, FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from sqlalchemy import text
+from sqlalchemy import and_, or_, text
 from sqlalchemy.exc import SQLAlchemyError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 import auth
 import config
@@ -1909,15 +1910,21 @@ def update_rider_payouts(
 
 
 # ---------------------------------------------------------------------------
-# Rider Trips — Trip History + Single-trip Detail
+# Rider Trips — Trip History + Active List + Single-trip Detail + Actions
 # ---------------------------------------------------------------------------
 #
-# NOTE ON ROUTE ORDERING: `/rider/trips/history` is declared BEFORE
-# `/rider/trips/{trip_id}`. FastAPI matches routes in registration
-# order, and the path converter for `{trip_id}` is UUID — "history" is
-# not a UUID, so if the parameterized route were registered first, the
-# history request would 422 on UUID validation instead of falling
-# through to the correct handler. Do not reorder these two decorators.
+# ROUTE ORDERING (important): static sub-paths under `/rider/trips/` must
+# be declared BEFORE the `/rider/trips/{trip_id}` parameterized route,
+# because FastAPI matches routes in registration order and a UUID path
+# converter will reject "history" and "active" as 422s.
+#
+#   /rider/trips/history   ✅ registered first
+#   /rider/trips/active    ✅ registered second
+#   /rider/trips/{trip_id} ✅ registered last
+#
+# The two POST action routes (`/verify-otp`, `/cancel`) use their own
+# full paths with the `{trip_id}` parameter, so they don't collide with
+# the GET parameterized route at all.
 # ---------------------------------------------------------------------------
 
 @app.get(
@@ -1952,6 +1959,176 @@ def get_rider_trip_history(
         return crud.get_rider_trip_history(db, current_user.id)
     except SQLAlchemyError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+# ---------------------------------------------------------------------------
+# Rider Active Trips — compact list + operational actions
+# ---------------------------------------------------------------------------
+# These endpoints back the refactored rider "Active Trips" tab, which
+# shows a unified list of ACCEPTED / PICKED_UP / COMPLETED trips with
+# status filter chips, and pushes all operational actions (verify OTP,
+# cancel, mark delivered) into the trip detail view.
+# ---------------------------------------------------------------------------
+
+# How far back the Active list will surface COMPLETED trips. Keeping this
+# short means the feed stays focused on recent operational work — the
+# full historical record lives in `/rider/trips/history`.
+_RIDER_ACTIVE_COMPLETED_LOOKBACK_DAYS = 30
+
+
+@app.get(
+    "/rider/trips/active",
+    summary="Rider's active and recently completed trips (compact list view)",
+)
+def get_rider_active_trips_compact(
+    current_user: models.User = Depends(auth.require_role("RIDER")),
+    db: Session = Depends(get_db),
+):
+    """
+    Return the rider's ACCEPTED / PICKED_UP / IN_TRANSIT / COMPLETED
+    trips in the compact shape the refactored Active Trips list view
+    renders.
+
+    ## Status normalization
+
+    Two different underlying statuses map to the same client-facing
+    status so the filter chips stay a small, closed set:
+
+      ACCEPTED      → "ACCEPTED"
+      PICKED_UP     → "PICKED_UP"
+      IN_TRANSIT    → "PICKED_UP"
+      DELIVERED     → "COMPLETED"
+      COMPLETED     → "COMPLETED"
+
+    `raw_status` is also included so callers that care about the exact
+    backend status (e.g. logging/analytics) can still see it.
+
+    ## Completed trip lookback
+
+    Only COMPLETED trips whose `completed_at` falls within the last
+    `_RIDER_ACTIVE_COMPLETED_LOOKBACK_DAYS` days are returned. Full
+    history lives at `/rider/trips/history`.
+
+    ## Fields
+
+    Every field the list card AND the detail sheet need is returned
+    here in one call, so the operational sheet can render without a
+    second network round-trip:
+
+      order_id            — the Trip's UUID
+      produce_request_id  — the ProduceRequest's UUID
+      crop_name, weight_kg
+      dropoff_mandi, dropoff_stall, dropoff_address
+      pickup_address, pickup_landmark, pickup_latitude, pickup_longitude
+      status (normalized), raw_status
+      created_at, completed_at
+      farmer_full_name, farmer_phone_number, farm_address
+    """
+    cutoff = datetime.utcnow() - timedelta(
+        days=_RIDER_ACTIVE_COMPLETED_LOOKBACK_DAYS
+    )
+
+    try:
+        trips = (
+            db.query(models.Trip)
+            .options(
+                joinedload(models.Trip.produce_request).joinedload(
+                    models.ProduceRequest.farmer
+                ),
+                joinedload(models.Trip.rider),
+            )
+            .filter(
+                models.Trip.rider_id == current_user.id,
+                or_(
+                    models.Trip.status.in_(
+                        ("ACCEPTED", "PICKED_UP", "IN_TRANSIT")
+                    ),
+                    and_(
+                        models.Trip.status.in_(("COMPLETED", "DELIVERED")),
+                        or_(
+                            models.Trip.completed_at.is_(None),
+                            models.Trip.completed_at >= cutoff,
+                        ),
+                    ),
+                ),
+            )
+            .order_by(models.Trip.created_at.desc())
+            .all()
+        )
+    except SQLAlchemyError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    result: list[dict] = []
+    for trip in trips:
+        pr = trip.produce_request
+        if pr is None:
+            continue
+
+        farmer = pr.farmer
+
+        # Resolve pickup lat/lng from the Trip's snapshot, with a
+        # ProduceRequest fallback for older rows.
+        pickup_lat = trip.pickup_latitude
+        pickup_lng = trip.pickup_longitude
+        if pickup_lat is None and pr.pickup_location is not None:
+            try:
+                from geoalchemy2.shape import to_shape as _to_shape
+                point = _to_shape(pr.pickup_location)
+                pickup_lat = float(point.y)
+                pickup_lng = float(point.x)
+            except Exception:
+                pass
+
+        # Normalize status for the client. See the endpoint docstring.
+        raw = (trip.status or "").upper()
+        if raw in ("COMPLETED", "DELIVERED"):
+            display_status = "COMPLETED"
+        elif raw in ("PICKED_UP", "IN_TRANSIT"):
+            display_status = "PICKED_UP"
+        else:
+            display_status = raw or "ACCEPTED"
+
+        result.append({
+            "order_id": str(trip.id),
+            "produce_request_id": str(pr.id),
+            "crop_name": pr.crop_type or "—",
+            "weight_kg": float(pr.weight_kg or 0),
+            "dropoff_mandi": (
+                pr.dropoff_mandi_name
+                or pr.dropoff_location
+                or "—"
+            ),
+            "dropoff_stall": pr.dropoff_stall_number,
+            "dropoff_address": pr.dropoff_location,
+            "pickup_address": (
+                trip.pickup_address or pr.pickup_address
+            ),
+            "pickup_landmark": (
+                trip.pickup_landmark or pr.pickup_landmark
+            ),
+            "pickup_latitude": pickup_lat,
+            "pickup_longitude": pickup_lng,
+            "status": display_status,
+            "raw_status": trip.status,
+            "created_at": (
+                trip.created_at.isoformat()
+                if trip.created_at is not None else None
+            ),
+            "completed_at": (
+                trip.completed_at.isoformat()
+                if trip.completed_at is not None else None
+            ),
+            "farmer_full_name": farmer.full_name if farmer else None,
+            "farmer_phone_number": (
+                farmer.phone_number if farmer else None
+            ),
+            "farm_address": (
+                (farmer.farm_address or farmer.landmark)
+                if farmer else None
+            ),
+        })
+
+    return result
 
 
 @app.get(
@@ -1989,6 +2166,203 @@ def get_rider_trip_detail(
     if result is None:
         raise HTTPException(status_code=404, detail="Trip not found")
     return result
+
+
+@app.post(
+    "/rider/trips/{trip_id}/verify-otp",
+    summary="Verify pickup OTP for a rider's ACCEPTED trip",
+)
+def verify_rider_trip_otp(
+    trip_id: UUID,
+    body: schemas.OtpVerifyRequest,
+    current_user: models.User = Depends(auth.require_role("RIDER")),
+    db: Session = Depends(get_db),
+):
+    """
+    Verify the 4-digit pickup OTP for a trip assigned to the authenticated
+    rider, and on a match transition BOTH the linked `Trip` and the
+    underlying `ProduceRequest` to `PICKED_UP`.
+
+    ## Pre-conditions
+
+    - The trip must exist and be assigned to the caller (403 otherwise).
+    - The trip must currently be `ACCEPTED`. A trip already `PICKED_UP`
+      or `COMPLETED` cannot be re-verified — this is the same idempotency
+      guard the farmer-side endpoint enforces.
+
+    ## Failure modes
+
+    - 400 if the OTP doesn't match (`"Invalid OTP"`) or if the
+      ProduceRequest is in a terminal state.
+    - 403 if the caller isn't the assigned rider.
+    - 404 if the trip doesn't exist.
+
+    ## On success
+
+    Both writes happen inside the existing CRUD helpers, which each
+    wrap their row in `with_for_update()` and roll back on error:
+
+      1. `crud.verify_pickup_otp` validates the OTP and flips
+         `ProduceRequest.status` to `PICKED_UP`.
+      2. `crud.update_trip_status` flips `Trip.status` to `PICKED_UP`.
+
+    If step 1 succeeds but step 2 fails, the caller can retry — the
+    ProduceRequest is already `PICKED_UP`, and the same idempotency
+    guard on `update_trip_status` only rejects terminal states, so
+    re-running the transition is safe.
+
+    Returns a small JSON envelope rather than a full trip payload,
+    because the rider's list is refreshed separately by the client.
+    """
+    trip = crud.get_trip_by_id(db, trip_id)
+    if trip is None:
+        raise HTTPException(status_code=404, detail="Trip not found")
+    if trip.rider_id != current_user.id:
+        raise HTTPException(
+            status_code=403,
+            detail="You are not the rider assigned to this trip",
+        )
+    if trip.status != "ACCEPTED":
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Trip must be ACCEPTED before OTP verification "
+                f"(current: {trip.status})"
+            ),
+        )
+
+    # ----- Step 1: validate OTP + flip ProduceRequest to PICKED_UP --------
+    try:
+        pr = crud.verify_pickup_otp(db, trip.produce_request_id, body.otp)
+    except (SQLAlchemyError, ValueError) as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if pr is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Linked produce request not found",
+        )
+
+    # ----- Step 2: flip the Trip to PICKED_UP ----------------------------
+    try:
+        crud.update_trip_status(db, trip_id, "PICKED_UP")
+    except (SQLAlchemyError, ValueError) as e:
+        # ProduceRequest is already PICKED_UP — surface the failure so
+        # the client can retry the status sync.
+        raise HTTPException(status_code=400, detail=str(e))
+
+    return {
+        "success": True,
+        "message": "OTP verified successfully",
+        "trip_id": str(trip_id),
+        "new_status": "PICKED_UP",
+    }
+
+
+@app.post(
+    "/rider/trips/{trip_id}/cancel",
+    summary="Cancel an ACCEPTED rider trip (before OTP verification)",
+)
+def cancel_rider_trip(
+    trip_id: UUID,
+    current_user: models.User = Depends(auth.require_role("RIDER")),
+    db: Session = Depends(get_db),
+):
+    """
+    Cancel a trip the rider has accepted but not yet picked up.
+
+    ## Allowed ONLY when `Trip.status == "ACCEPTED"`
+
+    Once the pickup OTP has been verified (`PICKED_UP`) or the trip has
+    been delivered (`COMPLETED` / `DELIVERED`), cancellation is locked —
+    returning HTTP 400 with `"Cannot cancel trip after OTP verification"`.
+    This protects the farmer: after the rider physically loads the
+    produce, silently backing out would strand their shipment.
+
+    ## What happens on success
+
+    Inside one `try / commit / except rollback` block:
+
+      1. `Trip.status` → `CANCELLED`, `Trip.completed_at` → now.
+      2. `ProduceRequest.status` → `PENDING` so another rider can pick
+         it up from the Available feed.
+
+    The whole operation is transactional — if either the Trip update or
+    the ProduceRequest revert fails, `db.rollback()` is called and the
+    request returns a fixed, user-safe 500 message.
+
+    Returns a small JSON envelope rather than a full trip payload,
+    because the rider's list is refreshed separately by the client.
+    """
+    trip = crud.get_trip_by_id(db, trip_id)
+    if trip is None:
+        raise HTTPException(status_code=404, detail="Trip not found")
+    if trip.rider_id != current_user.id:
+        raise HTTPException(
+            status_code=403,
+            detail="You are not the rider assigned to this trip",
+        )
+    if trip.status != "ACCEPTED":
+        # Any status other than ACCEPTED is a hard 400 — the client
+        # knows it should hide the cancel button in those states, so
+        # reaching this branch indicates either a race or a stale view.
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot cancel trip after OTP verification",
+        )
+
+    try:
+        # Lock the trip row so a concurrent status PATCH can't slip
+        # between the check above and the write below.
+        locked_trip = (
+            db.query(models.Trip)
+            .filter(models.Trip.id == trip_id)
+            .with_for_update()
+            .first()
+        )
+        if locked_trip is None:
+            raise HTTPException(status_code=404, detail="Trip not found")
+        if locked_trip.status != "ACCEPTED":
+            # Lost the race — someone else transitioned the trip.
+            raise HTTPException(
+                status_code=400,
+                detail="Cannot cancel trip after OTP verification",
+            )
+
+        locked_trip.status = "CANCELLED"
+        locked_trip.completed_at = datetime.utcnow()
+
+        # Revert the ProduceRequest to PENDING so another rider can
+        # accept it. If the row is missing (shouldn't happen — FK is
+        # NOT NULL), we still complete the cancel on the Trip side.
+        linked_pr = (
+            db.query(models.ProduceRequest)
+            .filter(
+                models.ProduceRequest.id
+                == locked_trip.produce_request_id
+            )
+            .with_for_update()
+            .first()
+        )
+        if linked_pr is not None:
+            linked_pr.status = "PENDING"
+
+        db.commit()
+        db.refresh(locked_trip)
+    except HTTPException:
+        # Re-raise 400/404 we generated above without double-wrapping.
+        db.rollback()
+        raise
+    except SQLAlchemyError:
+        db.rollback()
+        raise HTTPException(
+            status_code=500, detail="Failed to cancel trip"
+        )
+
+    return {
+        "success": True,
+        "message": "Trip cancelled",
+        "trip_id": str(trip_id),
+    }
 
 
 # ---------------------------------------------------------------------------
