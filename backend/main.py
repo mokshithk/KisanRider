@@ -75,8 +75,19 @@ async def lifespan(app: FastAPI):
           ON users (phone_number);
 
         ALTER TABLE produce_requests
-          ADD COLUMN IF NOT EXISTS pickup_address   VARCHAR(500),
-          ADD COLUMN IF NOT EXISTS pickup_landmark  VARCHAR(255);
+          ADD COLUMN IF NOT EXISTS pickup_address        VARCHAR(500),
+          ADD COLUMN IF NOT EXISTS pickup_landmark       VARCHAR(255),
+          ADD COLUMN IF NOT EXISTS dropoff_district      VARCHAR(80),
+          ADD COLUMN IF NOT EXISTS dropoff_mandi_id      VARCHAR(160),
+          ADD COLUMN IF NOT EXISTS dropoff_mandi_name    VARCHAR(200),
+          ADD COLUMN IF NOT EXISTS dropoff_stall_number  VARCHAR(80);
+
+        -- The Book Transport refactor moved the sole quantity metric to
+        -- `weight_kg`. `crate_count` is no longer written by the ORM;
+        -- make it nullable so any legacy INSERT that still sends it
+        -- doesn't fail on the NOT NULL constraint.
+        ALTER TABLE produce_requests
+          ALTER COLUMN crate_count DROP NOT NULL;
 
         ALTER TABLE trips
           ADD COLUMN IF NOT EXISTS pickup_address   VARCHAR(500),
@@ -191,24 +202,34 @@ def _bbox_around(
     return (lat - lat_delta, lng - lng_delta, lat + lat_delta, lng + lng_delta)
 
 
-@app.get("/mandis/search")
-async def search_mandis(
-    district: str = Query(..., min_length=1, max_length=80),
-):
+async def _overpass_search_local_markets(district_clean: str) -> list[dict]:
     """
-    Find APMC mandis / market yards in a district via OpenStreetMap's
-    Overpass API (free, no API key).
+    Shared helper: run the Overpass query for a district and return a
+    deduplicated list of `{name, address, lat, lng}` dicts.
+
+    This is the *local market* data source — it catches unregistered
+    town markets, fish markets, and regional yards (e.g. "Manjeshwar
+    Fish Market") that a district-level APMC register wouldn't list.
+
+    Both `GET /mandis/search` (legacy) and `GET /mandi/markets` (the
+    dual-source endpoint) reuse this helper so the caching and filtering
+    behavior stay consistent. Results are cached for one hour per
+    district; the cache is shared between the two endpoints.
+
+    Raises `HTTPException(502)` if every Overpass mirror fails — the
+    caller decides whether to surface that to the client or fall back to
+    an empty list (the `/mandi/markets` endpoint does the latter so the
+    APMC results still come through).
     """
-    district_clean = district.strip()
     center = _DISTRICT_CENTERS.get(district_clean)
     if center is None:
-        raise HTTPException(status_code=400, detail=f"Unknown district: {district_clean}")
+        return []
 
     cache_key = district_clean.lower()
     now = time.time()
     cached = _MANDI_CACHE.get(cache_key)
     if cached and (now - cached[0]) < _MANDI_CACHE_TTL:
-        return {"district": district_clean, "mandis": cached[1]}
+        return cached[1]
 
     lat, lng = center
     south, west, north, east = _bbox_around(lat, lng, radius_km=30.0)
@@ -218,7 +239,7 @@ async def search_mandis(
     [out:json][timeout:60];
     (
       nwr["amenity"="marketplace"]({bbox});
-      nwr["name"~"\\b(APMC|Mandi)\\b",i]({bbox});
+      nwr["name"~"\\\\b(APMC|Mandi)\\\\b",i]({bbox});
     );
     out center tags;
     """
@@ -293,8 +314,28 @@ async def search_mandis(
         unique.append(m)
 
     _MANDI_CACHE[cache_key] = (now, unique)
+    return unique
 
-    return {"district": district_clean, "mandis": unique}
+
+@app.get("/mandis/search")
+async def search_mandis(
+    district: str = Query(..., min_length=1, max_length=80),
+):
+    """
+    Find APMC mandis / market yards in a district via OpenStreetMap's
+    Overpass API (free, no API key).
+
+    LEGACY endpoint — returns only the Overpass-discovered local
+    markets. For the dual-source view that merges official APMC yards
+    from the Agmarknet register with these local markets, use
+    `GET /mandi/markets`.
+    """
+    district_clean = district.strip()
+    if district_clean not in _DISTRICT_CENTERS:
+        raise HTTPException(status_code=400, detail=f"Unknown district: {district_clean}")
+
+    mandis = await _overpass_search_local_markets(district_clean)
+    return {"district": district_clean, "mandis": mandis}
 
 
 # ---------------------------------------------------------------------------
@@ -783,6 +824,205 @@ async def get_mandi_rates(
 
 
 # ---------------------------------------------------------------------------
+# Dual-source market listing (APMC_YARD + LOCAL_MARKET)
+# ---------------------------------------------------------------------------
+
+async def _fetch_apmc_yards(district_clean: str) -> list[dict]:
+    """
+    Return the official APMC yards registered under `district_clean`.
+
+    Data Source B for `/mandi/markets`. Tries Data.gov.in / Agmarknet
+    first (via the existing `_fetch_live_rates` helper); falls back to
+    the local `_MOCK_MANDI_RATES` dataset if the live call fails or
+    `DATA_GOV_API_KEY` is unset.
+
+    Each entry is shaped to match the merged `/mandi/markets` response:
+
+        {
+          "id":       "apmc::<lowercased name>",
+          "name":     "Kolar APMC",
+          "type":     "APMC_YARD",
+          "district": "Kolar",
+          "address":  None,
+          "lat":      None,
+          "lng":      None,
+        }
+
+    Only rows whose `mandi` name contains "APMC" (case-insensitive) are
+    included — the Agmarknet `market` field also carries vegetable /
+    fish market names, and those belong to the LOCAL_MARKET source.
+    """
+    yards: list[dict] = []
+    seen: set[str] = set()
+
+    def _add(name: str) -> None:
+        cleaned = name.strip()
+        if not cleaned:
+            return
+        key = cleaned.lower()
+        if key in seen:
+            return
+        seen.add(key)
+        yards.append({
+            "id": f"apmc::{key}",
+            "name": cleaned,
+            "type": "APMC_YARD",
+            "district": district_clean,
+            "address": None,
+            "lat": None,
+            "lng": None,
+        })
+
+    # Try the live Agmarknet feed first.
+    api_key = os.environ.get("DATA_GOV_API_KEY")
+    if api_key:
+        live = await _fetch_live_rates(api_key, district_clean)
+        if live:
+            for r in live:
+                mandi_name = (r.get("mandi") or "").strip()
+                if not mandi_name:
+                    continue
+                if "apmc" not in mandi_name.lower():
+                    continue
+                _add(mandi_name)
+
+    # Fall back to mock APMC data if live data yielded nothing.
+    if not yards:
+        for r in _mock_rates_for(district_clean):
+            mandi_name = (r.get("mandi") or "").strip()
+            if not mandi_name:
+                continue
+            if "apmc" not in mandi_name.lower():
+                continue
+            _add(mandi_name)
+
+    return yards
+
+
+@app.get(
+    "/mandi/markets",
+    summary="Dual-source market listing (APMC yards + local markets)",
+)
+async def list_mandi_markets(
+    district: str = Query(
+        ..., min_length=1, max_length=80,
+        description="Karnataka district name.",
+    ),
+):
+    """
+    Unified market listing for a Karnataka district, combining two
+    independent data sources.
+
+    ## Data sources
+
+    **Source A — Local markets (`LOCAL_MARKET`)**
+
+        The existing OpenStreetMap / Overpass lookup (`/mandis/search`),
+        which catches town markets, fish markets, and regional yards
+        that aren't on the official APMC register — e.g.
+        "Manjeshwar Fish Market".
+
+    **Source B — Official APMC yards (`APMC_YARD`)**
+
+        The Agmarknet / Data.gov.in register for the district, filtered
+        to entries whose market name contains "APMC" — e.g.
+        "Bantwala APMC", "Puttur APMC". Falls back to the local mock
+        dataset when the live API is unavailable or has no coverage.
+
+    ## Merge & deduplicate
+
+    Both sources are merged into one array and deduplicated by
+    case-insensitive market name. APMC yards are emitted first (official
+    data before heuristic web-scraped data), then local markets — so the
+    dropdown in the Book Transport screen shows the government-listed
+    destinations at the top.
+
+    Each item carries a `type` field so the client can badge the entry:
+
+      - `APMC_YARD`     — official government mandi.
+      - `LOCAL_MARKET`  — local town / fish / regional market.
+
+    ## Response shape
+
+      {
+        "district": "Kolar",
+        "markets": [
+          {
+            "id":       "apmc::kolar apmc",
+            "name":     "Kolar APMC",
+            "type":     "APMC_YARD",
+            "district": "Kolar",
+            "address":  null,
+            "lat":      null,
+            "lng":      null
+          },
+          {
+            "id":       "local::manjeshwar fish market",
+            "name":     "Manjeshwar Fish Market",
+            "type":     "LOCAL_MARKET",
+            "district": "Kolar",
+            "address":  "Manjeshwar, Kolar, Karnataka",
+            "lat":      12.7145,
+            "lng":      74.8823
+          }
+        ]
+      }
+
+    ## Error handling
+
+    If Overpass is down, the endpoint still returns the APMC results
+    (with `markets` containing only `APMC_YARD` entries) rather than
+    surfacing a 502. An unknown district raises a 400 before either
+    source is queried.
+    """
+    district_clean = district.strip()
+    if district_clean not in _DISTRICT_CENTERS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown district: {district_clean}",
+        )
+
+    # Source B — official APMC yards (Agmarknet / mock fallback).
+    apmc_entries = await _fetch_apmc_yards(district_clean)
+
+    # Source A — local markets via Overpass. Failures here are swallowed
+    # so the APMC results still reach the client.
+    try:
+        local_markets = await _overpass_search_local_markets(district_clean)
+    except HTTPException:
+        local_markets = []
+
+    local_entries: list[dict] = []
+    for m in local_markets:
+        name = (m.get("name") or "").strip()
+        if not name:
+            continue
+        local_entries.append({
+            "id": f"local::{name.lower()}",
+            "name": name,
+            "type": "LOCAL_MARKET",
+            "district": district_clean,
+            "address": m.get("address"),
+            "lat": m.get("lat"),
+            "lng": m.get("lng"),
+        })
+
+    # Merge & deduplicate by case-insensitive name. APMC yards come
+    # first, so an entry like "Kolar APMC" that Overpass also picked up
+    # will be served from the APMC branch (correct type label).
+    seen_names: set[str] = set()
+    merged: list[dict] = []
+    for entry in apmc_entries + local_entries:
+        key = entry["name"].strip().lower()
+        if not key or key in seen_names:
+            continue
+        seen_names.add(key)
+        merged.append(entry)
+
+    return {"district": district_clean, "markets": merged}
+
+
+# ---------------------------------------------------------------------------
 # Signup + OTP (real email when ENABLE_REAL_EMAIL_OTP, dev bypass otherwise)
 # ---------------------------------------------------------------------------
 
@@ -1235,7 +1475,7 @@ def create_farmer_address(
 
 
 # ---------------------------------------------------------------------------
-# Farmer Orders — Order History + Single-order Detail
+# Farmer Orders — Order History + Single-order Detail + Create
 # ---------------------------------------------------------------------------
 #
 # NOTE ON ROUTE ORDERING: `/farmer/orders/history` is declared BEFORE
@@ -1244,6 +1484,11 @@ def create_farmer_address(
 # not a UUID, so if the parameterized route were registered first, the
 # history request would 422 on UUID validation instead of falling through.
 # Do not reorder these two decorators.
+#
+# `/farmer/orders/create` is declared AFTER `/farmer/orders/{order_id}`
+# because it uses the POST method, which the parameterized GET route
+# doesn't match anyway. Placed here so the whole "orders" family stays
+# together in the file.
 # ---------------------------------------------------------------------------
 
 @app.get(
@@ -1270,7 +1515,9 @@ def get_farmer_order_history(
 
     `status` is normalized (PENDING / IN_TRANSIT / COMPLETED / CANCELLED).
     `pickup_village` and `mandi_name` / `stall_number` are derived
-    server-side from the stored free-text fields — see
+    server-side from the stored fields — the structured `dropoff_mandi_name`
+    / `dropoff_stall_number` columns when populated, or parsed out of the
+    legacy composite `dropoff_location` string otherwise. See
     `crud.get_farmer_order_history` for the derivation rules.
     """
     try:
@@ -1300,7 +1547,7 @@ def get_farmer_order_detail(
       - rider         — None while no rider has accepted.
       - pickup        — pickup address block (lat/lng when available).
       - dropoff       — APMC mandi + stall block.
-      - crop          — crop type, weight, crate count.
+      - crop          — crop type and weight.
       - settlement    — None until the trip is DELIVERED (settlement is
                         auto-created by the trip status transition).
 
@@ -1311,6 +1558,63 @@ def get_farmer_order_detail(
     if result is None:
         raise HTTPException(status_code=404, detail="Order not found")
     return result
+
+
+@app.post(
+    "/farmer/orders/create",
+    response_model=schemas.ProduceRequestResponse,
+    status_code=201,
+    summary="Create a farmer order (alias for POST /produce-requests/)",
+)
+def create_farmer_order(
+    request: schemas.ProduceRequestCreate,
+    current_user: models.User = Depends(auth.require_role("FARMER")),
+    db: Session = Depends(get_db),
+):
+    """
+    Create a produce pickup request for the authenticated farmer.
+
+    Naming alias for `POST /produce-requests/` that matches the URL
+    convention used by the other `/farmer/orders/*` endpoints. Same
+    payload, same behavior, same response shape.
+
+    ## Payload
+
+    Accepts `schemas.ProduceRequestCreate`, whose fields map to the
+    Book Transport form's inputs:
+
+      - `weight_kg`                 — total weight in kilograms (sole
+                                      quantity metric; `crate_count`
+                                      was removed by the refactor).
+      - `latitude` / `longitude`    — the pickup location's coordinates
+                                      (required — PostGIS needs them).
+      - `pickup_address`            — human-readable pickup address the
+                                      farmer typed or selected from a
+                                      saved place (optional).
+      - `pickup_landmark`           — short landmark line (optional).
+      - `dropoff_district`          — target district.
+      - `dropoff_mandi_id` and/or `dropoff_mandi_name` — the market
+                                      destination. `dropoff_mandi_id`
+                                      is a stable identifier from
+                                      GET /mandi/markets; `dropoff_mandi_name`
+                                      is the display name.
+      - `dropoff_stall_number`      — optional stall / shop / bay.
+
+    ## What happens on success
+
+    1. A ProduceRequest row is created with `status="PENDING"` and a
+       fresh 4-digit pickup OTP.
+    2. If `save_address_for_future=True` and a non-empty
+       `pickup_address` was supplied, the address is also persisted to
+       SavedAddress.
+    3. The response carries the full ProduceRequest shape (including the
+       structured dropoff fields). The pickup OTP is exposed via the
+       FarmerProduceRequestResponse shape on subsequent GETs.
+    """
+    try:
+        return crud.create_produce_request(db, request, current_user.id)
+    except (SQLAlchemyError, ValueError) as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 # ---------------------------------------------------------------------------
@@ -1508,7 +1812,7 @@ def get_rider_trip_history(
     `payment_method` is "Wallet Credited" (settlement PAID) or
     "Cash Collected" (settlement still PENDING); it's "—" for cancelled
     trips. `pickup_village` and `mandi_name` / `stall_number` are
-    derived server-side from the stored free-text fields — see
+    derived server-side from the stored fields — see
     `crud.get_rider_trip_history` for the derivation rules.
     """
     try:
@@ -1537,9 +1841,11 @@ def get_rider_trip_detail(
         drive the completion header (delivery timestamp + distance).
       - farmer        — name, phone, farm address.
       - pickup        — pickup address block (lat/lng when available).
-      - mandi         — APMC mandi + stall number (parsed server-side
-                        out of the ProduceRequest's dropoff string).
-      - crop          — crop type, weight, crate count.
+      - mandi         — APMC mandi + stall number (sourced from the
+                        structured dropoff columns on new rows, or
+                        parsed out of the legacy composite string on
+                        older rows).
+      - crop          — crop type and weight.
       - fare          — fare breakdown (gross, commission, net) plus
                         payment mode. None for CANCELLED trips.
 
@@ -1570,10 +1876,26 @@ def create_produce_request(
     Create a produce pickup request tied to the authenticated farmer,
     storing a PostGIS point and generating a 4-digit pickup OTP.
 
+    ## Quantity metric
+
+    The payload now uses `weight_kg` as the sole quantity field —
+    `crate_count` was removed by the Book Transport refactor. Fare,
+    surcharge, and settlement math are keyed off weight.
+
+    ## Pickup
+
     The pickup fields (`pickup_address`, `pickup_landmark`) capture what
     the farmer entered in the 3-way pickup picker (Current GPS / Saved
     Places / Manual Entry). When `save_address_for_future=True`, the
     address is also bookmarked for reuse — see crud.create_produce_request.
+
+    ## Dropoff
+
+    Structured dropoff fields (`dropoff_district`, `dropoff_mandi_id`,
+    `dropoff_mandi_name`, `dropoff_stall_number`) are accepted and
+    persisted directly. The legacy `dropoff_location` string is derived
+    server-side when only the structured fields were supplied, so older
+    display code keeps working.
     """
     try:
         return crud.create_produce_request(db, request, current_user.id)
@@ -1685,6 +2007,10 @@ def create_trip_request(
     PENDING), not a Trip. Same behaviour as POST /produce-requests/ —
     including the pickup-address persistence and the
     `save_address_for_future` side effect.
+
+    Quantity is `weight_kg` (kilograms); structured dropoff fields are
+    persisted as-is, and the legacy `dropoff_location` string is derived
+    server-side when only the structured fields were sent.
     """
     try:
         return crud.create_produce_request(db, request, current_user.id)

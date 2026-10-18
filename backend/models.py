@@ -184,12 +184,32 @@ class SavedAddress(Base):
 
 
 class ProduceRequest(Base):
+    """
+    A farmer's produce transport request.
+
+    ## Quantity metric
+
+    `weight_kg` is the SINGLE quantity field. The legacy `crate_count`
+    int has been removed per the Book Transport refactor — fare,
+    surcharge, and settlement math are all keyed off weight now.
+
+    ## Dropoff structure
+
+    New bookings populate the structured `dropoff_*` columns so the
+    destination market, its id, its district, and the stall number are
+    first-class columns rather than being packed into the free-text
+    `dropoff_location` string. `dropoff_location` is retained for
+    legacy clients and as a display fallback.
+    """
     __tablename__ = "produce_requests"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     farmer_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"))
     crop_type = Column(String(50), nullable=False)
-    crate_count = Column(Integer, nullable=False)
+
+    # Single source of truth for quantity. Nullable at the DB level so
+    # legacy rows (created before weight was required) don't break the
+    # schema — new writes always populate this via ProduceRequestCreate.
     weight_kg = Column(Numeric(10, 2))
 
     # PostGIS point — the actual spatial coordinate used for
@@ -205,6 +225,16 @@ class ProduceRequest(Base):
     pickup_address = Column(String(500), nullable=True)
     pickup_landmark = Column(String(255), nullable=True)
 
+    # ----- Structured dropoff fields (new) --------------------------------
+    # Populated by the Book Transport form on new bookings. On legacy
+    # rows these are null and the client falls back to parsing the
+    # composite `dropoff_location` string.
+    dropoff_district = Column(String(80), nullable=True)
+    dropoff_mandi_id = Column(String(160), nullable=True)
+    dropoff_mandi_name = Column(String(200), nullable=True)
+    dropoff_stall_number = Column(String(80), nullable=True)
+
+    # ----- Legacy dropoff (kept for backward compat) ----------------------
     dropoff_location = Column(String(255), nullable=True)
     dropoff_lat = Column(Float, nullable=True)
     dropoff_lng = Column(Float, nullable=True)

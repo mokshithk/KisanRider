@@ -261,7 +261,16 @@ def create_saved_address(
 # ---------------------------------------------------------------------------
 
 def _to_response(pr: models.ProduceRequest) -> schemas.ProduceRequestResponse:
-    """Convert an ORM row (with WKBElement geometry) into the API schema."""
+    """
+    Convert an ORM row (with WKBElement geometry) into the API schema.
+
+    The response carries BOTH the structured dropoff fields
+    (`dropoff_district`, `dropoff_mandi_id`, `dropoff_mandi_name`,
+    `dropoff_stall_number`) — which new bookings populate directly — and
+    the legacy `dropoff_location` / `dropoff_lat` / `dropoff_lng` — which
+    older rows may still carry. Clients should prefer structured when
+    present.
+    """
     try:
         point = to_shape(pr.pickup_location)
     except Exception as e:
@@ -273,12 +282,15 @@ def _to_response(pr: models.ProduceRequest) -> schemas.ProduceRequestResponse:
         id=pr.id,
         farmer_id=pr.farmer_id,
         crop_type=pr.crop_type,
-        crate_count=pr.crate_count,
-        weight_kg=float(pr.weight_kg),
+        weight_kg=float(pr.weight_kg or 0),
         latitude=point.y,
         longitude=point.x,
         pickup_address=pr.pickup_address,
         pickup_landmark=pr.pickup_landmark,
+        dropoff_district=pr.dropoff_district,
+        dropoff_mandi_id=pr.dropoff_mandi_id,
+        dropoff_mandi_name=pr.dropoff_mandi_name,
+        dropoff_stall_number=pr.dropoff_stall_number,
         dropoff_location=pr.dropoff_location,
         dropoff_lat=pr.dropoff_lat,
         dropoff_lng=pr.dropoff_lng,
@@ -295,6 +307,12 @@ def create_produce_request(
     """
     Insert a produce request; generates the pickup OTP.
 
+    ## Quantity metric
+
+    `weight_kg` is the sole quantity field on the payload. The legacy
+    `crate_count` int has been removed by the Book Transport refactor —
+    fare, surcharge, and settlement math are keyed off weight now.
+
     ## Pickup 3-way selector side effect
 
     When `save_address_for_future` is True AND a non-empty
@@ -302,6 +320,15 @@ def create_produce_request(
     SavedAddress for the farmer. The auto-saved title is derived from
     the address (first 60 chars), since the booking form doesn't collect
     a title.
+
+    ## Dropoff structure
+
+    When the client sends the structured dropoff fields
+    (`dropoff_mandi_name`, `dropoff_stall_number`, etc.) but omits
+    `dropoff_location`, we derive the legacy composite string from the
+    structured fields so downstream display code (which may still read
+    `dropoff_location`) keeps working. If the client sends neither,
+    everything stays null.
 
     ## Transaction shape
 
@@ -330,15 +357,27 @@ def create_produce_request(
 
     pickup_otp = f"{random.randint(1000, 9999)}"
 
+    # Derive the legacy composite dropoff_location when the client sent
+    # only the structured fields. This keeps the legacy display code
+    # (which still reads `dropoff_location`) functioning for new rows.
+    dropoff_location = request_schema.dropoff_location
+    if not dropoff_location and request_schema.dropoff_mandi_name:
+        mandi_name = request_schema.dropoff_mandi_name.strip()
+        stall = (request_schema.dropoff_stall_number or "").strip()
+        dropoff_location = f"{mandi_name} - {stall}" if stall else mandi_name
+
     db_request = models.ProduceRequest(
         farmer_id=farmer_id,
         crop_type=request_schema.crop_type,
-        crate_count=request_schema.crate_count,
         weight_kg=request_schema.weight_kg,
         pickup_location=point_wkt,
         pickup_address=request_schema.pickup_address,
         pickup_landmark=request_schema.pickup_landmark,
-        dropoff_location=request_schema.dropoff_location,
+        dropoff_district=request_schema.dropoff_district,
+        dropoff_mandi_id=request_schema.dropoff_mandi_id,
+        dropoff_mandi_name=request_schema.dropoff_mandi_name,
+        dropoff_stall_number=request_schema.dropoff_stall_number,
+        dropoff_location=dropoff_location,
         dropoff_lat=request_schema.dropoff_lat,
         dropoff_lng=request_schema.dropoff_lng,
         pickup_otp=pickup_otp,
@@ -381,12 +420,15 @@ def create_produce_request(
         id=db_request.id,
         farmer_id=db_request.farmer_id,
         crop_type=db_request.crop_type,
-        crate_count=db_request.crate_count,
-        weight_kg=float(db_request.weight_kg),
+        weight_kg=float(db_request.weight_kg or 0),
         latitude=request_schema.latitude,
         longitude=request_schema.longitude,
         pickup_address=db_request.pickup_address,
         pickup_landmark=db_request.pickup_landmark,
+        dropoff_district=db_request.dropoff_district,
+        dropoff_mandi_id=db_request.dropoff_mandi_id,
+        dropoff_mandi_name=db_request.dropoff_mandi_name,
+        dropoff_stall_number=db_request.dropoff_stall_number,
         dropoff_location=db_request.dropoff_location,
         dropoff_lat=db_request.dropoff_lat,
         dropoff_lng=db_request.dropoff_lng,
@@ -537,12 +579,15 @@ def get_nearby_produce_requests(
             pr.id,
             pr.farmer_id,
             pr.crop_type,
-            pr.crate_count,
             pr.weight_kg,
             pr.status,
             pr.created_at,
             pr.pickup_address,
             pr.pickup_landmark,
+            pr.dropoff_district,
+            pr.dropoff_mandi_id,
+            pr.dropoff_mandi_name,
+            pr.dropoff_stall_number,
             pr.dropoff_location,
             pr.dropoff_lat,
             pr.dropoff_lng,
@@ -569,12 +614,15 @@ def get_nearby_produce_requests(
             id=row.id,
             farmer_id=row.farmer_id,
             crop_type=row.crop_type,
-            crate_count=row.crate_count,
-            weight_kg=float(row.weight_kg),
+            weight_kg=float(row.weight_kg or 0),
             latitude=row.latitude,
             longitude=row.longitude,
             pickup_address=row.pickup_address,
             pickup_landmark=row.pickup_landmark,
+            dropoff_district=row.dropoff_district,
+            dropoff_mandi_id=row.dropoff_mandi_id,
+            dropoff_mandi_name=row.dropoff_mandi_name,
+            dropoff_stall_number=row.dropoff_stall_number,
             dropoff_location=row.dropoff_location,
             dropoff_lat=row.dropoff_lat,
             dropoff_lng=row.dropoff_lng,
@@ -835,7 +883,6 @@ def _to_trip_available(
     return schemas.TripAvailableOut(
         trip_id=pr.id,
         crop_type=pr.crop_type,
-        crate_count=pr.crate_count,
         weight_kg=float(pr.weight_kg or 0),
         latitude=lat,
         longitude=lng,
@@ -898,6 +945,12 @@ def _to_trip_active(
     yields a response where `trip_id` falls back to the request id and
     every contact field is null. This lets `GET /farmer/orders/{id}`
     return the same schema before and after acceptance.
+
+    Both the structured dropoff fields (`dropoff_district`,
+    `dropoff_mandi_id`, `dropoff_mandi_name`, `dropoff_stall_number`) and
+    the legacy `dropoff_address` / `dropoff_lat` / `dropoff_lng` are
+    carried through; clients should prefer the structured form when the
+    former are non-null.
     """
     trip = pr.trip
     farmer = pr.farmer
@@ -932,13 +985,16 @@ def _to_trip_active(
         produce_request_id=pr.id,
         status=(trip.status if trip else pr.status),
         crop_type=pr.crop_type,
-        crate_count=pr.crate_count,
         weight_kg=float(pr.weight_kg or 0),
         latitude=lat,
         longitude=lng,
         pickup_address=pickup_address,
         pickup_landmark=pickup_landmark,
         dropoff_address=pr.dropoff_location,
+        dropoff_district=pr.dropoff_district,
+        dropoff_mandi_id=pr.dropoff_mandi_id,
+        dropoff_mandi_name=pr.dropoff_mandi_name,
+        dropoff_stall_number=pr.dropoff_stall_number,
         dropoff_lat=pr.dropoff_lat,
         dropoff_lng=pr.dropoff_lng,
         # Farmer contact: unlocked for the assigned rider (and the farmer
@@ -1143,6 +1199,12 @@ def _split_dropoff(
     without fragile client-side string surgery.
 
     Returns (mandi_name, stall_number), either of which may be None.
+
+    NOTE: new bookings populate the structured dropoff columns directly,
+    so `_mandi_and_stall_from_pr` should be preferred. This function is
+    kept as the fallback parser for legacy rows (and for the composite
+    string still derived on insert when only the structured fields were
+    supplied by the client).
     """
     if not dropoff_location:
         return None, None
@@ -1154,6 +1216,25 @@ def _split_dropoff(
         return mandi, stall
 
     return (parts[0].strip() or None), None
+
+
+def _mandi_and_stall_from_pr(
+    pr: models.ProduceRequest,
+) -> tuple[Optional[str], Optional[str]]:
+    """
+    Derive (mandi_name, stall_number) for display.
+
+    Prefers the structured columns that the new Book Transport flow
+    writes (`dropoff_mandi_name`, `dropoff_stall_number`). Falls back to
+    parsing the legacy composite `dropoff_location` string for rows
+    created before those columns existed.
+    """
+    if pr.dropoff_mandi_name:
+        return (
+            pr.dropoff_mandi_name.strip() or None,
+            (pr.dropoff_stall_number or "").strip() or None,
+        )
+    return _split_dropoff(pr.dropoff_location)
 
 
 def get_farmer_order_history(
@@ -1179,7 +1260,7 @@ def get_farmer_order_history(
 
     result: List[schemas.OrderHistoryItemResponse] = []
     for pr in rows:
-        mandi_name, stall_number = _split_dropoff(pr.dropoff_location)
+        mandi_name, stall_number = _mandi_and_stall_from_pr(pr)
         result.append(
             schemas.OrderHistoryItemResponse(
                 id=pr.id,
@@ -1245,6 +1326,17 @@ def get_farmer_order_detail(
 
     pickup_lat, pickup_lng = _decode_pickup_coords(pr)
 
+    # Prefer the structured dropoff columns for the display address;
+    # fall back to the legacy composite string when only that exists.
+    dropoff_display = pr.dropoff_location
+    if not dropoff_display and pr.dropoff_mandi_name:
+        stall = (pr.dropoff_stall_number or "").strip()
+        dropoff_display = (
+            f"{pr.dropoff_mandi_name.strip()} - {stall}"
+            if stall
+            else pr.dropoff_mandi_name.strip()
+        )
+
     return schemas.FarmerOrderDetailResponse(
         id=pr.id,
         status=_order_display_status(pr),
@@ -1271,7 +1363,7 @@ def get_farmer_order_detail(
             longitude=pickup_lng,
         ),
         dropoff=schemas.OrderLocationInfo(
-            address=pr.dropoff_location,
+            address=dropoff_display,
             landmark=None,
             latitude=pr.dropoff_lat,
             longitude=pr.dropoff_lng,
@@ -1279,7 +1371,6 @@ def get_farmer_order_detail(
         crop=schemas.OrderCropInfo(
             crop_name=pr.crop_type or "—",
             weight_kg=float(pr.weight_kg or 0),
-            crate_count=pr.crate_count or 0,
         ),
         settlement=(
             schemas.OrderSettlementInfo(
@@ -1406,7 +1497,7 @@ def get_rider_trip_history(
             else 0.0
         )
 
-        mandi_name, stall_number = _split_dropoff(pr.dropoff_location)
+        mandi_name, stall_number = _mandi_and_stall_from_pr(pr)
 
         result.append(
             schemas.RiderTripHistoryItemResponse(
@@ -1466,8 +1557,8 @@ def get_rider_trip_detail(
     dropoff_lat = pr.dropoff_lat if pr is not None else None
     dropoff_lng = pr.dropoff_lng if pr is not None else None
 
-    mandi_name, stall_number = _split_dropoff(
-        pr.dropoff_location if pr is not None else None
+    mandi_name, stall_number = (
+        _mandi_and_stall_from_pr(pr) if pr is not None else (None, None)
     )
 
     distance_km = _rider_trip_distance_km(settlement)
@@ -1526,7 +1617,6 @@ def get_rider_trip_detail(
         crop=schemas.RiderTripCropInfo(
             crop_name=(pr.crop_type if pr is not None else "—"),
             weight_kg=float(pr.weight_kg or 0) if pr is not None else 0.0,
-            crate_count=(pr.crate_count or 0) if pr is not None else 0,
         ),
         fare=fare,
     )
@@ -1574,7 +1664,14 @@ def _compute_settlement_values(
     distance_km: float,
     rate_per_kg: float,
 ) -> dict:
-    """Single source of truth for the fare/payout arithmetic."""
+    """
+    Single source of truth for the fare/payout arithmetic.
+
+    All fare tiers are keyed off weight in kilograms — the legacy
+    `crate_count`-based arithmetic was already replaced by weight math
+    before this refactor; this docstring just calls out that weight is
+    the sole input.
+    """
     base_fare = 50.0
     distance_fare = distance_km * _DISTANCE_FARE_PER_KM
     weight_surcharge = max(0.0, weight_kg - 50.0) * 2.0

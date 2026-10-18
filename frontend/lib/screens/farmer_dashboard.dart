@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:geocoding/geocoding.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:http/http.dart' as http;
@@ -18,9 +19,6 @@ String get _kApiBaseUrl {
   if (kIsWeb) return 'http://localhost:8000';
   return 'http://10.28.1.142:8000';
 }
-
-/// Rough weight estimate the backend needs but the form doesn't collect.
-const double _kKgPerCrate = 25.0;
 
 /// Fallback coordinates if the farmer picks a mode but the client can't
 /// resolve a real position — Kolar-area mock used by the previous MVP so
@@ -222,7 +220,12 @@ class _FarmerBookTransportTabState extends State<FarmerBookTransportTab> {
 
   // ----- Produce details --------------------------------------------------
   final TextEditingController _cropController = TextEditingController();
-  final TextEditingController _crateCountController = TextEditingController();
+
+  /// Weight in kilograms. This is the sole quantity metric on the booking
+  /// (the previous crate-count field was replaced by this field as part of
+  /// the Book Transport refactor — the payload now sends `weight_kg` as a
+  /// double).
+  final TextEditingController _weightKgController = TextEditingController();
 
   // ----- Pickup (3-way selector) ------------------------------------------
   PickupMode _pickupMode = PickupMode.gps;
@@ -257,7 +260,16 @@ class _FarmerBookTransportTabState extends State<FarmerBookTransportTab> {
   // ----- Dropoff ----------------------------------------------------------
   final TextEditingController _shopController = TextEditingController();
 
+  /// Selected dropoff district. Pre-selected from the farmer's registered
+  /// district (via AuthProvider) on first frame when it matches one of the
+  /// 31 supported Karnataka districts — the dropdown stays fully editable
+  /// afterwards, so the farmer can switch to any other district.
   String? _selectedDistrict;
+
+  /// Markets returned by GET /mandi/markets — the merged list of official
+  /// APMC yards (type == 'APMC_YARD') and web-searched local markets
+  /// (type == 'LOCAL_MARKET'). Each entry is `{id, name, type, district,
+  /// address, lat, lng}`.
   List<Map<String, dynamic>> _mandis = [];
   int? _selectedMandiIndex;
   bool _isLoadingMandis = false;
@@ -270,18 +282,34 @@ class _FarmerBookTransportTabState extends State<FarmerBookTransportTab> {
   void initState() {
     super.initState();
     // Provider/context is only safe after the first frame.
-    WidgetsBinding.instance.addPostFrameCallback((_) {
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
       _loadSavedAddresses();
       // GPS fetch is opportunistic: if the farmer leaves it alone, we
       // fall back to the mock coordinates on submit.
       _fetchCurrentLocation();
+      await _preselectProfileDistrict();
     });
+  }
+
+  /// Pre-selects the farmer's registered district (from AuthProvider) if
+  /// it matches one of the 31 supported Karnataka districts, and kicks off
+  /// the market lookup for it. The dropdown remains editable — this only
+  /// saves the farmer a tap on the common case.
+  Future<void> _preselectProfileDistrict() async {
+    final auth = context.read<AuthProvider>();
+    final profileDistrict = (auth.district ?? '').trim();
+    if (profileDistrict.isEmpty || !_kDistricts.contains(profileDistrict)) {
+      return;
+    }
+    if (!mounted) return;
+    setState(() => _selectedDistrict = profileDistrict);
+    await _onDistrictChanged(profileDistrict);
   }
 
   @override
   void dispose() {
     _cropController.dispose();
-    _crateCountController.dispose();
+    _weightKgController.dispose();
     _pickupLandmarkController.dispose();
     _manualAddressController.dispose();
     _shopController.dispose();
@@ -443,7 +471,8 @@ class _FarmerBookTransportTabState extends State<FarmerBookTransportTab> {
   // -------------------------------------------------------------------------
 
   /// Fires when the user picks a district. Clears any prior mandi selection,
-  /// hits the backend `/mandis/search` proxy, and populates the dropdown.
+  /// hits the dual-source `/mandi/markets` endpoint, and populates the
+  /// dropdown with the merged APMC + local market list.
   Future<void> _onDistrictChanged(String? district) async {
     if (district == null) return;
 
@@ -456,7 +485,7 @@ class _FarmerBookTransportTabState extends State<FarmerBookTransportTab> {
     });
 
     try {
-      final uri = Uri.parse('$_kApiBaseUrl/mandis/search')
+      final uri = Uri.parse('$_kApiBaseUrl/mandi/markets')
           .replace(queryParameters: {'district': district});
 
       final response = await http.get(
@@ -468,7 +497,10 @@ class _FarmerBookTransportTabState extends State<FarmerBookTransportTab> {
 
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body) as Map<String, dynamic>;
-        final list = (data['mandis'] as List<dynamic>?) ?? const [];
+        // New response shape: `{district, markets: [...]}`. Each entry
+        // carries `{id, name, type, district, address, lat, lng}` where
+        // `type` is either 'APMC_YARD' or 'LOCAL_MARKET'.
+        final list = (data['markets'] as List<dynamic>?) ?? const [];
 
         setState(() {
           _mandis = list
@@ -478,12 +510,12 @@ class _FarmerBookTransportTabState extends State<FarmerBookTransportTab> {
           _isLoadingMandis = false;
 
           if (_mandis.isEmpty) {
-            _mandiError = 'No mandis found for "$district".';
+            _mandiError = 'No markets found for "$district".';
           }
         });
       } else {
         setState(() {
-          _mandiError = 'Could not load mandis (HTTP ${response.statusCode}).';
+          _mandiError = 'Could not load markets (HTTP ${response.statusCode}).';
           _isLoadingMandis = false;
         });
       }
@@ -559,7 +591,7 @@ class _FarmerBookTransportTabState extends State<FarmerBookTransportTab> {
     if (pickup == null) return;
 
     if (_selectedMandiIndex == null) {
-      setState(() => _submitError = 'Please select an APMC mandi.');
+      setState(() => _submitError = 'Please select a dropoff market.');
       return;
     }
 
@@ -571,8 +603,14 @@ class _FarmerBookTransportTabState extends State<FarmerBookTransportTab> {
 
     final mandi = _mandis[_selectedMandiIndex!];
     final mandiName = (mandi['name'] ?? '').toString();
+    final mandiId = (mandi['id'] ?? '').toString();
     final shop = _shopController.text.trim();
     final dropoff = shop.isEmpty ? mandiName : '$mandiName - $shop';
+
+    // Weight is the sole quantity metric — parse the single input value
+    // once and reuse it for both the payload and (implicitly) the fare
+    // calculation that runs on the backend.
+    final weightKg = double.parse(_weightKgController.text.trim());
 
     // The auto-save flag is only meaningful for Manual and GPS — saved
     // mode is already booked. We still send `true` for those so the
@@ -590,14 +628,20 @@ class _FarmerBookTransportTabState extends State<FarmerBookTransportTab> {
         headers: _headers(auth, json: true),
         body: jsonEncode({
           'crop_type': _cropController.text.trim(),
-          'crate_count': int.parse(_crateCountController.text.trim()),
-          'weight_kg':
-              int.parse(_crateCountController.text.trim()) * _kKgPerCrate,
+          // Sole quantity metric — sent as a float/double.
+          'weight_kg': weightKg,
           'latitude': pickup.lat,
           'longitude': pickup.lng,
           'pickup_address': pickup.address,
           'pickup_landmark': pickup.landmark,
           'save_address_for_future': saveForFuture,
+          // Structured dropoff fields — the backend writes these to
+          // first-class columns. `dropoff_location` is still sent as a
+          // legacy composite so older display code keeps working.
+          'dropoff_district': _selectedDistrict,
+          'dropoff_mandi_id': mandiId.isEmpty ? null : mandiId,
+          'dropoff_mandi_name': mandiName,
+          'dropoff_stall_number': shop.isEmpty ? null : shop,
           'dropoff_location': dropoff,
         }),
       );
@@ -609,7 +653,7 @@ class _FarmerBookTransportTabState extends State<FarmerBookTransportTab> {
         // since a farmer booking a second load from the same barn almost
         // always uses the same pickup.
         _cropController.clear();
-        _crateCountController.clear();
+        _weightKgController.clear();
         _shopController.clear();
         setState(() {
           _selectedDistrict = null;
@@ -715,24 +759,33 @@ class _FarmerBookTransportTabState extends State<FarmerBookTransportTab> {
               ),
               const SizedBox(height: 16),
 
-              // ----- Crate count ------------------------------------------
+              // ----- Weight (in KG) ---------------------------------------
+              // Replaces the previous "Crate Count" field. The fare is
+              // calculated from this weight on the backend, so it's the
+              // sole quantity metric on the payload.
               TextFormField(
-                controller: _crateCountController,
+                controller: _weightKgController,
                 enabled: !_isSubmitting,
-                keyboardType: TextInputType.number,
+                keyboardType: const TextInputType.numberWithOptions(
+                  decimal: true,
+                ),
+                inputFormatters: [
+                  FilteringTextInputFormatter.allow(RegExp(r'[0-9.]')),
+                ],
                 decoration: const InputDecoration(
-                  labelText: 'Crate Count',
-                  hintText: 'e.g. 25',
+                  labelText: 'Weight / Quantity (in KG)',
+                  hintText: 'e.g., 250',
                   border: OutlineInputBorder(),
-                  prefixIcon: Icon(Icons.inventory_2_outlined),
+                  prefixIcon: Icon(Icons.scale_outlined),
+                  suffixText: 'kg',
                 ),
                 validator: (value) {
                   if (value == null || value.trim().isEmpty) {
-                    return 'Crate count is required';
+                    return 'Weight is required';
                   }
-                  final parsed = int.tryParse(value.trim());
+                  final parsed = double.tryParse(value.trim());
                   if (parsed == null || parsed <= 0) {
-                    return 'Enter a valid positive number';
+                    return 'Enter a valid positive weight';
                   }
                   return null;
                 },
@@ -750,6 +803,9 @@ class _FarmerBookTransportTabState extends State<FarmerBookTransportTab> {
               // ============================================================
 
               // ----- District dropdown ------------------------------------
+              // Pre-selected from the farmer's profile on first frame when
+              // the profile district is one of the 31 supported districts.
+              // The dropdown stays fully editable.
               DropdownButtonFormField<String>(
                 value: _selectedDistrict,
                 isExpanded: true,
@@ -769,19 +825,23 @@ class _FarmerBookTransportTabState extends State<FarmerBookTransportTab> {
               ),
               const SizedBox(height: 16),
 
-              // ----- Mandi dropdown ---------------------------------------
+              // ----- Market / APMC dropdown -------------------------------
+              // Backed by /mandi/markets, which merges official APMC yards
+              // (type == 'APMC_YARD') with locally-searched markets
+              // (type == 'LOCAL_MARKET'). Each row shows a small badge so
+              // the farmer can tell which one they're picking.
               DropdownButtonFormField<int>(
                 value: _selectedMandiIndex,
                 isExpanded: true,
                 decoration: InputDecoration(
-                  labelText: 'Dropoff APMC Mandi',
+                  labelText: 'Dropoff Market / APMC Yard',
                   border: const OutlineInputBorder(),
                   prefixIcon: const Icon(Icons.storefront_outlined),
                   hintText: _selectedDistrict == null
                       ? 'Select a district first'
                       : (_isLoadingMandis
-                          ? 'Loading mandis…'
-                          : 'Select a mandi'),
+                          ? 'Loading markets…'
+                          : 'Select a market'),
                   suffixIcon: _isLoadingMandis
                       ? const Padding(
                           padding: EdgeInsets.all(12),
@@ -795,18 +855,58 @@ class _FarmerBookTransportTabState extends State<FarmerBookTransportTab> {
                 ),
                 items: List<DropdownMenuItem<int>>.generate(
                   _mandis.length,
-                  (i) => DropdownMenuItem<int>(
-                    value: i,
-                    child: Text(
-                      (_mandis[i]['name'] ?? '').toString(),
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                  ),
+                  (i) {
+                    final m = _mandis[i];
+                    final name = (m['name'] ?? '').toString();
+                    final type = (m['type'] ?? '').toString();
+                    final isApmc = type == 'APMC_YARD';
+                    return DropdownMenuItem<int>(
+                      value: i,
+                      child: Row(
+                        children: [
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 6,
+                              vertical: 1,
+                            ),
+                            decoration: BoxDecoration(
+                              color: isApmc
+                                  ? Colors.blue.shade50
+                                  : Colors.orange.shade50,
+                              borderRadius: BorderRadius.circular(4),
+                              border: Border.all(
+                                color: isApmc
+                                    ? Colors.blue.shade200
+                                    : Colors.orange.shade200,
+                              ),
+                            ),
+                            child: Text(
+                              isApmc ? 'APMC' : 'Local',
+                              style: TextStyle(
+                                fontSize: 10,
+                                fontWeight: FontWeight.w600,
+                                color: isApmc
+                                    ? Colors.blue.shade800
+                                    : Colors.orange.shade800,
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 6),
+                          Expanded(
+                            child: Text(
+                              name,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                        ],
+                      ),
+                    );
+                  },
                 ),
                 onChanged: mandiDropdownEnabled
                     ? (i) => setState(() => _selectedMandiIndex = i)
                     : null,
-                validator: (v) => v == null ? 'Select a mandi' : null,
+                validator: (v) => v == null ? 'Select a market' : null,
               ),
               if (_mandiError != null) ...[
                 const SizedBox(height: 6),
