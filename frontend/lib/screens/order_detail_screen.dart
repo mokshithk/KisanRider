@@ -7,6 +7,7 @@ import 'package:provider/provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../providers/auth_provider.dart';
+import 'farmer_dashboard.dart';
 
 /// Base URL of the FastAPI backend.
 String get _kApiBaseUrl {
@@ -14,7 +15,6 @@ String get _kApiBaseUrl {
   return 'http://10.28.1.142:8000';
 }
 
-/// Brand green used across the farmer UI.
 const Color _kFarmerGreen = Color(0xFF2E7D32);
 
 // ============================================================================
@@ -33,8 +33,12 @@ class OrderDetail {
     this.completedAt,
     this.tripId,
     this.pickupOtp,
+    this.cancellationReason,
     this.rider,
     this.settlement,
+    this.dropoffDistrict,
+    this.dropoffMandiName,
+    this.dropoffStallNumber,
   });
 
   factory OrderDetail.fromJson(Map<String, dynamic> json) {
@@ -46,6 +50,7 @@ class OrderDetail {
       completedAt: _parseDate(json['completed_at']),
       tripId: json['trip_id']?.toString(),
       pickupOtp: json['pickup_otp']?.toString(),
+      cancellationReason: json['cancellation_reason']?.toString(),
       rider: json['rider'] is Map<String, dynamic>
           ? RiderInfo.fromJson(json['rider'] as Map<String, dynamic>)
           : null,
@@ -59,23 +64,20 @@ class OrderDetail {
           ? SettlementInfo.fromJson(
               json['settlement'] as Map<String, dynamic>)
           : null,
+      dropoffDistrict: json['dropoff_district']?.toString(),
+      dropoffMandiName: json['dropoff_mandi_name']?.toString(),
+      dropoffStallNumber: json['dropoff_stall_number']?.toString(),
     );
   }
 
   final String id;
-
-  /// Normalized status: PENDING / IN_TRANSIT / COMPLETED / CANCELLED.
-  final String status;
-
-  /// Raw Trip.status (ACCEPTED / PICKED_UP / DELIVERED / CANCELLED) or
-  /// null when the order is still PENDING. Used by the timeline to
-  /// distinguish "rider assigned" from "in transit".
-  final String? tripStatus;
-
+  final String status; // PENDING / IN_TRANSIT / COMPLETED / CANCELLED
+  final String? tripStatus; // ACCEPTED / PICKED_UP / DELIVERED / CANCELLED
   final DateTime createdAt;
   final DateTime? completedAt;
   final String? tripId;
   final String? pickupOtp;
+  final String? cancellationReason;
 
   final RiderInfo? rider;
   final LocationInfo pickup;
@@ -83,8 +85,45 @@ class OrderDetail {
   final CropInfo crop;
   final SettlementInfo? settlement;
 
+  // Structured dropoff — used by the Edit flow to pre-populate the form.
+  final String? dropoffDistrict;
+  final String? dropoffMandiName;
+  final String? dropoffStallNumber;
+
   bool get hasRider => rider != null;
   bool get hasSettlement => settlement != null;
+
+  bool get isPending => status == 'PENDING';
+  bool get isCancelled => status == 'CANCELLED';
+  bool get isCompleted => status == 'COMPLETED';
+
+  /// Rider assigned but not yet picked up.
+  bool get isAcceptedState => tripStatus == 'ACCEPTED';
+
+  /// Picked up and en route — status was normalized to IN_TRANSIT.
+  bool get isInTransitState =>
+      tripStatus == 'PICKED_UP' ||
+      (status == 'IN_TRANSIT' && tripStatus != 'ACCEPTED');
+
+  /// Whether the farmer can still edit or cancel this order.
+  bool get isEditable => isPending;
+
+  /// Estimated transport cost (farmer pays the rider). Uses the same
+  /// formula the backend applies at settlement time, with the default
+  /// 10 km distance assumption — exact distance is unknown pre-acceptance.
+  double get estimatedTransportCost {
+    const baseFare = 50.0;
+    const distanceKm = 10.0;
+    const distanceRatePerKm = 15.0;
+    const weightFreeKg = 50.0;
+    const weightSurchargePerKg = 2.0;
+
+    final distanceFare = distanceKm * distanceRatePerKm;
+    final weightSurcharge =
+        (crop.weightKg > weightFreeKg ? crop.weightKg - weightFreeKg : 0.0) *
+            weightSurchargePerKg;
+    return baseFare + distanceFare + weightSurcharge;
+  }
 
   static DateTime? _parseDate(dynamic raw) {
     if (raw == null) return null;
@@ -154,10 +193,7 @@ class LocationInfo {
 }
 
 class CropInfo {
-  CropInfo({
-    required this.cropName,
-    required this.weightKg,
-  });
+  CropInfo({required this.cropName, required this.weightKg});
 
   factory CropInfo.fromJson(Map<String, dynamic> json) {
     return CropInfo(
@@ -200,8 +236,6 @@ class SettlementInfo {
   final double? netPayout;
   final DateTime? createdAt;
 
-  /// The Settlement model uses PAID; the client-facing label is SETTLED.
-  /// We map here so the UI reads consistently without backend changes.
   String get displayStatus {
     final s = status.toUpperCase();
     if (s == 'PAID') return 'SETTLED';
@@ -213,18 +247,6 @@ class SettlementInfo {
 // Screen
 // ============================================================================
 
-/// Full-detail view for a single order. Fetches
-/// `GET /farmer/orders/{order_id}` on mount and on pull-to-refresh, then
-/// renders five sections top-to-bottom:
-///
-///   1. Header — reference, date, status chip.
-///   2. Status Timeline — 4-step visual indicator.
-///   3. Rider & Vehicle — name, phone (with call button), vehicle type,
-///      license plate.
-///   4. Location Details — pickup and dropoff blocks.
-///   5. Crop Details — crop and weight.
-///   6. Financial Breakdown — gross, transport fee, platform fee,
-///      net payout, settlement status.
 class OrderDetailScreen extends StatefulWidget {
   const OrderDetailScreen({super.key, required this.orderId});
 
@@ -238,6 +260,10 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
   OrderDetail? _order;
   bool _isLoading = true;
   String? _error;
+
+  /// Set true when either the edit flow or the cancel flow succeeded.
+  /// Propagated to the orders list so it knows to refresh on return.
+  bool _hasChanged = false;
 
   @override
   void initState() {
@@ -314,6 +340,111 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
   }
 
   // -------------------------------------------------------------------------
+  // Actions
+  // -------------------------------------------------------------------------
+
+  Future<void> _onEditRequest(OrderDetail order) async {
+    final changed = await Navigator.of(context).push<bool>(
+      MaterialPageRoute<bool>(
+        builder: (_) => Scaffold(
+          backgroundColor: Colors.grey.shade50,
+          appBar: AppBar(
+            title: const Text('Edit Request'),
+            backgroundColor: _kFarmerGreen,
+            foregroundColor: Colors.white,
+          ),
+          body: FarmerBookTransportTab(
+            editOrderId: order.id,
+            initialCropType: order.crop.cropName,
+            initialWeightKg: order.crop.weightKg,
+            initialDropoffDistrict: order.dropoffDistrict,
+            initialDropoffMandiName: order.dropoffMandiName,
+            initialDropoffStallNumber: order.dropoffStallNumber,
+            initialPickupAddress: order.pickup.address,
+            initialPickupLandmark: order.pickup.landmark,
+          ),
+        ),
+      ),
+    );
+
+    if (changed == true && mounted) {
+      setState(() => _hasChanged = true);
+      await _fetch();
+      if (!mounted) return;
+      ScaffoldMessenger.of(context)
+        ..hideCurrentSnackBar()
+        ..showSnackBar(
+          const SnackBar(
+            content: Text('Order updated successfully.'),
+            backgroundColor: _kFarmerGreen,
+          ),
+        );
+    }
+  }
+
+  Future<void> _onCancelOrder(OrderDetail order) async {
+    final reason = await showDialog<String>(
+      context: context,
+      builder: (_) => _CancelReasonDialog(orderRef: order.id),
+    );
+    if (reason == null || !mounted) return;
+
+    final auth = context.read<AuthProvider>();
+    if (auth.token == null) return;
+
+    setState(() => _isLoading = true);
+
+    try {
+      final response = await http.post(
+        Uri.parse('$_kApiBaseUrl/farmer/orders/${order.id}/cancel'),
+        headers: {
+          ..._headers(auth),
+          'Content-Type': 'application/json',
+        },
+        body: jsonEncode({'cancellation_reason': reason}),
+      );
+
+      if (!mounted) return;
+
+      if (response.statusCode == 200) {
+        ScaffoldMessenger.of(context)
+          ..hideCurrentSnackBar()
+          ..showSnackBar(
+            const SnackBar(
+              content: Text('Order cancelled.'),
+              backgroundColor: _kFarmerGreen,
+            ),
+          );
+        Navigator.of(context).pop(true);
+        return;
+      }
+
+      setState(() => _isLoading = false);
+      final message = _extractError(response) ??
+          'Could not cancel order (HTTP ${response.statusCode}).';
+      ScaffoldMessenger.of(context)
+        ..hideCurrentSnackBar()
+        ..showSnackBar(
+          SnackBar(
+            content: Text(message),
+            backgroundColor: Colors.red.shade700,
+          ),
+        );
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _isLoading = false);
+      ScaffoldMessenger.of(context)
+        ..hideCurrentSnackBar()
+        ..showSnackBar(
+          SnackBar(
+            content: Text('Network error: $e'),
+            backgroundColor: Colors.red.shade700,
+          ),
+        );
+    }
+  }
+
+  // -------------------------------------------------------------------------
   // Build
   // -------------------------------------------------------------------------
 
@@ -325,8 +456,14 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
         title: const Text('Order Details'),
         backgroundColor: _kFarmerGreen,
         foregroundColor: Colors.white,
+        // Manual back handling so `_hasChanged` reaches the caller.
+        leading: IconButton(
+          icon: const Icon(Icons.arrow_back),
+          onPressed: () => Navigator.of(context).pop(_hasChanged),
+        ),
       ),
       body: _buildBody(),
+      bottomNavigationBar: _buildStickyActions(),
     );
   }
 
@@ -352,25 +489,98 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
         children: [
           _HeaderCard(order: order),
           const SizedBox(height: 16),
-          _StatusTimelineCard(order: order),
-          const SizedBox(height: 16),
-          if (order.hasRider) ...[
-            _RiderCard(rider: order.rider!),
+
+          if (order.isCancelled) ...[
+            _CancelledBanner(reason: order.cancellationReason),
             const SizedBox(height: 16),
           ],
-          _LocationCard(pickup: order.pickup, dropoff: order.dropoff),
+
+          // SECTION: full order specs — always visible.
+          _SpecCard(order: order),
           const SizedBox(height: 16),
-          _CropCard(crop: order.crop),
-          const SizedBox(height: 16),
-          _FinancialCard(settlement: order.settlement),
+
+          // SECTION: rider card (ACCEPTED only).
+          if (order.isAcceptedState && order.hasRider) ...[
+            _RiderSection(rider: order.rider!),
+            const SizedBox(height: 16),
+          ],
+
+          // SECTION: pickup OTP banner (ACCEPTED only).
+          if (order.isAcceptedState && order.pickupOtp != null) ...[
+            _PickupOtpBanner(otp: order.pickupOtp!),
+            const SizedBox(height: 16),
+          ],
+
+          // SECTION: progress timeline + payout (IN_TRANSIT/COMPLETED).
+          if (order.isInTransitState || order.isCompleted) ...[
+            _TimelineCard(order: order),
+            const SizedBox(height: 16),
+            _FinancialCard(settlement: order.settlement),
+          ],
         ],
+      ),
+    );
+  }
+
+  /// Sticky bottom action bar. Only PENDING orders get actions.
+  Widget? _buildStickyActions() {
+    final order = _order;
+    if (order == null || !order.isPending) return null;
+
+    return SafeArea(
+      top: false,
+      child: Container(
+        padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          border: Border(
+            top: BorderSide(color: Colors.grey.shade200),
+          ),
+        ),
+        child: Row(
+          children: [
+            Expanded(
+              child: OutlinedButton.icon(
+                onPressed: () => _onEditRequest(order),
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: _kFarmerGreen,
+                  side: const BorderSide(color: _kFarmerGreen),
+                  padding: const EdgeInsets.symmetric(vertical: 14),
+                  textStyle: const TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                icon: const Icon(Icons.edit_outlined, size: 18),
+                label: const Text('Edit Request'),
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: FilledButton.icon(
+                onPressed: () => _onCancelOrder(order),
+                style: FilledButton.styleFrom(
+                  backgroundColor: Colors.red.shade600,
+                  foregroundColor: Colors.white,
+                  padding: const EdgeInsets.symmetric(vertical: 14),
+                  textStyle: const TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                icon: const Icon(Icons.close, size: 18),
+                label: const Text('Cancel Order'),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
 }
 
 // ============================================================================
-// Section 1 — Header card (reference, date, status)
+// Header card
 // ============================================================================
 
 class _HeaderCard extends StatelessWidget {
@@ -451,161 +661,111 @@ class _HeaderCard extends StatelessWidget {
 }
 
 // ============================================================================
-// Section 2 — Status timeline
+// Specs card — crop / weight / route / price estimate
 // ============================================================================
 
-class _StatusTimelineCard extends StatelessWidget {
-  const _StatusTimelineCard({required this.order});
+class _SpecCard extends StatelessWidget {
+  const _SpecCard({required this.order});
 
   final OrderDetail order;
 
-  @override
-  Widget build(BuildContext context) {
-    // Timeline is derived from the raw trip status when available, so
-    // ACCEPTED and PICKED_UP render as different steps even though both
-    // normalize to "IN_TRANSIT" on the summary card.
-    final trip = order.tripStatus;
-
-    // Cancellation short-circuits the whole timeline: nothing past
-    // "Order Placed" should render as completed.
-    final cancelled = order.status == 'CANCELLED';
-
-    final steps = <_TimelineStepData>[
-      _TimelineStepData(
-        label: 'Order Placed',
-        done: true,
-      ),
-      _TimelineStepData(
-        label: 'Rider Assigned',
-        done: !cancelled &&
-            (trip == 'ACCEPTED' ||
-                trip == 'PICKED_UP' ||
-                trip == 'DELIVERED'),
-      ),
-      _TimelineStepData(
-        label: 'In Transit',
-        done: !cancelled && (trip == 'PICKED_UP' || trip == 'DELIVERED'),
-      ),
-      _TimelineStepData(
-        label: 'Delivered',
-        done: !cancelled && trip == 'DELIVERED',
-      ),
-    ];
-
-    return _SectionCard(
-      title: 'Order Status',
-      icon: Icons.timeline_outlined,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          if (cancelled) ...[
-            Container(
-              padding: const EdgeInsets.symmetric(
-                horizontal: 12,
-                vertical: 8,
-              ),
-              margin: const EdgeInsets.only(bottom: 12),
-              decoration: BoxDecoration(
-                color: Colors.red.shade50,
-                borderRadius: BorderRadius.circular(8),
-                border: Border.all(color: Colors.red.shade200),
-              ),
-              child: Row(
-                children: [
-                  Icon(Icons.cancel_outlined,
-                      size: 16, color: Colors.red.shade700),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Text(
-                      'This order was cancelled.',
-                      style: TextStyle(
-                        color: Colors.red.shade800,
-                        fontSize: 13,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ],
-          for (int i = 0; i < steps.length; i++)
-            _TimelineRow(
-              label: steps[i].label,
-              done: steps[i].done,
-              isLast: i == steps.length - 1,
-            ),
-        ],
-      ),
-    );
+  static String _rupees(double amount) {
+    final n = amount.round();
+    final sign = n < 0 ? '-' : '';
+    final s = n.abs().toString();
+    if (s.length <= 3) return '$sign₹$s';
+    final last3 = s.substring(s.length - 3);
+    final rest = s.substring(0, s.length - 3);
+    final groups = <String>[];
+    var tail = rest;
+    while (tail.length > 2) {
+      groups.insert(0, tail.substring(tail.length - 2));
+      tail = tail.substring(0, tail.length - 2);
+    }
+    if (tail.isNotEmpty) groups.insert(0, tail);
+    return '$sign₹${groups.join(',')},$last3';
   }
-}
-
-class _TimelineStepData {
-  _TimelineStepData({required this.label, required this.done});
-  final String label;
-  final bool done;
-}
-
-class _TimelineRow extends StatelessWidget {
-  const _TimelineRow({
-    required this.label,
-    required this.done,
-    required this.isLast,
-  });
-
-  final String label;
-  final bool done;
-  final bool isLast;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final color = done ? _kFarmerGreen : Colors.grey.shade400;
 
-    return SizedBox(
-      height: 44,
-      child: Row(
+    return _SectionCard(
+      title: 'Order Specifications',
+      icon: Icons.receipt_long_outlined,
+      child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          SizedBox(
-            width: 24,
-            child: Column(
+          _DetailRow(label: 'Crop', value: order.crop.cropName),
+          _DetailRow(
+            label: 'Weight',
+            value: '${order.crop.weightKg.toStringAsFixed(0)} kg',
+          ),
+          const SizedBox(height: 14),
+          const _SubHeading(text: 'ROUTE'),
+          const SizedBox(height: 6),
+          _RouteRow(
+            icon: Icons.location_on_outlined,
+            label: 'Pickup',
+            value: order.pickup.displayAddress,
+            subline: order.pickup.hasLandmark
+                ? order.pickup.landmark!.trim()
+                : null,
+          ),
+          const Padding(
+            padding: EdgeInsets.symmetric(vertical: 4),
+            child: Icon(
+              Icons.arrow_downward,
+              size: 14,
+              color: Color(0xFF6B7280),
+            ),
+          ),
+          _RouteRow(
+            icon: Icons.flag_outlined,
+            label: 'Dropoff',
+            value: order.dropoff.displayAddress,
+          ),
+          const SizedBox(height: 14),
+          if (order.isPending) ...[
+            const Divider(height: 1),
+            const SizedBox(height: 12),
+            Row(
               children: [
-                Container(
-                  width: 24,
-                  height: 24,
-                  decoration: BoxDecoration(
-                    color: done ? _kFarmerGreen : Colors.white,
-                    shape: BoxShape.circle,
-                    border: Border.all(color: color, width: 2),
-                  ),
-                  child: done
-                      ? const Icon(Icons.check,
-                          size: 14, color: Colors.white)
-                      : null,
+                const Icon(
+                  Icons.currency_rupee,
+                  size: 16,
+                  color: _kFarmerGreen,
                 ),
-                if (!isLast)
-                  Expanded(
-                    child: Container(
-                      width: 2,
-                      color: color.withOpacity(0.4),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Text(
+                    'Estimated Transport Cost',
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: theme.colorScheme.onSurfaceVariant,
                     ),
                   ),
+                ),
+                Text(
+                  _rupees(order.estimatedTransportCost),
+                  style: const TextStyle(
+                    fontWeight: FontWeight.bold,
+                    color: _kFarmerGreen,
+                    fontSize: 15,
+                  ),
+                ),
               ],
             ),
-          ),
-          const SizedBox(width: 12),
-          Padding(
-            padding: const EdgeInsets.only(top: 2),
-            child: Text(
-              label,
-              style: theme.textTheme.bodyMedium?.copyWith(
-                fontWeight: done ? FontWeight.w600 : FontWeight.normal,
-                color: done ? Colors.black87 : Colors.black54,
+            const SizedBox(height: 4),
+            Text(
+              'Estimated for a ~10 km trip. Final price is '
+              'settled at delivery.',
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: theme.colorScheme.onSurfaceVariant,
+                fontSize: 11,
+                fontStyle: FontStyle.italic,
               ),
             ),
-          ),
+          ],
         ],
       ),
     );
@@ -613,18 +773,17 @@ class _TimelineRow extends StatelessWidget {
 }
 
 // ============================================================================
-// Section 3 — Rider & vehicle
+// Rider section (ACCEPTED only)
 // ============================================================================
 
-class _RiderCard extends StatelessWidget {
-  const _RiderCard({required this.rider});
+class _RiderSection extends StatelessWidget {
+  const _RiderSection({required this.rider});
 
   final RiderInfo rider;
 
   Future<void> _call(BuildContext context) async {
     final cleaned = rider.phoneNumber?.replaceAll(RegExp(r'[^\d+]'), '');
     if (cleaned == null || cleaned.isEmpty) return;
-
     final uri = Uri(scheme: 'tel', path: cleaned);
     try {
       final ok = await launchUrl(uri);
@@ -646,27 +805,24 @@ class _RiderCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
 
-    final vehicleType = (rider.vehicleType ?? '').trim();
-    final vehicleNumber = (rider.vehicleNumber ?? '').trim();
-
     return _SectionCard(
-      title: 'Rider & Vehicle',
+      title: 'Assigned Rider',
       icon: Icons.delivery_dining,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           _DetailRow(label: 'Rider Name', value: rider.fullName),
           _DetailRow(
-            label: 'Phone',
-            value: rider.hasPhone ? '+91 ${rider.phoneNumber}' : '—',
+            label: 'Vehicle Plate',
+            value: (rider.vehicleNumber ?? '').trim().isEmpty
+                ? '—'
+                : rider.vehicleNumber!.trim(),
           ),
           _DetailRow(
             label: 'Vehicle Type',
-            value: vehicleType.isEmpty ? '—' : vehicleType,
-          ),
-          _DetailRow(
-            label: 'License Plate',
-            value: vehicleNumber.isEmpty ? '—' : vehicleNumber,
+            value: (rider.vehicleType ?? '').trim().isEmpty
+                ? '—'
+                : rider.vehicleType!.trim(),
           ),
           if (rider.hasPhone) ...[
             const SizedBox(height: 12),
@@ -677,7 +833,7 @@ class _RiderCard extends StatelessWidget {
                 style: FilledButton.styleFrom(
                   backgroundColor: _kFarmerGreen,
                   foregroundColor: Colors.white,
-                  padding: const EdgeInsets.symmetric(vertical: 12),
+                  padding: const EdgeInsets.symmetric(vertical: 14),
                   textStyle: const TextStyle(
                     fontSize: 14,
                     fontWeight: FontWeight.w700,
@@ -685,7 +841,14 @@ class _RiderCard extends StatelessWidget {
                   ),
                 ),
                 icon: const Icon(Icons.phone, size: 18),
-                label: const Text('CALL RIDER'),
+                label: Text(
+                  'CALL RIDER',
+                  style: theme.textTheme.labelLarge?.copyWith(
+                    color: Colors.white,
+                    fontWeight: FontWeight.w700,
+                    letterSpacing: 0.6,
+                  ),
+                ),
               ),
             ),
           ],
@@ -696,91 +859,64 @@ class _RiderCard extends StatelessWidget {
 }
 
 // ============================================================================
-// Section 4 — Locations
+// Pickup OTP banner (ACCEPTED only)
 // ============================================================================
 
-class _LocationCard extends StatelessWidget {
-  const _LocationCard({required this.pickup, required this.dropoff});
+class _PickupOtpBanner extends StatelessWidget {
+  const _PickupOtpBanner({required this.otp});
 
-  final LocationInfo pickup;
-  final LocationInfo dropoff;
+  final String otp;
 
   @override
   Widget build(BuildContext context) {
-    return _SectionCard(
-      title: 'Location Details',
-      icon: Icons.location_on_outlined,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const _SubHeading(text: 'PICKUP'),
-          const SizedBox(height: 6),
-          _DetailRow(label: 'Address', value: pickup.displayAddress),
-          if (pickup.hasLandmark)
-            _DetailRow(label: 'Landmark', value: pickup.landmark!.trim()),
-          if (pickup.hasCoords)
-            _DetailRow(
-              label: 'Coordinates',
-              value: '${pickup.latitude!.toStringAsFixed(4)}, '
-                  '${pickup.longitude!.toStringAsFixed(4)}',
-            ),
-          const SizedBox(height: 14),
-          const _SubHeading(text: 'DROPOFF'),
-          const SizedBox(height: 6),
-          _DetailRow(label: 'Address', value: dropoff.displayAddress),
-          if (dropoff.hasLandmark)
-            _DetailRow(label: 'Landmark', value: dropoff.landmark!.trim()),
-          if (dropoff.hasCoords)
-            _DetailRow(
-              label: 'Coordinates',
-              value: '${dropoff.latitude!.toStringAsFixed(4)}, '
-                  '${dropoff.longitude!.toStringAsFixed(4)}',
-            ),
-        ],
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+      decoration: BoxDecoration(
+        color: const Color(0xFFFFF7E0),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: const Color(0xFFFFE0A3), width: 1.5),
       ),
-    );
-  }
-}
-
-class _SubHeading extends StatelessWidget {
-  const _SubHeading({required this.text});
-  final String text;
-
-  @override
-  Widget build(BuildContext context) {
-    return Text(
-      text,
-      style: const TextStyle(
-        fontSize: 11,
-        fontWeight: FontWeight.w700,
-        color: Color(0xFF6B7280),
-        letterSpacing: 1.2,
-      ),
-    );
-  }
-}
-
-// ============================================================================
-// Section 5 — Crop details
-// ============================================================================
-
-class _CropCard extends StatelessWidget {
-  const _CropCard({required this.crop});
-
-  final CropInfo crop;
-
-  @override
-  Widget build(BuildContext context) {
-    return _SectionCard(
-      title: 'Crop Details',
-      icon: Icons.eco_outlined,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+      child: Row(
         children: [
-          _DetailRow(label: 'Crop', value: crop.cropName),
-          _DetailRow(
-            label: 'Weight',
-            value: '${crop.weightKg.toStringAsFixed(0)} kg',
+          const Icon(
+            Icons.vpn_key_rounded,
+            size: 24,
+            color: Color(0xFF8A5A00),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'Pickup OTP',
+                  style: TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w700,
+                    color: Color(0xFF8A5A00),
+                    letterSpacing: 1.0,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  otp,
+                  style: const TextStyle(
+                    fontSize: 26,
+                    fontWeight: FontWeight.bold,
+                    color: Color(0xFF8A5A00),
+                    letterSpacing: 8,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                const Text(
+                  'Share this code with the rider at pickup.',
+                  style: TextStyle(
+                    fontSize: 11,
+                    color: Color(0xFF8A5A00),
+                  ),
+                ),
+              ],
+            ),
           ),
         ],
       ),
@@ -789,7 +925,171 @@ class _CropCard extends StatelessWidget {
 }
 
 // ============================================================================
-// Section 6 — Financial breakdown
+// Timeline card (IN_TRANSIT / COMPLETED)
+// ============================================================================
+
+class _TimelineCard extends StatelessWidget {
+  const _TimelineCard({required this.order});
+
+  final OrderDetail order;
+
+  static const List<String> _months = [
+    'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+    'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
+  ];
+
+  String _formatDateTime(DateTime d) {
+    final local = d.toLocal();
+    final hh = local.hour.toString().padLeft(2, '0');
+    final mm = local.minute.toString().padLeft(2, '0');
+    return '${local.day} ${_months[local.month - 1]} ${local.year} · $hh:$mm';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final trip = order.tripStatus;
+    final completed = order.completedAt;
+
+    final steps = <_TimelineStep>[
+      _TimelineStep(
+        label: 'Order Placed',
+        timestamp: _formatDateTime(order.createdAt),
+        done: true,
+      ),
+      _TimelineStep(
+        label: 'Rider Assigned',
+        timestamp: trip != null &&
+                (trip == 'ACCEPTED' ||
+                    trip == 'PICKED_UP' ||
+                    trip == 'DELIVERED')
+            ? ''
+            : null,
+        done: trip == 'ACCEPTED' ||
+            trip == 'PICKED_UP' ||
+            trip == 'DELIVERED',
+      ),
+      _TimelineStep(
+        label: 'In Transit',
+        timestamp: trip == 'PICKED_UP' || trip == 'DELIVERED' ? '' : null,
+        done: trip == 'PICKED_UP' || trip == 'DELIVERED',
+      ),
+      _TimelineStep(
+        label: 'Delivered',
+        timestamp: completed != null ? _formatDateTime(completed) : null,
+        done: trip == 'DELIVERED' || order.status == 'COMPLETED',
+      ),
+    ];
+
+    return _SectionCard(
+      title: 'Delivery Progress',
+      icon: Icons.timeline_outlined,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          for (int i = 0; i < steps.length; i++)
+            _TimelineRow(
+              step: steps[i],
+              isLast: i == steps.length - 1,
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+class _TimelineStep {
+  _TimelineStep({
+    required this.label,
+    required this.done,
+    this.timestamp,
+  });
+
+  final String label;
+  final bool done;
+  final String? timestamp;
+}
+
+class _TimelineRow extends StatelessWidget {
+  const _TimelineRow({required this.step, required this.isLast});
+
+  final _TimelineStep step;
+  final bool isLast;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final color = step.done ? _kFarmerGreen : Colors.grey.shade400;
+
+    return SizedBox(
+      height: 56,
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(
+            width: 24,
+            child: Column(
+              children: [
+                Container(
+                  width: 24,
+                  height: 24,
+                  decoration: BoxDecoration(
+                    color: step.done ? _kFarmerGreen : Colors.white,
+                    shape: BoxShape.circle,
+                    border: Border.all(color: color, width: 2),
+                  ),
+                  child: step.done
+                      ? const Icon(Icons.check,
+                          size: 14, color: Colors.white)
+                      : null,
+                ),
+                if (!isLast)
+                  Expanded(
+                    child: Container(
+                      width: 2,
+                      color: color.withOpacity(0.4),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Padding(
+              padding: const EdgeInsets.only(top: 2),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    step.label,
+                    style: theme.textTheme.bodyMedium?.copyWith(
+                      fontWeight:
+                          step.done ? FontWeight.w600 : FontWeight.normal,
+                      color: step.done ? Colors.black87 : Colors.black54,
+                    ),
+                  ),
+                  if (step.timestamp != null && step.timestamp!.isNotEmpty)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 2),
+                      child: Text(
+                        step.timestamp!,
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          color: theme.colorScheme.onSurfaceVariant,
+                          fontSize: 11.5,
+                        ),
+                      ),
+                    ),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ============================================================================
+// Financial breakdown
 // ============================================================================
 
 class _FinancialCard extends StatelessWidget {
@@ -797,17 +1097,14 @@ class _FinancialCard extends StatelessWidget {
 
   final SettlementInfo? settlement;
 
-  /// Indian-style digit grouping: 12,34,567 not 1,234,567.
   static String _rupees(double? amount) {
     if (amount == null) return '—';
     final n = amount.round();
     final sign = n < 0 ? '-' : '';
     final s = n.abs().toString();
     if (s.length <= 3) return '$sign₹$s';
-
     final last3 = s.substring(s.length - 3);
     final rest = s.substring(0, s.length - 3);
-
     final groups = <String>[];
     var tail = rest;
     while (tail.length > 2) {
@@ -815,7 +1112,6 @@ class _FinancialCard extends StatelessWidget {
       tail = tail.substring(0, tail.length - 2);
     }
     if (tail.isNotEmpty) groups.insert(0, tail);
-
     return '$sign₹${groups.join(',')},$last3';
   }
 
@@ -825,7 +1121,7 @@ class _FinancialCard extends StatelessWidget {
 
     if (settlement == null) {
       return _SectionCard(
-        title: 'Financial Breakdown',
+        title: 'Payout Breakdown',
         icon: Icons.account_balance_wallet_outlined,
         child: Container(
           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
@@ -840,8 +1136,7 @@ class _FinancialCard extends StatelessWidget {
               const SizedBox(width: 8),
               Expanded(
                 child: Text(
-                  'Settlement will be created once the delivery is '
-                  'completed.',
+                  'Settlement will be created once the delivery is completed.',
                   style: theme.textTheme.bodySmall?.copyWith(
                     color: Colors.grey.shade800,
                   ),
@@ -862,7 +1157,7 @@ class _FinancialCard extends StatelessWidget {
         : Colors.amber.withOpacity(0.15);
 
     return _SectionCard(
-      title: 'Financial Breakdown',
+      title: 'Payout Breakdown',
       icon: Icons.account_balance_wallet_outlined,
       trailing: Container(
         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
@@ -921,11 +1216,138 @@ class _FinancialCard extends StatelessWidget {
 }
 
 // ============================================================================
+// Cancelled banner
+// ============================================================================
+
+class _CancelledBanner extends StatelessWidget {
+  const _CancelledBanner({this.reason});
+
+  final String? reason;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: Colors.red.shade50,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.red.shade200),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(Icons.cancel_outlined,
+              size: 20, color: Colors.red.shade700),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'This order was cancelled.',
+                  style: TextStyle(
+                    fontSize: 13.5,
+                    fontWeight: FontWeight.w600,
+                    color: Colors.red.shade800,
+                  ),
+                ),
+                if (reason != null && reason!.isNotEmpty) ...[
+                  const SizedBox(height: 4),
+                  Text(
+                    'Reason: $reason',
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: Colors.red.shade700,
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ============================================================================
+// Cancel reason dialog
+// ============================================================================
+
+class _CancelReasonDialog extends StatefulWidget {
+  const _CancelReasonDialog({required this.orderRef});
+
+  final String orderRef;
+
+  @override
+  State<_CancelReasonDialog> createState() => _CancelReasonDialogState();
+}
+
+class _CancelReasonDialogState extends State<_CancelReasonDialog> {
+  static const List<String> _reasons = [
+    'Changed my mind',
+    'Found alternative transport',
+    'Crop not ready for pickup',
+    'Price too high',
+    'Booking mistake',
+    'Other',
+  ];
+
+  String _selected = _reasons.first;
+
+  String get _shortRef {
+    final compact = widget.orderRef.replaceAll('-', '');
+    final take = compact.length >= 6 ? compact.substring(0, 6) : compact;
+    return '#KR-${take.toUpperCase()}';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: Text('Cancel Order $_shortRef?'),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'Please tell us why you are cancelling this order:',
+            style: TextStyle(fontSize: 13),
+          ),
+          const SizedBox(height: 12),
+          ..._reasons.map(
+            (r) => RadioListTile<String>(
+              value: r,
+              groupValue: _selected,
+              onChanged: (v) => setState(() => _selected = v ?? _selected),
+              title: Text(r, style: const TextStyle(fontSize: 13.5)),
+              contentPadding: EdgeInsets.zero,
+              dense: true,
+              activeColor: _kFarmerGreen,
+            ),
+          ),
+        ],
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Keep Order'),
+        ),
+        FilledButton(
+          onPressed: () => Navigator.of(context).pop(_selected),
+          style: FilledButton.styleFrom(
+            backgroundColor: Colors.red.shade600,
+          ),
+          child: const Text('Cancel Order'),
+        ),
+      ],
+    );
+  }
+}
+
+// ============================================================================
 // Shared primitives
 // ============================================================================
 
-/// Card wrapper with a title row and an optional trailing widget. Used by
-/// every section on this screen so the visual rhythm stays consistent.
 class _SectionCard extends StatelessWidget {
   const _SectionCard({
     required this.title,
@@ -978,8 +1400,6 @@ class _SectionCard extends StatelessWidget {
   }
 }
 
-/// Label / value row used across every section. Fixed-width label column
-/// keeps the values visually aligned down the card.
 class _DetailRow extends StatelessWidget {
   const _DetailRow({
     required this.label,
@@ -1025,17 +1445,93 @@ class _DetailRow extends StatelessWidget {
   }
 }
 
-/// Status pill matching the normalized status vocabulary.
+class _RouteRow extends StatelessWidget {
+  const _RouteRow({
+    required this.icon,
+    required this.label,
+    required this.value,
+    this.subline,
+  });
+
+  final IconData icon;
+  final String label;
+  final String value;
+  final String? subline;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Icon(icon, size: 16, color: _kFarmerGreen),
+        const SizedBox(width: 8),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                label,
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: theme.colorScheme.onSurfaceVariant,
+                  fontWeight: FontWeight.w600,
+                  fontSize: 11,
+                  letterSpacing: 0.5,
+                ),
+              ),
+              const SizedBox(height: 2),
+              Text(
+                value,
+                style: theme.textTheme.bodyMedium?.copyWith(
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+              if (subline != null && subline!.isNotEmpty)
+                Padding(
+                  padding: const EdgeInsets.only(top: 2),
+                  child: Text(
+                    subline!,
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: theme.colorScheme.onSurfaceVariant,
+                    ),
+                  ),
+                ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _SubHeading extends StatelessWidget {
+  const _SubHeading({required this.text});
+  final String text;
+
+  @override
+  Widget build(BuildContext context) {
+    return Text(
+      text,
+      style: const TextStyle(
+        fontSize: 11,
+        fontWeight: FontWeight.w700,
+        color: Color(0xFF6B7280),
+        letterSpacing: 1.2,
+      ),
+    );
+  }
+}
+
 class _StatusBadge extends StatelessWidget {
   const _StatusBadge({required this.status});
 
   final String status;
 
   static const Map<String, (Color, Color)> _colors = {
-    'COMPLETED':  (Color(0xFF166534), Color(0x2616A34A)),
-    'CANCELLED':  (Color(0xFF991B1B), Color(0x26DC2626)),
+    'COMPLETED': (Color(0xFF166534), Color(0x2616A34A)),
+    'CANCELLED': (Color(0xFF991B1B), Color(0x26DC2626)),
     'IN_TRANSIT': (Color(0xFF6D28D9), Color(0x266D28D9)),
-    'PENDING':    (Color(0xFFB45309), Color(0x26F59E0B)),
+    'PENDING': (Color(0xFFB45309), Color(0x26F59E0B)),
   };
 
   @override

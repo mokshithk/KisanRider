@@ -1016,6 +1016,37 @@ class OrderHistoryItemResponse(BaseModel):
     mandi_name: Optional[str] = None
     stall_number: Optional[str] = None
 
+# ---------------------------------------------------------------------------
+# Farmer Order Edit + Cancel schemas
+# ---------------------------------------------------------------------------
+
+class FarmerOrderUpdate(BaseModel):
+    """
+    Body for PUT /farmer/orders/{order_id}.
+
+    All fields are optional. The endpoint uses
+    `model_dump(exclude_unset=True)`, so only fields the client sends are
+    written. Sending a field as `null` clears it.
+
+    Field name mapping (request -> model column):
+      crop_name             -> crop_type
+      dropoff_mandi         -> dropoff_mandi_name
+      pickup_notes          -> pickup_landmark
+      weight_kg             -> weight_kg  (same name)
+      dropoff_district      -> dropoff_district  (same name)
+      dropoff_stall_number  -> dropoff_stall_number  (same name)
+    """
+    weight_kg: Optional[float] = Field(None, gt=0)
+    crop_name: Optional[str] = Field(None, min_length=1, max_length=80)
+    dropoff_district: Optional[str] = Field(None, max_length=80)
+    dropoff_mandi: Optional[str] = Field(None, max_length=200)
+    dropoff_stall_number: Optional[str] = Field(None, max_length=80)
+    pickup_notes: Optional[str] = Field(None, max_length=255)
+
+
+class FarmerOrderCancel(BaseModel):
+    """Body for POST /farmer/orders/{order_id}/cancel."""
+    cancellation_reason: Optional[str] = Field(None, max_length=500)
 
 class OrderRiderInfo(BaseModel):
     """
@@ -1083,24 +1114,7 @@ class OrderSettlementInfo(BaseModel):
 
 
 class FarmerOrderDetailResponse(BaseModel):
-    """
-    Full nested order view for the Order Detail screen.
-
-    Structure mirrors the Flutter screen top-to-bottom:
-
-      - id / status / trip_status / created_at / completed_at
-        drive the header card and the 4-step status timeline.
-        `status` is the normalized value from
-        OrderHistoryItemResponse; `trip_status` is the raw Trip.status
-        (ACCEPTED / PICKED_UP / DELIVERED / CANCELLED) or None while
-        the order is still PENDING — the timeline differentiates
-        "rider assigned" from "in transit" using the raw value.
-      - rider (None while PENDING) drives the "Rider & Vehicle" section.
-      - pickup / dropoff drive the "Location Details" section.
-      - crop drives the "Crop Details" section.
-      - settlement (None until the trip is DELIVERED and the settlement
-        row has been created) drives the "Financial Breakdown" section.
-    """
+    """... existing docstring ..."""
     id: UUID
     status: str
     trip_status: Optional[str] = None
@@ -1108,12 +1122,20 @@ class FarmerOrderDetailResponse(BaseModel):
     completed_at: Optional[datetime] = None
     trip_id: Optional[UUID] = None
     pickup_otp: Optional[str] = None
+    cancellation_reason: Optional[str] = None   # NEW
 
     rider: Optional[OrderRiderInfo] = None
     pickup: OrderLocationInfo
     dropoff: OrderLocationInfo
     crop: OrderCropInfo
     settlement: Optional[OrderSettlementInfo] = None
+
+    # Structured dropoff fields — exposed so the Edit Request flow can
+    # pre-populate the Book Transport form without re-parsing the composite
+    # `dropoff.address` string.
+    dropoff_district: Optional[str] = None
+    dropoff_mandi_name: Optional[str] = None
+    dropoff_stall_number: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------

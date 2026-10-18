@@ -206,10 +206,50 @@ class _FarmerDashboardState extends State<FarmerDashboard> {
 // Reached as a pushed route rather than a bottom-nav tab. Kept in this file
 // since nothing else references it — move it into its own file if this one
 // gets too large.
+//
+// Supports BOTH create and edit modes:
+//
+//   * Create mode (no `editOrderId`): the original booking flow. POSTs to
+//     `/produce-requests/`. Uses the 3-way pickup picker (GPS / Saved /
+//     Manual).
+//
+//   * Edit mode (`editOrderId` set): opened from the Order Detail screen
+//     when the farmer taps "Edit Request" on a PENDING order. Pre-fills
+//     the crop/weight/district/mandi/notes fields from the current order,
+//     shows the pickup address as read-only (the pickup is fixed — the
+//     farmer can only edit the notes), and PUTs to
+//     `/farmer/orders/{editOrderId}`. The submit button is relabelled to
+//     "Update Request".
 // ---------------------------------------------------------------------------
 
 class FarmerBookTransportTab extends StatefulWidget {
-  const FarmerBookTransportTab({super.key});
+  const FarmerBookTransportTab({
+    super.key,
+    // ----- Edit-mode wiring (all null in create mode) -----
+    this.editOrderId,
+    this.initialCropType,
+    this.initialWeightKg,
+    this.initialDropoffDistrict,
+    this.initialDropoffMandiName,
+    this.initialDropoffStallNumber,
+    this.initialPickupAddress,
+    this.initialPickupLandmark,
+  });
+
+  /// When non-null the form is in EDIT mode — the order id is the target
+  /// of the PUT. See class docstring for field mapping.
+  final String? editOrderId;
+
+  // Pre-populated values (edit mode only).
+  final String? initialCropType;
+  final double? initialWeightKg;
+  final String? initialDropoffDistrict;
+  final String? initialDropoffMandiName;
+  final String? initialDropoffStallNumber;
+  final String? initialPickupAddress;
+  final String? initialPickupLandmark;
+
+  bool get isEditing => editOrderId != null;
 
   @override
   State<FarmerBookTransportTab> createState() => _FarmerBookTransportTabState();
@@ -227,11 +267,13 @@ class _FarmerBookTransportTabState extends State<FarmerBookTransportTab> {
   /// double).
   final TextEditingController _weightKgController = TextEditingController();
 
-  // ----- Pickup (3-way selector) ------------------------------------------
+  // ----- Pickup (3-way selector — create mode only) -----------------------
   PickupMode _pickupMode = PickupMode.gps;
 
   /// Landmark field, shared by the GPS and Manual modes. Saved mode fills
   /// it from the chip the farmer taps. Always sent to the backend.
+  /// In EDIT mode this doubles as the "Pickup Notes" field (the field
+  /// mapping PUTs it to `pickup_notes`).
   final TextEditingController _pickupLandmarkController =
       TextEditingController();
 
@@ -281,14 +323,57 @@ class _FarmerBookTransportTabState extends State<FarmerBookTransportTab> {
   @override
   void initState() {
     super.initState();
+
+    // Seed controllers from edit params (no-op in create mode).
+    if (widget.isEditing) {
+      _cropController.text = widget.initialCropType ?? '';
+      _weightKgController.text = widget.initialWeightKg != null
+          ? widget.initialWeightKg!.toStringAsFixed(0)
+          : '';
+      _pickupLandmarkController.text = widget.initialPickupLandmark ?? '';
+      _shopController.text = widget.initialDropoffStallNumber ?? '';
+    }
+
     // Provider/context is only safe after the first frame.
     WidgetsBinding.instance.addPostFrameCallback((_) async {
-      _loadSavedAddresses();
-      // GPS fetch is opportunistic: if the farmer leaves it alone, we
-      // fall back to the mock coordinates on submit.
-      _fetchCurrentLocation();
-      await _preselectProfileDistrict();
+      if (widget.isEditing) {
+        // Edit mode: skip GPS fetch and saved-addresses load — the pickup
+        // is frozen. Just seed the district and the market list.
+        await _initializeEditMode();
+      } else {
+        _loadSavedAddresses();
+        // GPS fetch is opportunistic: if the farmer leaves it alone, we
+        // fall back to the mock coordinates on submit.
+        _fetchCurrentLocation();
+        await _preselectProfileDistrict();
+      }
     });
+  }
+
+  /// Edit-mode bootstrap: seed the district dropdown from the current
+  /// order's dropoff district, load that district's market list, then
+  /// resolve the mandi selection by matching the stored mandi name.
+  Future<void> _initializeEditMode() async {
+    final district = widget.initialDropoffDistrict;
+    if (district == null ||
+        district.trim().isEmpty ||
+        !_kDistricts.contains(district)) {
+      return;
+    }
+    if (!mounted) return;
+    setState(() => _selectedDistrict = district);
+    await _onDistrictChanged(district);
+
+    final mandiName = widget.initialDropoffMandiName?.trim();
+    if (mandiName == null || mandiName.isEmpty) return;
+    final idx = _mandis.indexWhere(
+      (m) =>
+          (m['name'] ?? '').toString().trim().toLowerCase() ==
+          mandiName.toLowerCase(),
+    );
+    if (idx != -1 && mounted) {
+      setState(() => _selectedMandiIndex = idx);
+    }
   }
 
   /// Pre-selects the farmer's registered district (from AuthProvider) if
@@ -537,6 +622,9 @@ class _FarmerBookTransportTabState extends State<FarmerBookTransportTab> {
   ///
   /// Returns null on a validation failure — the caller has already set
   /// `_submitError` by then, so it just needs to bail out.
+  ///
+  /// Only used in CREATE mode. Edit mode doesn't touch the pickup
+  /// coordinates — the farmer can only adjust the notes field.
   ({String address, String landmark, double lat, double lng})? _resolvePickup() {
     switch (_pickupMode) {
       case PickupMode.gps:
@@ -568,8 +656,8 @@ class _FarmerBookTransportTabState extends State<FarmerBookTransportTab> {
       case PickupMode.manual:
         final address = _manualAddressController.text.trim();
         if (address.isEmpty) {
-          setState(() => _submitError =
-              'Please enter the village or area name.');
+          setState(() =>
+              _submitError = 'Please enter the village or area name.');
           return null;
         }
         return (
@@ -585,6 +673,15 @@ class _FarmerBookTransportTabState extends State<FarmerBookTransportTab> {
     setState(() => _submitError = null);
     if (!_formKey.currentState!.validate()) return;
 
+    if (widget.isEditing) {
+      await _submitEdit();
+    } else {
+      await _submitCreate();
+    }
+  }
+
+  /// Create-mode submission — POSTs to `/produce-requests/`.
+  Future<void> _submitCreate() async {
     // Pickup resolution happens before the "select a mandi" check because
     // it's a smaller, more targeted error to surface first.
     final pickup = _resolvePickup();
@@ -689,6 +786,69 @@ class _FarmerBookTransportTabState extends State<FarmerBookTransportTab> {
     }
   }
 
+  /// Edit-mode submission — PUTs to `/farmer/orders/{editOrderId}`.
+  ///
+  /// The pickup coordinates are intentionally NOT sent: the backend's
+  /// update endpoint only accepts the crop/weight/dropoff/pickup-notes
+  /// fields, and the pickup location is frozen once the order is placed
+  /// (contact support to change it). The farmer can still adjust the
+  /// notes/landmark line, which the PUT maps to `pickup_notes`.
+  Future<void> _submitEdit() async {
+    if (_selectedMandiIndex == null) {
+      setState(() => _submitError = 'Please select a dropoff market.');
+      return;
+    }
+
+    final auth = context.read<AuthProvider>();
+    if (auth.token == null) {
+      setState(() => _submitError = 'Not signed in.');
+      return;
+    }
+
+    final mandi = _mandis[_selectedMandiIndex!];
+    final mandiName = (mandi['name'] ?? '').toString();
+    final shop = _shopController.text.trim();
+    final weightKg = double.parse(_weightKgController.text.trim());
+
+    setState(() {
+      _isSubmitting = true;
+    });
+
+    try {
+      final response = await http.put(
+        Uri.parse('$_kApiBaseUrl/farmer/orders/${widget.editOrderId}'),
+        headers: _headers(auth, json: true),
+        body: jsonEncode({
+          'crop_name': _cropController.text.trim(),
+          'weight_kg': weightKg,
+          'dropoff_district': _selectedDistrict,
+          'dropoff_mandi': mandiName,
+          'dropoff_stall_number': shop.isEmpty ? null : shop,
+          'pickup_notes': _pickupLandmarkController.text.trim(),
+        }),
+      );
+
+      if (!mounted) return;
+
+      if (response.statusCode == 200) {
+        Navigator.of(context).pop(true);
+        return;
+      }
+
+      setState(() {
+        _isSubmitting = false;
+        _submitError = _extractError(response) ??
+            'Could not update request (HTTP ${response.statusCode}).';
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _isSubmitting = false;
+        _submitError = 'Network error: $e';
+      });
+    }
+  }
+
   String? _extractError(http.Response response) {
     try {
       final body = jsonDecode(response.body);
@@ -712,6 +872,9 @@ class _FarmerBookTransportTabState extends State<FarmerBookTransportTab> {
         _selectedDistrict != null &&
         _mandis.isNotEmpty;
 
+    final submitLabel =
+        widget.isEditing ? 'Update Request' : 'Submit Request';
+
     return SafeArea(
       child: SingleChildScrollView(
         // The Scaffold handles keyboard inset automatically; just pad the
@@ -723,13 +886,18 @@ class _FarmerBookTransportTabState extends State<FarmerBookTransportTab> {
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               Text(
-                'New Produce Request',
+                widget.isEditing
+                    ? 'Edit Produce Request'
+                    : 'New Produce Request',
                 style: theme.textTheme.titleLarge
                     ?.copyWith(fontWeight: FontWeight.bold),
               ),
               const SizedBox(height: 4),
               Text(
-                'Tell us what you\'re sending and where it needs to go.',
+                widget.isEditing
+                    ? 'Update the details below. Only PENDING orders '
+                        'can be edited.'
+                    : 'Tell us what you\'re sending and where it needs to go.',
                 style: theme.textTheme.bodySmall
                     ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
               ),
@@ -795,7 +963,12 @@ class _FarmerBookTransportTabState extends State<FarmerBookTransportTab> {
               // ============================================================
               // PICKUP LOCATION
               // ============================================================
-              _buildPickupSection(theme),
+              // In edit mode the pickup is frozen — show the address as
+              // read-only and let the farmer adjust only the notes line.
+              // In create mode show the full 3-way picker.
+              widget.isEditing
+                  ? _buildEditPickupSection(theme)
+                  : _buildPickupSection(theme),
               const SizedBox(height: 24),
 
               // ============================================================
@@ -956,7 +1129,7 @@ class _FarmerBookTransportTabState extends State<FarmerBookTransportTab> {
                           color: Colors.white,
                         ),
                       )
-                    : const Text('Submit Request'),
+                    : Text(submitLabel),
               ),
             ],
           ),
@@ -966,7 +1139,95 @@ class _FarmerBookTransportTabState extends State<FarmerBookTransportTab> {
   }
 
   // -------------------------------------------------------------------------
-  // Pickup section sub-widgets
+  // Edit-mode pickup section
+  // -------------------------------------------------------------------------
+
+  /// Compact pickup block for edit mode: renders the current pickup
+  /// address as read-only (the pickup location is frozen), and exposes
+  /// only the "Pickup Notes" field which the PUT maps to `pickup_notes`.
+  Widget _buildEditPickupSection(ThemeData theme) {
+    final address = (widget.initialPickupAddress ?? '').trim();
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: _kFarmerGreen.withOpacity(0.04),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: _kFarmerGreen.withOpacity(0.20)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.pin_drop_outlined,
+                  color: _kFarmerGreen, size: 20),
+              const SizedBox(width: 8),
+              Text(
+                'Pickup',
+                style: theme.textTheme.titleMedium?.copyWith(
+                  fontWeight: FontWeight.bold,
+                  color: _kFarmerGreen,
+                ),
+              ),
+            ],
+          ),
+          if (address.isNotEmpty) ...[
+            const SizedBox(height: 12),
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: Colors.grey.shade300),
+              ),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Padding(
+                    padding: EdgeInsets.only(top: 2),
+                    child: Icon(Icons.location_on_outlined,
+                        size: 16, color: Colors.black54),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      address,
+                      style: theme.textTheme.bodySmall,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+          const SizedBox(height: 12),
+          TextFormField(
+            controller: _pickupLandmarkController,
+            enabled: !_isSubmitting,
+            textCapitalization: TextCapitalization.sentences,
+            decoration: const InputDecoration(
+              labelText: 'Pickup Notes',
+              hintText: 'e.g. Behind the canal, near the yellow gate',
+              border: OutlineInputBorder(),
+              prefixIcon: Icon(Icons.signpost_outlined),
+              isDense: true,
+            ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            'Pickup location is fixed — contact support to change it.',
+            style: theme.textTheme.bodySmall?.copyWith(
+              color: theme.colorScheme.onSurfaceVariant,
+              fontSize: 11,
+              fontStyle: FontStyle.italic,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // -------------------------------------------------------------------------
+  // Pickup section sub-widgets (create mode)
   // -------------------------------------------------------------------------
 
   Widget _buildPickupSection(ThemeData theme) {

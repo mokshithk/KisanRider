@@ -1616,7 +1616,104 @@ def create_farmer_order(
     except (SQLAlchemyError, ValueError) as e:
         raise HTTPException(status_code=400, detail=str(e))
 
+# ---------------------------------------------------------------------------
+# Farmer Order Edit + Cancel
+# ---------------------------------------------------------------------------
+# Both endpoints are locked to PENDING orders. Once a rider has accepted,
+# the order cannot be modified or cancelled — the trip is already in motion
+# and the rider has committed real resources toward the pickup. Both
+# endpoints return 400 with the same canonical message on a locked order.
+# ---------------------------------------------------------------------------
 
+
+@app.put(
+    "/farmer/orders/{order_id}",
+    response_model=schemas.FarmerOrderDetailResponse,
+    summary="Update a PENDING farmer order",
+)
+def update_farmer_order(
+    order_id: UUID,
+    payload: schemas.FarmerOrderUpdate,
+    current_user: models.User = Depends(auth.require_role("FARMER")),
+    db: Session = Depends(get_db),
+):
+    """
+    Partially update a PENDING order owned by the authenticated farmer.
+
+    Only PENDING orders can be modified. Once a rider has accepted the
+    order, this endpoint returns 400 with:
+
+        "Order cannot be modified or cancelled after acceptance"
+
+    Accepted fields (all optional):
+      - crop_name
+      - weight_kg
+      - dropoff_district
+      - dropoff_mandi
+      - dropoff_stall_number
+      - pickup_notes
+    """
+    updates = payload.model_dump(exclude_unset=True)
+
+    if "crop_name" in updates and updates["crop_name"] is not None:
+        updates["crop_name"] = updates["crop_name"].strip()
+        if not updates["crop_name"]:
+            raise HTTPException(
+                status_code=400, detail="crop_name cannot be empty"
+            )
+
+    try:
+        crud.update_farmer_order(db, order_id, current_user.id, updates)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except SQLAlchemyError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    result = crud.get_farmer_order_detail(db, order_id, current_user.id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Order not found")
+    return result
+
+
+@app.post(
+    "/farmer/orders/{order_id}/cancel",
+    response_model=schemas.FarmerOrderDetailResponse,
+    summary="Cancel a PENDING farmer order",
+)
+def cancel_farmer_order(
+    order_id: UUID,
+    payload: Optional[schemas.FarmerOrderCancel] = None,
+    current_user: models.User = Depends(auth.require_role("FARMER")),
+    db: Session = Depends(get_db),
+):
+    """
+    Cancel a PENDING order owned by the authenticated farmer.
+
+    Body is optional; when present, `cancellation_reason` is stored on
+    the order row for support/audit purposes.
+
+    Only PENDING orders can be cancelled. Once a rider has accepted the
+    order, this endpoint returns 400 with:
+
+        "Order cannot be modified or cancelled after acceptance"
+
+    On success the order's status flips to CANCELLED and any in-flight
+    trip locks are released (defensive — a PENDING order normally has
+    no Trip row yet).
+    """
+    reason = payload.cancellation_reason if payload else None
+
+    try:
+        crud.cancel_farmer_order(db, order_id, current_user.id, reason)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except SQLAlchemyError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    result = crud.get_farmer_order_detail(db, order_id, current_user.id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Order not found")
+    return result
 # ---------------------------------------------------------------------------
 # Rider Account
 # ---------------------------------------------------------------------------

@@ -25,58 +25,23 @@ class User(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
 
-    # Email is the primary signup identifier for the OTP flow.
     email = Column(String(255), unique=True, index=True, nullable=False)
-
-    # Legacy phone-only accounts; kept for /users/ back-compat. Nullable
-    # because new email-signup users never supply a phone.
     phone = Column(String(15), unique=True, nullable=True)
-
-    # Contact phone number shown on the profile and shared with the
-    # counterparty on an active trip (a farmer sees their rider's number,
-    # and vice versa). Deliberately distinct from `phone` above:
-    #
-    #   - `phone` is a legacy *login identifier*. It's unique, and it was
-    #     used as the account key before the email-OTP signup flow
-    #     existed. New accounts never set it.
-    #   - `phone_number` is a *contact* number, editable from the Farmer
-    #     and Rider Account screens. Changing it has no effect on login.
-    #
-    # Both are nullable. `phone_number` is indexed for future
-    # "look up user by phone" support workflows, but NOT unique — two
-    # accounts sharing one family phone is a legitimate case on this
-    # platform.
     phone_number = Column(String(15), nullable=True, index=True)
 
     role = Column(String(20), nullable=False, default="FARMER")
     full_name = Column(String(100), nullable=False)
-
-    # Bcrypt hash. Nullable so users created via the legacy /users/ path
-    # or Supabase Auth (who have no local password) can still exist.
-    # Every user created by /auth/verify-otp has this populated.
     password_hash = Column(String(255), nullable=True)
 
-    # ----- Basic info ------------------------------------------------------
-    # `district` and `state` are captured at signup; `taluk_village` is
-    # filled in later from the Farmer Account screen.
     district = Column(String(80), nullable=True)
     taluk_village = Column(String(120), nullable=True)
     state = Column(String(80), nullable=True, default="Karnataka")
 
-    # ----- Farmer-specific: farm info --------------------------------------
     farm_size_acres = Column(Float, nullable=True)
     primary_crops = Column(String(255), nullable=True)
-
-    # ----- Farmer-specific: pickup address ---------------------------------
-    # `farm_address` is free-text; `landmark` is a short reference line the
-    # rider can look for on arrival. Both nullable.
     farm_address = Column(Text, nullable=True)
     landmark = Column(String(255), nullable=True)
 
-    # ----- Rider-specific: duty status -------------------------------------
-    # Toggled from the Rider Account screen. `server_default="false"` is
-    # what backfills existing rows when the column is first added — without
-    # it, ADD COLUMN NOT NULL would fail on a non-empty table.
     is_on_duty = Column(
         Boolean,
         nullable=False,
@@ -84,34 +49,17 @@ class User(Base):
         server_default="false",
     )
 
-    # ----- Rider-specific: driver & vehicle info ---------------------------
-    # All nullable — a rider fills these in after signup from the Account
-    # screen, and a farmer never populates them at all.
     license_number = Column(String(30), nullable=True)
     vehicle_type = Column(String(80), nullable=True)
     vehicle_number = Column(String(20), nullable=True)
     payload_capacity_kg = Column(Float, nullable=True)
-
-    # ----- Rider-specific: preferred routes --------------------------------
-    # Free-text comma-separated list of districts/regions, e.g.
-    # "Kolar, Bengaluru Urban, Chikkaballapura". Stored as a single string
-    # rather than JSON so it's greppable and editable directly in SQL —
-    # splitting/joining happens client-side.
     operating_routes = Column(String(255), nullable=True)
 
-    # ----- Shared: payout info ---------------------------------------------
-    # Used by both farmer and rider settlement flows. Stored as plain
-    # strings. If you later decide these need encryption at rest, do it at
-    # the service layer — the ORM column type stays String.
     bank_name = Column(String(100), nullable=True)
     account_number = Column(String(30), nullable=True)
     ifsc_code = Column(String(20), nullable=True)
     upi_id = Column(String(100), nullable=True)
 
-    # ----- Shared: preferences ---------------------------------------------
-    # ISO 639-1 language code. `server_default` matters: it backfills 'en'
-    # for any row inserted before this column existed and for direct SQL
-    # inserts that omit it.
     preferred_language = Column(
         String(10),
         nullable=False,
@@ -119,10 +67,7 @@ class User(Base):
         server_default="en",
     )
 
-    # Email-OTP signup sets this True once the code is verified.
-    # Defaults True so legacy rows are treated as already verified.
     is_verified = Column(Boolean, nullable=False, default=True)
-
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     produce_requests = relationship(
@@ -144,22 +89,6 @@ class User(Base):
 
 
 class SavedAddress(Base):
-    """
-    A reusable pickup location a farmer has bookmarked for future
-    bookings. Populated in two ways:
-
-      1. Automatically, when a booking is submitted with
-         `save_address_for_future=True` — the same address/landmark/
-         coordinates used on that booking are persisted here.
-      2. Manually, via `POST /farmer/addresses`, so a farmer can pre-seed
-         their list without booking a trip.
-
-    `title` is a short label the farmer picks ("Home Barn", "Sugarcane
-    Field"), shown as a chip in the Book Transport form. Latitude/longitude
-    are optional — a farmer who types a manual address without tapping
-    "Use current location" leaves them null, and the booking falls back to
-    the last-known coordinates (or the profile default).
-    """
     __tablename__ = "saved_addresses"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -189,57 +118,43 @@ class ProduceRequest(Base):
 
     ## Quantity metric
 
-    `weight_kg` is the SINGLE quantity field. The legacy `crate_count`
-    int has been removed per the Book Transport refactor — fare,
-    surcharge, and settlement math are all keyed off weight now.
+    `weight_kg` is the SINGLE quantity field.
 
-    ## Dropoff structure
+    ## Status lifecycle
 
-    New bookings populate the structured `dropoff_*` columns so the
-    destination market, its id, its district, and the stall number are
-    first-class columns rather than being packed into the free-text
-    `dropoff_location` string. `dropoff_location` is retained for
-    legacy clients and as a display fallback.
+    PENDING -> ACCEPTED -> PICKED_UP -> COMPLETED
+    Or:
+    PENDING -> CANCELLED  (farmer cancels before acceptance)
+
+    `cancellation_reason` is populated only when the farmer cancels a
+    PENDING order from the Order Detail screen.
     """
+
     __tablename__ = "produce_requests"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     farmer_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"))
     crop_type = Column(String(50), nullable=False)
-
-    # Single source of truth for quantity. Nullable at the DB level so
-    # legacy rows (created before weight was required) don't break the
-    # schema — new writes always populate this via ProduceRequestCreate.
     weight_kg = Column(Numeric(10, 2))
 
-    # PostGIS point — the actual spatial coordinate used for
-    # distance queries. Kept alongside the free-text `pickup_address`
-    # below, which is what the rider reads.
     pickup_location = Column(Geometry("POINT", srid=4326), nullable=False)
-
-    # ----- Pickup display fields (new) ------------------------------------
-    # Farmer-entered at booking time: a human-readable address and a
-    # short landmark. Either can be null — a farmer who only sends the
-    # GPS coordinates still gets a valid booking; the rider sees the
-    # raw lat/lng in that case.
     pickup_address = Column(String(500), nullable=True)
     pickup_landmark = Column(String(255), nullable=True)
 
-    # ----- Structured dropoff fields (new) --------------------------------
-    # Populated by the Book Transport form on new bookings. On legacy
-    # rows these are null and the client falls back to parsing the
-    # composite `dropoff_location` string.
     dropoff_district = Column(String(80), nullable=True)
     dropoff_mandi_id = Column(String(160), nullable=True)
     dropoff_mandi_name = Column(String(200), nullable=True)
     dropoff_stall_number = Column(String(80), nullable=True)
 
-    # ----- Legacy dropoff (kept for backward compat) ----------------------
     dropoff_location = Column(String(255), nullable=True)
     dropoff_lat = Column(Float, nullable=True)
     dropoff_lng = Column(Float, nullable=True)
     pickup_otp = Column(String(4), nullable=True)
     status = Column(String(20), default="PENDING")
+
+    # Populated when the farmer cancels a PENDING order. NULL otherwise.
+    cancellation_reason = Column(String(500), nullable=True)
+
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     farmer = relationship(
@@ -255,23 +170,6 @@ class ProduceRequest(Base):
 
 
 class Trip(Base):
-    """
-    A Trip represents a rider accepting (and fulfilling) a ProduceRequest.
-
-    Lifecycle: ACCEPTED -> PICKED_UP -> DELIVERED (or CANCELLED at any
-    point before DELIVERED). `completed_at` is set when the trip reaches a
-    terminal state (DELIVERED or CANCELLED); it stays NULL while the trip
-    is in progress.
-
-    ## Pickup fields
-
-    These are copied from the ProduceRequest at accept time. Storing them
-    on the Trip too means a rider viewing their active trip doesn't need
-    to join back to the ProduceRequest to display "where am I picking up
-    from?", and a completed trip keeps a frozen snapshot of the address
-    even if the farmer later edits their saved addresses.
-    """
-
     __tablename__ = "trips"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -289,7 +187,6 @@ class Trip(Base):
     created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
     completed_at = Column(DateTime(timezone=True), nullable=True)
 
-    # ----- Pickup snapshot (copied at accept time) ------------------------
     pickup_address = Column(String(500), nullable=True)
     pickup_landmark = Column(String(255), nullable=True)
     pickup_latitude = Column(Float, nullable=True)
@@ -310,12 +207,6 @@ class Trip(Base):
 
 
 class CrateScan(Base):
-    """
-    A single QR-code scan verifying crates at pickup or delivery. A trip
-    typically has (at least) one PICKUP scan and one DELIVERY scan, each
-    tied to whichever authenticated user performed the scan.
-    """
-
     __tablename__ = "crate_scans"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -338,11 +229,6 @@ class CrateScan(Base):
 
 
 class Settlement(Base):
-    """
-    The financial record for one completed (DELIVERED) trip, one-to-one
-    with Trip.
-    """
-
     __tablename__ = "settlements"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -352,7 +238,6 @@ class Settlement(Base):
         unique=True,
         nullable=False,
     )
-
     rider_id = Column(
         UUID(as_uuid=True),
         ForeignKey("users.id", ondelete="SET NULL"),
@@ -364,13 +249,11 @@ class Settlement(Base):
         nullable=True,
     )
 
-    # ----- Rider fare breakdown --------------------------------------------
     base_fare = Column(Float, nullable=False, default=50.0)
     distance_fare = Column(Float, nullable=False)
     weight_surcharge = Column(Float, nullable=False)
     total_payout = Column(Float, nullable=False)
 
-    # ----- Farmer payout breakdown -----------------------------------------
     crop_name = Column(String(50), nullable=True)
     quantity_kg = Column(Float, nullable=True)
     gross_amount = Column(Float, nullable=True)
@@ -378,7 +261,6 @@ class Settlement(Base):
     platform_fee = Column(Float, nullable=True)
     net_payout = Column(Float, nullable=True)
 
-    # ----- Metadata --------------------------------------------------------
     status = Column(String(20), nullable=False, default="PENDING")
     created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
 
