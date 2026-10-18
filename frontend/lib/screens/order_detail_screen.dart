@@ -71,8 +71,8 @@ class OrderDetail {
   }
 
   final String id;
-  final String status; // PENDING / IN_TRANSIT / COMPLETED / CANCELLED
-  final String? tripStatus; // ACCEPTED / PICKED_UP / DELIVERED / CANCELLED
+  final String status;
+  final String? tripStatus;
   final DateTime createdAt;
   final DateTime? completedAt;
   final String? tripId;
@@ -85,7 +85,6 @@ class OrderDetail {
   final CropInfo crop;
   final SettlementInfo? settlement;
 
-  // Structured dropoff — used by the Edit flow to pre-populate the form.
   final String? dropoffDistrict;
   final String? dropoffMandiName;
   final String? dropoffStallNumber;
@@ -96,21 +95,13 @@ class OrderDetail {
   bool get isPending => status == 'PENDING';
   bool get isCancelled => status == 'CANCELLED';
   bool get isCompleted => status == 'COMPLETED';
-
-  /// Rider assigned but not yet picked up.
   bool get isAcceptedState => tripStatus == 'ACCEPTED';
-
-  /// Picked up and en route — status was normalized to IN_TRANSIT.
   bool get isInTransitState =>
       tripStatus == 'PICKED_UP' ||
       (status == 'IN_TRANSIT' && tripStatus != 'ACCEPTED');
 
-  /// Whether the farmer can still edit or cancel this order.
   bool get isEditable => isPending;
 
-  /// Estimated transport cost (farmer pays the rider). Uses the same
-  /// formula the backend applies at settlement time, with the default
-  /// 10 km distance assumption — exact distance is unknown pre-acceptance.
   double get estimatedTransportCost {
     const baseFare = 50.0;
     const distanceKm = 10.0;
@@ -260,9 +251,6 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
   OrderDetail? _order;
   bool _isLoading = true;
   String? _error;
-
-  /// Set true when either the edit flow or the cancel flow succeeded.
-  /// Propagated to the orders list so it knows to refresh on return.
   bool _hasChanged = false;
 
   @override
@@ -270,10 +258,6 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) => _fetch());
   }
-
-  // -------------------------------------------------------------------------
-  // Networking
-  // -------------------------------------------------------------------------
 
   Map<String, String> _headers(AuthProvider auth) => {
         'Authorization': 'Bearer ${auth.token}',
@@ -335,15 +319,15 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
       if (body is Map && body['detail'] != null) {
         return body['detail'].toString();
       }
-    } catch (_) {}
+    } catch (_) {
+      // Fallback if body is not JSON
+      return 'Server error (HTTP ${response.statusCode}). Check backend logs.';
+    }
     return null;
   }
 
-  // -------------------------------------------------------------------------
-  // Actions
-  // -------------------------------------------------------------------------
-
   Future<void> _onEditRequest(OrderDetail order) async {
+    // Navigate to the Book Transport screen in EDIT mode
     final changed = await Navigator.of(context).push<bool>(
       MaterialPageRoute<bool>(
         builder: (_) => Scaffold(
@@ -382,6 +366,25 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
     }
   }
 
+  /// Cancel flow.
+  ///
+  /// Sends `POST /farmer/orders/{id}/cancel` with the chosen reason. The
+  /// backend now guarantees the whole mutation is wrapped in a
+  /// `try/except SQLAlchemyError` with rollback, and reports any raw SQL
+  /// failure as a fixed `500 {"detail": "Failed to cancel order"}` rather
+  /// than leaking a driver message.
+  ///
+  /// On the client we therefore:
+  ///   * Only treat HTTP 200 as success — show a fixed green
+  ///     "Order cancelled successfully" toast and `pop(true)` so the
+  ///     list screen refreshes.
+  ///   * On any non-200 (400/500/…), show a fixed, user-friendly
+  ///     "Could not cancel order. Please try again." toast. We do NOT
+  ///     surface `response.body` — the raw body may contain a stack
+  ///     trace, SQL fragment, or other internal detail we never want
+  ///     rendered in the UI.
+  ///   * On a network exception, show the same fixed message so the
+  ///     user sees a single, clear failure mode.
   Future<void> _onCancelOrder(OrderDetail order) async {
     final reason = await showDialog<String>(
       context: context,
@@ -411,42 +414,45 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
           ..hideCurrentSnackBar()
           ..showSnackBar(
             const SnackBar(
-              content: Text('Order cancelled.'),
+              content: Text('Order cancelled successfully'),
               backgroundColor: _kFarmerGreen,
             ),
           );
+        // Pop back to the orders list. The caller (`FarmerOrdersTab`)
+        // treats a `true` result as "something changed — please refetch"
+        // and will refresh its list automatically.
         Navigator.of(context).pop(true);
         return;
       }
 
+      // Non-200: fixed, user-facing message. Raw response body is
+      // intentionally discarded — it may contain internal details.
       setState(() => _isLoading = false);
-      final message = _extractError(response) ??
-          'Could not cancel order (HTTP ${response.statusCode}).';
       ScaffoldMessenger.of(context)
         ..hideCurrentSnackBar()
         ..showSnackBar(
           SnackBar(
-            content: Text(message),
+            content: const Text(
+              'Could not cancel order. Please try again.',
+            ),
             backgroundColor: Colors.red.shade700,
           ),
         );
-    } catch (e) {
+    } catch (_) {
       if (!mounted) return;
       setState(() => _isLoading = false);
       ScaffoldMessenger.of(context)
         ..hideCurrentSnackBar()
         ..showSnackBar(
           SnackBar(
-            content: Text('Network error: $e'),
+            content: const Text(
+              'Could not cancel order. Please try again.',
+            ),
             backgroundColor: Colors.red.shade700,
           ),
         );
     }
   }
-
-  // -------------------------------------------------------------------------
-  // Build
-  // -------------------------------------------------------------------------
 
   @override
   Widget build(BuildContext context) {
@@ -456,7 +462,6 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
         title: const Text('Order Details'),
         backgroundColor: _kFarmerGreen,
         foregroundColor: Colors.white,
-        // Manual back handling so `_hasChanged` reaches the caller.
         leading: IconButton(
           icon: const Icon(Icons.arrow_back),
           onPressed: () => Navigator.of(context).pop(_hasChanged),
@@ -495,23 +500,19 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
             const SizedBox(height: 16),
           ],
 
-          // SECTION: full order specs — always visible.
           _SpecCard(order: order),
           const SizedBox(height: 16),
 
-          // SECTION: rider card (ACCEPTED only).
           if (order.isAcceptedState && order.hasRider) ...[
             _RiderSection(rider: order.rider!),
             const SizedBox(height: 16),
           ],
 
-          // SECTION: pickup OTP banner (ACCEPTED only).
           if (order.isAcceptedState && order.pickupOtp != null) ...[
             _PickupOtpBanner(otp: order.pickupOtp!),
             const SizedBox(height: 16),
           ],
 
-          // SECTION: progress timeline + payout (IN_TRANSIT/COMPLETED).
           if (order.isInTransitState || order.isCompleted) ...[
             _TimelineCard(order: order),
             const SizedBox(height: 16),
@@ -522,7 +523,6 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
     );
   }
 
-  /// Sticky bottom action bar. Only PENDING orders get actions.
   Widget? _buildStickyActions() {
     final order = _order;
     if (order == null || !order.isPending) return null;
@@ -533,9 +533,7 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
         padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
         decoration: BoxDecoration(
           color: Colors.white,
-          border: Border(
-            top: BorderSide(color: Colors.grey.shade200),
-          ),
+          border: Border(top: BorderSide(color: Colors.grey.shade200)),
         ),
         child: Row(
           children: [
@@ -661,7 +659,7 @@ class _HeaderCard extends StatelessWidget {
 }
 
 // ============================================================================
-// Specs card — crop / weight / route / price estimate
+// Specs card
 // ============================================================================
 
 class _SpecCard extends StatelessWidget {
@@ -773,7 +771,7 @@ class _SpecCard extends StatelessWidget {
 }
 
 // ============================================================================
-// Rider section (ACCEPTED only)
+// Rider section
 // ============================================================================
 
 class _RiderSection extends StatelessWidget {
@@ -859,7 +857,7 @@ class _RiderSection extends StatelessWidget {
 }
 
 // ============================================================================
-// Pickup OTP banner (ACCEPTED only)
+// Pickup OTP banner
 // ============================================================================
 
 class _PickupOtpBanner extends StatelessWidget {
@@ -925,7 +923,7 @@ class _PickupOtpBanner extends StatelessWidget {
 }
 
 // ============================================================================
-// Timeline card (IN_TRANSIT / COMPLETED)
+// Timeline card
 // ============================================================================
 
 class _TimelineCard extends StatelessWidget {

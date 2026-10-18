@@ -96,6 +96,19 @@ async def lifespan(app: FastAPI):
           ADD COLUMN IF NOT EXISTS pickup_longitude DOUBLE PRECISION;
     """
     models.Base.metadata.create_all(bind=engine)
+    
+    # Auto-migration for the new cancellation_reason column
+    with engine.connect() as conn:
+        try:
+            conn.execute(text(
+                "ALTER TABLE produce_requests "
+                "ADD COLUMN IF NOT EXISTS cancellation_reason VARCHAR(500);"
+            ))
+            conn.commit()
+            print("[startup] Checked/added cancellation_reason column.")
+        except Exception as e:
+            print(f"[startup] Migration note: {e}")
+            
     yield
 
 
@@ -730,6 +743,7 @@ async def _fetch_live_rates(
                 ]
 
             if not records:
+                print("[mandi-rates] No records found in Data.gov API response.")
                 return None
 
             parsed = _parse_live_records(records, filter_district=district)
@@ -1616,6 +1630,7 @@ def create_farmer_order(
     except (SQLAlchemyError, ValueError) as e:
         raise HTTPException(status_code=400, detail=str(e))
 
+
 # ---------------------------------------------------------------------------
 # Farmer Order Edit + Cancel
 # ---------------------------------------------------------------------------
@@ -1669,7 +1684,11 @@ def update_farmer_order(
     except SQLAlchemyError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-    result = crud.get_farmer_order_detail(db, order_id, current_user.id)
+    try:
+        result = crud.get_farmer_order_detail(db, order_id, current_user.id)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Database sync error: {str(e)}")
+        
     if result is None:
         raise HTTPException(status_code=404, detail="Order not found")
     return result
@@ -1697,9 +1716,18 @@ def cancel_farmer_order(
 
         "Order cannot be modified or cancelled after acceptance"
 
-    On success the order's status flips to CANCELLED and any in-flight
-    trip locks are released (defensive — a PENDING order normally has
-    no Trip row yet).
+    ## Error handling
+
+    `ValueError` from the CRUD layer (order not found / not PENDING /
+    not owned by this farmer) is surfaced as a 400. Any raw
+    `SQLAlchemyError` — the kind of driver-level failure that used to
+    crash the request with a 500 stack trace — is rolled back inside the
+    CRUD layer and translated here into a fixed, user-safe 500 message.
+    The driver error text itself is never returned to the client.
+
+    On success the order's status flips to CANCELLED and the updated
+    order detail is returned so the client can render the "cancelled"
+    banner without a second GET.
     """
     reason = payload.cancellation_reason if payload else None
 
@@ -1707,13 +1735,21 @@ def cancel_farmer_order(
         crud.cancel_farmer_order(db, order_id, current_user.id, reason)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    except SQLAlchemyError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    except SQLAlchemyError:
+        # Do NOT forward the driver message. Raw SQL / table names must
+        # never leave the server.
+        raise HTTPException(status_code=500, detail="Failed to cancel order")
 
-    result = crud.get_farmer_order_detail(db, order_id, current_user.id)
+    try:
+        result = crud.get_farmer_order_detail(db, order_id, current_user.id)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Database sync error: {str(e)}")
+
     if result is None:
         raise HTTPException(status_code=404, detail="Order not found")
     return result
+
+
 # ---------------------------------------------------------------------------
 # Rider Account
 # ---------------------------------------------------------------------------

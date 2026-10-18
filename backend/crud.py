@@ -1099,16 +1099,25 @@ def cancel_farmer_order(
       - order not found / not owned by this farmer
       - order not in PENDING status (accepted trips are locked)
 
-    "Frees any pending locks": because we only ever cancel PENDING orders,
-    no Trip row exists yet in the normal flow. As a defensive measure, any
-    orphaned Trip in a non-terminal state is also cancelled so no dangling
-    active state survives the order's cancellation.
+    A driver-level SQL error (bad SQL, constraint violation, etc.) is
+    rolled back and re-raised as SQLAlchemyError so the router can translate
+    it into a generic 500 response.
+
+    NOTE: this deliberately does NOT use
+    `joinedload(ProduceRequest.trip)` + `with_for_update()`. The `trip`
+    relationship is nullable (a PENDING order normally has no Trip row yet),
+    and Postgres rejects `SELECT ... FOR UPDATE` against the nullable side
+    of an outer join:
+
+        FOR UPDATE cannot be applied to the nullable side of an outer join
+
+    which was the cause of the crash on cancellation. A PENDING order
+    cannot have a live Trip row assigned to it anyway (the Trip is only
+    created on accept), so we simply update the ProduceRequest row.
     """
     pr = (
         db.query(models.ProduceRequest)
-        .options(joinedload(models.ProduceRequest.trip))
         .filter(models.ProduceRequest.id == order_id)
-        .with_for_update()
         .first()
     )
     if pr is None or pr.farmer_id != farmer_id:
@@ -1120,14 +1129,6 @@ def cancel_farmer_order(
     try:
         pr.status = "CANCELLED"
         pr.cancellation_reason = (reason or "").strip() or None
-
-        if pr.trip is not None and pr.trip.status not in (
-            "DELIVERED",
-            "CANCELLED",
-        ):
-            pr.trip.status = "CANCELLED"
-            pr.trip.completed_at = datetime.utcnow()
-
         db.commit()
         db.refresh(pr)
         return pr

@@ -20,60 +20,21 @@ String get _kApiBaseUrl {
   return 'http://10.28.1.142:8000';
 }
 
-/// Fallback coordinates if the farmer picks a mode but the client can't
-/// resolve a real position — Kolar-area mock used by the previous MVP so
-/// a booking still succeeds if GPS is denied or a saved address has no
-/// coordinates. The backend requires lat/lng, so we always have *some*
-/// value to send.
 const double _kFallbackPickupLat = 13.1362;
 const double _kFallbackPickupLng = 78.1291;
 
-/// Fixed list of districts for the dropdown. Extend as coverage grows.
 const List<String> _kDistricts = [
-  'Bagalkot',
-  'Ballari',
-  'Belagavi',
-  'Bengaluru Rural',
-  'Bengaluru Urban',
-  'Bidar',
-  'Chamarajanagar',
-  'Chikkaballapura',
-  'Chikkamagaluru',
-  'Chitradurga',
-  'Dakshina Kannada',
-  'Davanagere',
-  'Dharwad',
-  'Gadag',
-  'Hassan',
-  'Haveri',
-  'Kalaburagi',
-  'Kodagu',
-  'Kolar',
-  'Koppal',
-  'Mandya',
-  'Mysuru',
-  'Raichur',
-  'Ramanagara',
-  'Shivamogga',
-  'Tumakuru',
-  'Udupi',
-  'Uttara Kannada',
-  'Vijayapura',
-  'Yadgir',
-  'Vijayanagara',
+  'Bagalkot', 'Ballari', 'Belagavi', 'Bengaluru Rural', 'Bengaluru Urban',
+  'Bidar', 'Chamarajanagar', 'Chikkaballapura', 'Chikkamagaluru',
+  'Chitradurga', 'Dakshina Kannada', 'Davanagere', 'Dharwad', 'Gadag',
+  'Hassan', 'Haveri', 'Kalaburagi', 'Kodagu', 'Kolar', 'Koppal', 'Mandya',
+  'Mysuru', 'Raichur', 'Ramanagara', 'Shivamogga', 'Tumakuru', 'Udupi',
+  'Uttara Kannada', 'Vijayapura', 'Yadgir', 'Vijayanagara',
 ];
 
-/// Brand color used across the farmer-side UI.
 const Color _kFarmerGreen = Color(0xFF2E7D32);
 
-/// The three pickup-source modes the farmer can pick from. The enum
-/// keeps the toggle's index arithmetic readable — the UI iterates over
-/// `PickupMode.values` and renders one segment per entry.
 enum PickupMode { gps, saved, manual }
-
-// ---------------------------------------------------------------------------
-// Root dashboard with bottom navigation
-// ---------------------------------------------------------------------------
 
 class FarmerDashboard extends StatefulWidget {
   const FarmerDashboard({super.key});
@@ -83,17 +44,10 @@ class FarmerDashboard extends StatefulWidget {
 }
 
 class _FarmerDashboardState extends State<FarmerDashboard> {
-  // Position within the IndexedStack. Maps 1:1 with the BottomNavigationBar
-  // items below — 0 = Home, 1 = My Orders, 2 = Earnings, 3 = Account.
-  // Book Transport is not a tab; it opens as a modal route (see
-  // _openBookTransport).
   int _currentIndex = 0;
 
   static const List<String> _titles = [
-    'KisanRider',
-    'My Orders',
-    'Earnings',
-    'Account',
+    'KisanRider', 'My Orders', 'Earnings', 'Account',
   ];
 
   void _goToTab(int index) {
@@ -101,28 +55,17 @@ class _FarmerDashboardState extends State<FarmerDashboard> {
     setState(() => _currentIndex = index);
   }
 
-  /// Called by FarmerHomeTab for its quick actions.
-  ///
-  /// The home tab still uses its original convention: 1 = "Book Transport",
-  /// 2 = "My Orders". Since Book Transport is no longer a bottom-nav tab,
-  /// we intercept that here and open it as a modal route, rather than
-  /// renumbering the tabs (which would require editing farmer_home_tab.dart).
   void _handleHomeTabSwitch(int requestedIndex) {
     switch (requestedIndex) {
       case 1:
         _openBookTransport();
         break;
       case 2:
-        // My Orders now lives at stack index 1 (was 2 in the old layout).
         _goToTab(1);
         break;
     }
   }
 
-  /// Pushes the Book Transport form as a full-screen page with its own
-  /// AppBar. Kept as a route rather than a bottom-nav tab so the nav bar
-  /// stays focused on persistent sections (Home / My Orders / Earnings /
-  /// Account).
   void _openBookTransport() {
     Navigator.of(context).push(
       MaterialPageRoute<void>(
@@ -153,9 +96,6 @@ class _FarmerDashboardState extends State<FarmerDashboard> {
           ),
         ],
       ),
-      // IndexedStack keeps every tab's state alive across switches, so a
-      // partially-loaded orders list or an in-progress fetch survives a
-      // trip to Earnings and back.
       body: IndexedStack(
         index: _currentIndex,
         children: [
@@ -168,7 +108,6 @@ class _FarmerDashboardState extends State<FarmerDashboard> {
       bottomNavigationBar: BottomNavigationBar(
         currentIndex: _currentIndex,
         onTap: _goToTab,
-        // Fixed keeps all 4 labels visible regardless of the active tab.
         type: BottomNavigationBarType.fixed,
         selectedItemColor: _kFarmerGreen,
         unselectedItemColor: Colors.grey.shade600,
@@ -201,31 +140,12 @@ class _FarmerDashboardState extends State<FarmerDashboard> {
 }
 
 // ---------------------------------------------------------------------------
-// Book Transport form
-//
-// Reached as a pushed route rather than a bottom-nav tab. Kept in this file
-// since nothing else references it — move it into its own file if this one
-// gets too large.
-//
-// Supports BOTH create and edit modes:
-//
-//   * Create mode (no `editOrderId`): the original booking flow. POSTs to
-//     `/produce-requests/`. Uses the 3-way pickup picker (GPS / Saved /
-//     Manual).
-//
-//   * Edit mode (`editOrderId` set): opened from the Order Detail screen
-//     when the farmer taps "Edit Request" on a PENDING order. Pre-fills
-//     the crop/weight/district/mandi/notes fields from the current order,
-//     shows the pickup address as read-only (the pickup is fixed — the
-//     farmer can only edit the notes), and PUTs to
-//     `/farmer/orders/{editOrderId}`. The submit button is relabelled to
-//     "Update Request".
+// Book Transport form — supports BOTH create and edit modes.
 // ---------------------------------------------------------------------------
 
 class FarmerBookTransportTab extends StatefulWidget {
   const FarmerBookTransportTab({
     super.key,
-    // ----- Edit-mode wiring (all null in create mode) -----
     this.editOrderId,
     this.initialCropType,
     this.initialWeightKg,
@@ -236,11 +156,7 @@ class FarmerBookTransportTab extends StatefulWidget {
     this.initialPickupLandmark,
   });
 
-  /// When non-null the form is in EDIT mode — the order id is the target
-  /// of the PUT. See class docstring for field mapping.
   final String? editOrderId;
-
-  // Pre-populated values (edit mode only).
   final String? initialCropType;
   final double? initialWeightKg;
   final String? initialDropoffDistrict;
@@ -258,60 +174,27 @@ class FarmerBookTransportTab extends StatefulWidget {
 class _FarmerBookTransportTabState extends State<FarmerBookTransportTab> {
   final _formKey = GlobalKey<FormState>();
 
-  // ----- Produce details --------------------------------------------------
   final TextEditingController _cropController = TextEditingController();
-
-  /// Weight in kilograms. This is the sole quantity metric on the booking
-  /// (the previous crate-count field was replaced by this field as part of
-  /// the Book Transport refactor — the payload now sends `weight_kg` as a
-  /// double).
   final TextEditingController _weightKgController = TextEditingController();
-
-  // ----- Pickup (3-way selector — create mode only) -----------------------
-  PickupMode _pickupMode = PickupMode.gps;
-
-  /// Landmark field, shared by the GPS and Manual modes. Saved mode fills
-  /// it from the chip the farmer taps. Always sent to the backend.
-  /// In EDIT mode this doubles as the "Pickup Notes" field (the field
-  /// mapping PUTs it to `pickup_notes`).
-  final TextEditingController _pickupLandmarkController =
-      TextEditingController();
-
-  /// Manual mode's address field. Ignored (and hidden) in GPS mode.
+  final TextEditingController _pickupLandmarkController = TextEditingController();
   final TextEditingController _manualAddressController = TextEditingController();
+  final TextEditingController _shopController = TextEditingController();
 
-  /// Manual mode's "save for next time" checkbox.
+  PickupMode _pickupMode = PickupMode.gps;
   bool _saveAddressForFuture = false;
 
-  /// GPS state.
   bool _isFetchingLocation = false;
   String? _gpsAddress;
   double? _gpsLat;
   double? _gpsLng;
   String? _gpsError;
 
-  /// Saved-addresses state.
   List<Map<String, dynamic>> _savedAddresses = [];
   bool _isLoadingAddresses = false;
   String? _savedAddressesError;
-
-  /// Index into `_savedAddresses` for the currently-picked chip, or null
-  /// when the farmer hasn't picked one yet.
   int? _selectedSavedIndex;
 
-  // ----- Dropoff ----------------------------------------------------------
-  final TextEditingController _shopController = TextEditingController();
-
-  /// Selected dropoff district. Pre-selected from the farmer's registered
-  /// district (via AuthProvider) on first frame when it matches one of the
-  /// 31 supported Karnataka districts — the dropdown stays fully editable
-  /// afterwards, so the farmer can switch to any other district.
   String? _selectedDistrict;
-
-  /// Markets returned by GET /mandi/markets — the merged list of official
-  /// APMC yards (type == 'APMC_YARD') and web-searched local markets
-  /// (type == 'LOCAL_MARKET'). Each entry is `{id, name, type, district,
-  /// address, lat, lng}`.
   List<Map<String, dynamic>> _mandis = [];
   int? _selectedMandiIndex;
   bool _isLoadingMandis = false;
@@ -324,7 +207,6 @@ class _FarmerBookTransportTabState extends State<FarmerBookTransportTab> {
   void initState() {
     super.initState();
 
-    // Seed controllers from edit params (no-op in create mode).
     if (widget.isEditing) {
       _cropController.text = widget.initialCropType ?? '';
       _weightKgController.text = widget.initialWeightKg != null
@@ -334,25 +216,17 @@ class _FarmerBookTransportTabState extends State<FarmerBookTransportTab> {
       _shopController.text = widget.initialDropoffStallNumber ?? '';
     }
 
-    // Provider/context is only safe after the first frame.
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       if (widget.isEditing) {
-        // Edit mode: skip GPS fetch and saved-addresses load — the pickup
-        // is frozen. Just seed the district and the market list.
         await _initializeEditMode();
       } else {
         _loadSavedAddresses();
-        // GPS fetch is opportunistic: if the farmer leaves it alone, we
-        // fall back to the mock coordinates on submit.
         _fetchCurrentLocation();
         await _preselectProfileDistrict();
       }
     });
   }
 
-  /// Edit-mode bootstrap: seed the district dropdown from the current
-  /// order's dropoff district, load that district's market list, then
-  /// resolve the mandi selection by matching the stored mandi name.
   Future<void> _initializeEditMode() async {
     final district = widget.initialDropoffDistrict;
     if (district == null ||
@@ -376,10 +250,6 @@ class _FarmerBookTransportTabState extends State<FarmerBookTransportTab> {
     }
   }
 
-  /// Pre-selects the farmer's registered district (from AuthProvider) if
-  /// it matches one of the 31 supported Karnataka districts, and kicks off
-  /// the market lookup for it. The dropdown remains editable — this only
-  /// saves the farmer a tap on the common case.
   Future<void> _preselectProfileDistrict() async {
     final auth = context.read<AuthProvider>();
     final profileDistrict = (auth.district ?? '').trim();
@@ -401,10 +271,6 @@ class _FarmerBookTransportTabState extends State<FarmerBookTransportTab> {
     super.dispose();
   }
 
-  // -------------------------------------------------------------------------
-  // Auth helper
-  // -------------------------------------------------------------------------
-
   Map<String, String> _headers(AuthProvider auth, {bool json = false}) {
     final h = <String, String>{
       'Authorization': 'Bearer ${auth.token}',
@@ -414,14 +280,6 @@ class _FarmerBookTransportTabState extends State<FarmerBookTransportTab> {
     return h;
   }
 
-  // -------------------------------------------------------------------------
-  // GPS mode
-  // -------------------------------------------------------------------------
-
-  /// Asks the platform for the current position, then reverse-geocodes
-  /// the coordinates into a readable address. Every failure path is
-  /// rendered as a status line under the toggle — the farmer can still
-  /// fall back to Manual or Saved without losing the form.
   Future<void> _fetchCurrentLocation() async {
     setState(() {
       _isFetchingLocation = true;
@@ -429,9 +287,6 @@ class _FarmerBookTransportTabState extends State<FarmerBookTransportTab> {
     });
 
     try {
-      // 1. Permission. If the user hasn't decided yet, request it now;
-      //    if they've denied it permanently, we can only point them at
-      //    the settings screen, which we surface as an error.
       LocationPermission permission = await Geolocator.checkPermission();
       if (permission == LocationPermission.denied) {
         permission = await Geolocator.requestPermission();
@@ -447,15 +302,10 @@ class _FarmerBookTransportTabState extends State<FarmerBookTransportTab> {
         return;
       }
 
-      // 2. Fix. `getCurrentPosition` with a medium accuracy hint is fast
-      //    enough for a farm address and precise enough for the 50 km
-      //    rider search radius.
       final Position pos = await Geolocator.getCurrentPosition(
         desiredAccuracy: LocationAccuracy.medium,
       );
 
-      // 3. Reverse geocode. Failures here are non-fatal — we still have
-      //    usable coordinates, we just can't pretty-print them.
       String? readable;
       try {
         final placemarks = await placemarkFromCoordinates(
@@ -474,9 +324,7 @@ class _FarmerBookTransportTabState extends State<FarmerBookTransportTab> {
           ];
           readable = parts.join(', ');
         }
-      } catch (_) {
-        // Swallow — coordinates are still valid.
-      }
+      } catch (_) {}
 
       if (!mounted) return;
       setState(() {
@@ -496,10 +344,6 @@ class _FarmerBookTransportTabState extends State<FarmerBookTransportTab> {
       });
     }
   }
-
-  // -------------------------------------------------------------------------
-  // Saved addresses
-  // -------------------------------------------------------------------------
 
   Future<void> _loadSavedAddresses() async {
     final auth = context.read<AuthProvider>();
@@ -551,13 +395,6 @@ class _FarmerBookTransportTabState extends State<FarmerBookTransportTab> {
     });
   }
 
-  // -------------------------------------------------------------------------
-  // Mandi lookup
-  // -------------------------------------------------------------------------
-
-  /// Fires when the user picks a district. Clears any prior mandi selection,
-  /// hits the dual-source `/mandi/markets` endpoint, and populates the
-  /// dropdown with the merged APMC + local market list.
   Future<void> _onDistrictChanged(String? district) async {
     if (district == null) return;
 
@@ -582,9 +419,6 @@ class _FarmerBookTransportTabState extends State<FarmerBookTransportTab> {
 
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body) as Map<String, dynamic>;
-        // New response shape: `{district, markets: [...]}`. Each entry
-        // carries `{id, name, type, district, address, lat, lng}` where
-        // `type` is either 'APMC_YARD' or 'LOCAL_MARKET'.
         final list = (data['markets'] as List<dynamic>?) ?? const [];
 
         setState(() {
@@ -613,24 +447,9 @@ class _FarmerBookTransportTabState extends State<FarmerBookTransportTab> {
     }
   }
 
-  // -------------------------------------------------------------------------
-  // Submit
-  // -------------------------------------------------------------------------
-
-  /// Resolve the pickup (address, landmark, lat, lng) that will be sent
-  /// to the backend, based on which mode is active.
-  ///
-  /// Returns null on a validation failure — the caller has already set
-  /// `_submitError` by then, so it just needs to bail out.
-  ///
-  /// Only used in CREATE mode. Edit mode doesn't touch the pickup
-  /// coordinates — the farmer can only adjust the notes field.
   ({String address, String landmark, double lat, double lng})? _resolvePickup() {
     switch (_pickupMode) {
       case PickupMode.gps:
-        // GPS is optional in practice — if the fix failed we still send
-        // the fallback coordinates with an empty address, and the
-        // backend stores a valid booking.
         return (
           address: _gpsAddress ?? '',
           landmark: _pickupLandmarkController.text.trim(),
@@ -680,10 +499,7 @@ class _FarmerBookTransportTabState extends State<FarmerBookTransportTab> {
     }
   }
 
-  /// Create-mode submission — POSTs to `/produce-requests/`.
   Future<void> _submitCreate() async {
-    // Pickup resolution happens before the "select a mandi" check because
-    // it's a smaller, more targeted error to surface first.
     final pickup = _resolvePickup();
     if (pickup == null) return;
 
@@ -703,21 +519,11 @@ class _FarmerBookTransportTabState extends State<FarmerBookTransportTab> {
     final mandiId = (mandi['id'] ?? '').toString();
     final shop = _shopController.text.trim();
     final dropoff = shop.isEmpty ? mandiName : '$mandiName - $shop';
-
-    // Weight is the sole quantity metric — parse the single input value
-    // once and reuse it for both the payload and (implicitly) the fare
-    // calculation that runs on the backend.
     final weightKg = double.parse(_weightKgController.text.trim());
-
-    // The auto-save flag is only meaningful for Manual and GPS — saved
-    // mode is already booked. We still send `true` for those so the
-    // backend can decide.
     final saveForFuture =
         _pickupMode != PickupMode.saved && _saveAddressForFuture;
 
-    setState(() {
-      _isSubmitting = true;
-    });
+    setState(() => _isSubmitting = true);
 
     try {
       final response = await http.post(
@@ -725,16 +531,12 @@ class _FarmerBookTransportTabState extends State<FarmerBookTransportTab> {
         headers: _headers(auth, json: true),
         body: jsonEncode({
           'crop_type': _cropController.text.trim(),
-          // Sole quantity metric — sent as a float/double.
           'weight_kg': weightKg,
           'latitude': pickup.lat,
           'longitude': pickup.lng,
           'pickup_address': pickup.address,
           'pickup_landmark': pickup.landmark,
           'save_address_for_future': saveForFuture,
-          // Structured dropoff fields — the backend writes these to
-          // first-class columns. `dropoff_location` is still sent as a
-          // legacy composite so older display code keeps working.
           'dropoff_district': _selectedDistrict,
           'dropoff_mandi_id': mandiId.isEmpty ? null : mandiId,
           'dropoff_mandi_name': mandiName,
@@ -746,9 +548,6 @@ class _FarmerBookTransportTabState extends State<FarmerBookTransportTab> {
       if (!mounted) return;
 
       if (response.statusCode == 201) {
-        // Reset produce + dropoff state; keep the pickup selection alive
-        // since a farmer booking a second load from the same barn almost
-        // always uses the same pickup.
         _cropController.clear();
         _weightKgController.clear();
         _shopController.clear();
@@ -759,7 +558,6 @@ class _FarmerBookTransportTabState extends State<FarmerBookTransportTab> {
           _isSubmitting = false;
         });
 
-        // A freshly-saved address should show up in the chip row.
         if (saveForFuture) {
           unawaited(_loadSavedAddresses());
         }
@@ -786,13 +584,6 @@ class _FarmerBookTransportTabState extends State<FarmerBookTransportTab> {
     }
   }
 
-  /// Edit-mode submission — PUTs to `/farmer/orders/{editOrderId}`.
-  ///
-  /// The pickup coordinates are intentionally NOT sent: the backend's
-  /// update endpoint only accepts the crop/weight/dropoff/pickup-notes
-  /// fields, and the pickup location is frozen once the order is placed
-  /// (contact support to change it). The farmer can still adjust the
-  /// notes/landmark line, which the PUT maps to `pickup_notes`.
   Future<void> _submitEdit() async {
     if (_selectedMandiIndex == null) {
       setState(() => _submitError = 'Please select a dropoff market.');
@@ -810,9 +601,7 @@ class _FarmerBookTransportTabState extends State<FarmerBookTransportTab> {
     final shop = _shopController.text.trim();
     final weightKg = double.parse(_weightKgController.text.trim());
 
-    setState(() {
-      _isSubmitting = true;
-    });
+    setState(() => _isSubmitting = true);
 
     try {
       final response = await http.put(
@@ -859,10 +648,6 @@ class _FarmerBookTransportTabState extends State<FarmerBookTransportTab> {
     return null;
   }
 
-  // -------------------------------------------------------------------------
-  // Build
-  // -------------------------------------------------------------------------
-
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -877,8 +662,6 @@ class _FarmerBookTransportTabState extends State<FarmerBookTransportTab> {
 
     return SafeArea(
       child: SingleChildScrollView(
-        // The Scaffold handles keyboard inset automatically; just pad the
-        // bottom so the last field isn't hidden behind the keyboard.
         padding: const EdgeInsets.fromLTRB(20, 20, 20, 32),
         child: Form(
           key: _formKey,
@@ -903,11 +686,6 @@ class _FarmerBookTransportTabState extends State<FarmerBookTransportTab> {
               ),
               const SizedBox(height: 24),
 
-              // ============================================================
-              // PRODUCE DETAILS
-              // ============================================================
-
-              // ----- Crop name --------------------------------------------
               TextFormField(
                 controller: _cropController,
                 enabled: !_isSubmitting,
@@ -927,10 +705,6 @@ class _FarmerBookTransportTabState extends State<FarmerBookTransportTab> {
               ),
               const SizedBox(height: 16),
 
-              // ----- Weight (in KG) ---------------------------------------
-              // Replaces the previous "Crate Count" field. The fare is
-              // calculated from this weight on the backend, so it's the
-              // sole quantity metric on the payload.
               TextFormField(
                 controller: _weightKgController,
                 enabled: !_isSubmitting,
@@ -960,25 +734,11 @@ class _FarmerBookTransportTabState extends State<FarmerBookTransportTab> {
               ),
               const SizedBox(height: 24),
 
-              // ============================================================
-              // PICKUP LOCATION
-              // ============================================================
-              // In edit mode the pickup is frozen — show the address as
-              // read-only and let the farmer adjust only the notes line.
-              // In create mode show the full 3-way picker.
               widget.isEditing
                   ? _buildEditPickupSection(theme)
                   : _buildPickupSection(theme),
               const SizedBox(height: 24),
 
-              // ============================================================
-              // DROPOFF / MANDI
-              // ============================================================
-
-              // ----- District dropdown ------------------------------------
-              // Pre-selected from the farmer's profile on first frame when
-              // the profile district is one of the 31 supported districts.
-              // The dropdown stays fully editable.
               DropdownButtonFormField<String>(
                 value: _selectedDistrict,
                 isExpanded: true,
@@ -998,11 +758,6 @@ class _FarmerBookTransportTabState extends State<FarmerBookTransportTab> {
               ),
               const SizedBox(height: 16),
 
-              // ----- Market / APMC dropdown -------------------------------
-              // Backed by /mandi/markets, which merges official APMC yards
-              // (type == 'APMC_YARD') with locally-searched markets
-              // (type == 'LOCAL_MARKET'). Each row shows a small badge so
-              // the farmer can tell which one they're picking.
               DropdownButtonFormField<int>(
                 value: _selectedMandiIndex,
                 isExpanded: true,
@@ -1093,7 +848,6 @@ class _FarmerBookTransportTabState extends State<FarmerBookTransportTab> {
               ],
               const SizedBox(height: 16),
 
-              // ----- Shop / stall (optional) ------------------------------
               TextFormField(
                 controller: _shopController,
                 enabled: !_isSubmitting,
@@ -1138,13 +892,6 @@ class _FarmerBookTransportTabState extends State<FarmerBookTransportTab> {
     );
   }
 
-  // -------------------------------------------------------------------------
-  // Edit-mode pickup section
-  // -------------------------------------------------------------------------
-
-  /// Compact pickup block for edit mode: renders the current pickup
-  /// address as read-only (the pickup location is frozen), and exposes
-  /// only the "Pickup Notes" field which the PUT maps to `pickup_notes`.
   Widget _buildEditPickupSection(ThemeData theme) {
     final address = (widget.initialPickupAddress ?? '').trim();
     return Container(
@@ -1226,10 +973,6 @@ class _FarmerBookTransportTabState extends State<FarmerBookTransportTab> {
     );
   }
 
-  // -------------------------------------------------------------------------
-  // Pickup section sub-widgets (create mode)
-  // -------------------------------------------------------------------------
-
   Widget _buildPickupSection(ThemeData theme) {
     return Container(
       padding: const EdgeInsets.all(16),
@@ -1256,12 +999,8 @@ class _FarmerBookTransportTabState extends State<FarmerBookTransportTab> {
             ],
           ),
           const SizedBox(height: 12),
-
-          // ----- Toggle ---------------------------------------------------
           _buildPickupToggle(theme),
           const SizedBox(height: 16),
-
-          // ----- Body (mode-specific) ------------------------------------
           AnimatedSize(
             duration: const Duration(milliseconds: 220),
             curve: Curves.easeOutCubic,
@@ -1307,9 +1046,6 @@ class _FarmerBookTransportTabState extends State<FarmerBookTransportTab> {
               if (selection.isEmpty) return;
               setState(() {
                 _pickupMode = selection.first;
-                // Clear the submit error so a mode switch doesn't leave a
-                // stale "please enter the village name" from a prior
-                // attempt.
                 _submitError = null;
               });
             },
@@ -1322,8 +1058,6 @@ class _FarmerBookTransportTabState extends State<FarmerBookTransportTab> {
       ),
     );
   }
-
-  // ----- GPS mode body ----------------------------------------------------
 
   Widget _buildGpsBody(ThemeData theme) {
     return KeyedSubtree(
@@ -1381,8 +1115,6 @@ class _FarmerBookTransportTabState extends State<FarmerBookTransportTab> {
             ),
           ),
           const SizedBox(height: 12),
-
-          // Landmark field, shared with Manual mode.
           TextFormField(
             controller: _pickupLandmarkController,
             enabled: !_isSubmitting,
@@ -1399,8 +1131,6 @@ class _FarmerBookTransportTabState extends State<FarmerBookTransportTab> {
       ),
     );
   }
-
-  // ----- Saved places body ------------------------------------------------
 
   Widget _buildSavedBody(ThemeData theme) {
     return KeyedSubtree(
@@ -1538,8 +1268,6 @@ class _FarmerBookTransportTabState extends State<FarmerBookTransportTab> {
     );
   }
 
-  // ----- Manual entry body ------------------------------------------------
-
   Widget _buildManualBody(ThemeData theme) {
     return KeyedSubtree(
       key: const ValueKey('pickup_manual'),
@@ -1594,12 +1322,6 @@ class _FarmerBookTransportTabState extends State<FarmerBookTransportTab> {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Small helper — `unawaited` is available from dart:async but importing it
-// here pulls in a lot of surface area for one call. Define a tiny wrapper.
-// ---------------------------------------------------------------------------
-
 void unawaited(Future<void> future) {
-  // Fire-and-forget: we don't care about the result.
   future.catchError((_) {});
 }
