@@ -515,8 +515,7 @@ class _ActiveTripCard extends StatelessWidget {
             // ----- Cargo & pickup ----------------------------------------
             InfoRow(
               icon: Icons.inventory_2_outlined,
-              label: '${trip.crateCount} crates · '
-                  '${trip.weightKg.toStringAsFixed(0)} kg',
+              label: '${trip.weightKg.toStringAsFixed(0)} kg',
             ),
             const SizedBox(height: 6),
 

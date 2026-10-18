@@ -157,20 +157,17 @@ class CropInfo {
   CropInfo({
     required this.cropName,
     required this.weightKg,
-    required this.crateCount,
   });
 
   factory CropInfo.fromJson(Map<String, dynamic> json) {
     return CropInfo(
       cropName: (json['crop_name'] ?? '—').toString(),
       weightKg: ((json['weight_kg'] ?? 0) as num).toDouble(),
-      crateCount: ((json['crate_count'] ?? 0) as num).toInt(),
     );
   }
 
   final String cropName;
   final double weightKg;
-  final int crateCount;
 }
 
 class SettlementInfo {
@@ -225,7 +222,7 @@ class SettlementInfo {
 ///   3. Rider & Vehicle — name, phone (with call button), vehicle type,
 ///      license plate.
 ///   4. Location Details — pickup and dropoff blocks.
-///   5. Crop Details — crop, weight, crate count.
+///   5. Crop Details — crop and weight.
 ///   6. Financial Breakdown — gross, transport fee, platform fee,
 ///      net payout, settlement status.
 class OrderDetailScreen extends StatefulWidget {
@@ -784,10 +781,6 @@ class _CropCard extends StatelessWidget {
           _DetailRow(
             label: 'Weight',
             value: '${crop.weightKg.toStringAsFixed(0)} kg',
-          ),
-          _DetailRow(
-            label: 'Crate / Bag Count',
-            value: crop.crateCount.toString(),
           ),
         ],
       ),

@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
+import 'package:geolocator/geolocator.dart';
 import 'package:http/http.dart' as http;
 import 'package:provider/provider.dart';
 
@@ -17,8 +18,19 @@ import 'rider_common.dart';
 /// position and in-flight taps are preserved.
 const Duration _kPollingInterval = Duration(seconds: 3);
 
+/// How often the rider's live GPS position is refreshed.
+///
+/// The nearby feed is a 50 km geofence around the rider's position, so a
+/// stale position means the feed silently drifts away from where the
+/// rider actually is. Five minutes is short enough that a rider who has
+/// driven across the search radius sees a fresh feed on the next tick,
+/// long enough that a stationary rider isn't burning battery on
+/// continuous GPS acquisition. Manual pull-to-refresh always re-acquires,
+/// regardless of this interval.
+const Duration _kPositionRefreshInterval = Duration(minutes: 5);
+
 /// Tab 0 of the rider shell: a feed of PENDING produce requests near the
-/// rider's (mocked) location, each accepting → POST /trips/accept.
+/// rider's current location, each accepting → POST /trips/accept.
 ///
 /// ## Ordering
 ///
@@ -28,6 +40,23 @@ const Duration _kPollingInterval = Duration(seconds: 3);
 /// suspenders approach means a proxy reordering the JSON array, or an
 /// older backend still sorting by distance, can't accidentally surface a
 /// stale request above a fresh one.
+///
+/// ## Rider location
+///
+/// The nearby feed is served by the backend's PostGIS `ST_DWithin` query,
+/// which is centered on the (lat, lng) this widget sends. That position
+/// comes from the device's live GPS — resolved once on init, re-resolved
+/// on every manual pull-to-refresh, and refreshed in the background every
+/// [_kPositionRefreshInterval] so a rider who has driven away from their
+/// starting point sees the correct slice of nearby requests. The last
+/// successfully acquired position is cached in `_lastKnownPosition` and
+/// reused if a subsequent acquisition fails, so a momentary GPS outage
+/// doesn't blank the feed.
+///
+/// If the rider has denied location permission, the feed shows an
+/// explanatory empty state with an "Open Settings" button rather than
+/// falling back to a fixed coordinate (which would show requests from a
+/// completely different part of Karnataka).
 ///
 /// ## Auto-refresh
 ///
@@ -59,15 +88,39 @@ class _RiderAvailableTabState extends State<RiderAvailableTab>
   /// of the widget; cancelled in [dispose].
   Timer? _pollTimer;
 
+  /// The last GPS position successfully acquired. Used as the (lat, lng)
+  /// origin for the nearby-search, and cached so a subsequent GPS failure
+  /// doesn't blank the feed. Cleared only on `dispose`.
+  Position? _lastKnownPosition;
+
+  /// When [_lastKnownPosition] was last set. A silent polling tick reuses
+  /// the cached position if it's fresher than [_kPositionRefreshInterval];
+  /// older than that, we re-acquire. Manual pull-to-refresh always
+  /// re-acquires, regardless of this timestamp.
+  DateTime? _lastPositionFetch;
+
+  /// True when the rider has refused (or permanently refused) location
+  /// permission. Drives the "Enable Location" empty state; cleared once
+  /// the user grants permission via the OS settings screen.
+  bool _permissionDenied = false;
+
+  /// Guard so two concurrent calls to `_resolveRiderPosition` (e.g. an
+  /// initState fetch and a polling tick firing simultaneously) don't both
+  /// invoke `requestPermission` / `getCurrentPosition`.
+  bool _isResolvingPosition = false;
+
   @override
   bool get wantKeepAlive => true;
 
   @override
   void initState() {
     super.initState();
-    // Provider/context is only safe after the first frame.
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      _fetch();
+    // Provider/context is only safe after the first frame. The first fetch
+    // is deliberately awaited after the position is resolved — feeding
+    // the backend a stale fixed coordinate would show the wrong slice of
+    // requests.
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      await _fetch();
       _startPolling();
     });
   }
@@ -100,6 +153,79 @@ class _RiderAvailableTabState extends State<RiderAvailableTab>
   }
 
   // -------------------------------------------------------------------------
+  // Rider location
+  // -------------------------------------------------------------------------
+
+  /// Resolve the rider's current position, honoring the caching and
+  /// permission rules described on the class docstring.
+  ///
+  /// * `forceRefresh = false` (silent polling tick): reuse the cached
+  ///   position if it's fresher than [_kPositionRefreshInterval].
+  /// * `forceRefresh = true` (initial load, manual pull-to-refresh):
+  ///   always try to re-acquire.
+  ///
+  /// Returns the last-known position on a transient acquisition failure
+  /// (so a momentary GPS blip doesn't blank the feed). Returns `null`
+  /// only if no position has *ever* been acquired and the current attempt
+  /// also failed — including the permission-denied case, which also sets
+  /// [_permissionDenied] so `build()` can render the enable-location
+  /// empty state.
+  Future<Position?> _resolveRiderPosition({bool forceRefresh = false}) async {
+    // Non-forced path: reuse a fresh-enough cache.
+    if (!forceRefresh &&
+        _lastKnownPosition != null &&
+        _lastPositionFetch != null) {
+      final age = DateTime.now().difference(_lastPositionFetch!);
+      if (age < _kPositionRefreshInterval) {
+        return _lastKnownPosition;
+      }
+    }
+
+    // Guard against concurrent resolution calls.
+    if (_isResolvingPosition) {
+      return _lastKnownPosition;
+    }
+
+    _isResolvingPosition = true;
+    try {
+      // 1. Permission.
+      LocationPermission permission = await Geolocator.checkPermission();
+      if (permission == LocationPermission.denied) {
+        permission = await Geolocator.requestPermission();
+      }
+      if (permission == LocationPermission.denied ||
+          permission == LocationPermission.deniedForever) {
+        if (mounted) {
+          setState(() => _permissionDenied = true);
+        }
+        return _lastKnownPosition;
+      }
+
+      // Permission granted — clear any stale denial flag so the UI
+      // switches back to the normal feed once the OS-level grant lands.
+      if (mounted && _permissionDenied) {
+        setState(() => _permissionDenied = false);
+      }
+
+      // 2. Fix.
+      try {
+        final pos = await Geolocator.getCurrentPosition(
+          desiredAccuracy: LocationAccuracy.medium,
+        );
+        _lastKnownPosition = pos;
+        _lastPositionFetch = DateTime.now();
+        return pos;
+      } catch (_) {
+        // Transient GPS failure (indoors, weak signal) — fall back to the
+        // cached position if we have one, so the feed doesn't blank.
+        return _lastKnownPosition;
+      }
+    } finally {
+      _isResolvingPosition = false;
+    }
+  }
+
+  // -------------------------------------------------------------------------
   // Networking
   // -------------------------------------------------------------------------
 
@@ -119,6 +245,9 @@ class _RiderAvailableTabState extends State<RiderAvailableTab>
   /// on screen). [silent] = false (the default) is used for the first
   /// load, pull-to-refresh, and the retry button, where the user needs
   /// visual feedback.
+  ///
+  /// Also decides whether to re-acquire the rider's GPS position based on
+  /// [silent] and the cache age — see [_resolveRiderPosition].
   Future<void> _fetch({bool silent = false}) async {
     final auth = context.read<AuthProvider>();
     if (auth.token == null) {
@@ -138,11 +267,36 @@ class _RiderAvailableTabState extends State<RiderAvailableTab>
       });
     }
 
+    // Resolve the rider's position — either from cache or fresh GPS.
+    // Manual refresh always re-acquires; silent ticks reuse the cache
+    // until it's older than [_kPositionRefreshInterval].
+    final Position? position = await _resolveRiderPosition(
+      forceRefresh: !silent,
+    );
+    if (position == null) {
+      // No position, no cache. Two cases:
+      //   - permission denied → the build() method renders an
+      //     "Enable Location" empty state from `_permissionDenied`.
+      //   - transient failure on first load → surface an error so the
+      //     user can retry.
+      if (!mounted) return;
+      if (!silent) {
+        setState(() {
+          _isLoading = false;
+          if (!_permissionDenied) {
+            _error = 'Could not determine your location. '
+                'Please check that GPS is enabled and try again.';
+          }
+        });
+      }
+      return;
+    }
+
     try {
       final uri = Uri.parse('$kApiBaseUrl/produce-requests/nearby').replace(
         queryParameters: {
-          'lat': kRiderLat.toString(),
-          'lng': kRiderLng.toString(),
+          'lat': position.latitude.toString(),
+          'lng': position.longitude.toString(),
           'radius_km': kSearchRadiusKm.toString(),
         },
       );
@@ -264,6 +418,20 @@ class _RiderAvailableTabState extends State<RiderAvailableTab>
   Widget build(BuildContext context) {
     super.build(context);
 
+    // Permission-denied takes precedence over the loading spinner and the
+    // empty state — showing "no requests nearby" while the actual reason
+    // is "we don't know where you are" would be misleading.
+    if (_permissionDenied) {
+      return _LocationPermissionDeniedState(
+        onRetry: () async {
+          // The OS-level permission may have been granted in Settings
+          // since the last attempt — re-check it before showing the
+          // dialog again.
+          await _fetch();
+        },
+      );
+    }
+
     if (_isLoading) {
       return const Center(child: CircularProgressIndicator());
     }
@@ -304,6 +472,103 @@ class _RiderAvailableTabState extends State<RiderAvailableTab>
             onAccept: _acceptingId == null ? () => _accept(r) : null,
           );
         },
+      ),
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Location-permission-denied empty state
+// ---------------------------------------------------------------------------
+
+/// Shown when the rider hasn't granted location permission. The nearby
+/// feed is a 50 km geofence around the rider's actual position, so without
+/// GPS there is nothing truthful to show — a hardcoded fallback would
+/// surface requests from a different part of Karnataka.
+///
+/// The "Open Settings" button uses `Geolocator.openAppSettings()`, which
+/// deep-links to the OS settings screen where the rider can grant
+/// permission. Once they return, the Retry callback (passed by the parent)
+/// re-runs the fetch, which re-checks the permission.
+class _LocationPermissionDeniedState extends StatelessWidget {
+  const _LocationPermissionDeniedState({required this.onRetry});
+
+  final Future<void> Function() onRetry;
+
+  Future<void> _openSettings() async {
+    try {
+      await Geolocator.openAppSettings();
+    } catch (_) {
+      // Some platforms (notably web) don't have an OS-level app settings
+      // screen. If the deep-link fails, there's nothing more we can do
+      // beyond surfacing the retry button — the browser's own permission
+      // prompt is the only path.
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return RefreshIndicator(
+      onRefresh: onRetry,
+      child: ListView(
+        physics: const AlwaysScrollableScrollPhysics(),
+        padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 80),
+        children: [
+          Icon(
+            Icons.location_off_outlined,
+            size: 64,
+            color: Colors.grey.shade500,
+          ),
+          const SizedBox(height: 16),
+          Center(
+            child: Text(
+              'Location needed to show nearby requests',
+              textAlign: TextAlign.center,
+              style: theme.textTheme.titleSmall?.copyWith(
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ),
+          const SizedBox(height: 6),
+          Center(
+            child: Text(
+              'KisanRider shows pickup requests within '
+              '${kSearchRadiusKm.toStringAsFixed(0)} km of you. '
+              'Enable location access to see them.',
+              textAlign: TextAlign.center,
+              style: TextStyle(fontSize: 13, color: Colors.grey.shade600),
+            ),
+          ),
+          const SizedBox(height: 24),
+          Center(
+            child: FilledButton.icon(
+              onPressed: _openSettings,
+              style: FilledButton.styleFrom(
+                backgroundColor: kRiderGreen,
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 20,
+                  vertical: 12,
+                ),
+              ),
+              icon: const Icon(Icons.settings_outlined, size: 18),
+              label: const Text('Open Settings'),
+            ),
+          ),
+          const SizedBox(height: 12),
+          Center(
+            child: TextButton(
+              onPressed: () => onRetry(),
+              child: const Text(
+                'I have enabled it — retry',
+                style: TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -369,8 +634,7 @@ class _AvailableRequestCard extends StatelessWidget {
             const SizedBox(height: 12),
             InfoRow(
               icon: Icons.inventory_2_outlined,
-              label: '${request.crateCount} crates · '
-                  '${request.weightKg.toStringAsFixed(0)} kg',
+              label: '${request.weightKg.toStringAsFixed(0)} kg',
             ),
             const SizedBox(height: 6),
 

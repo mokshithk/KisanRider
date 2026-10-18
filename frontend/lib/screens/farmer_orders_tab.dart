@@ -87,7 +87,7 @@ class FarmerOrder {
   FarmerOrder({
     required this.id,
     required this.cropType,
-    required this.crateCount,
+    required this.weightKg,
     required this.status,
     required this.createdAt,
     this.dropoffLocation,
@@ -122,7 +122,7 @@ class FarmerOrder {
     return FarmerOrder(
       id: (json['id'] ?? '').toString(),
       cropType: (json['crop_type'] ?? '') as String,
-      crateCount: ((json['crate_count'] ?? 0) as num).toInt(),
+      weightKg: ((json['weight_kg'] ?? 0) as num).toDouble(),
       status: (json['status'] ?? 'PENDING') as String,
       createdAt: parsedCreatedAt,
       dropoffLocation: json['dropoff_location'] as String?,
@@ -136,7 +136,7 @@ class FarmerOrder {
 
   final String id;
   final String cropType;
-  final int crateCount;
+  final double weightKg;
   final String status;
   final DateTime createdAt;
   final String? dropoffLocation;
@@ -185,7 +185,7 @@ class FarmerOrder {
 /// ## Conditional rendering
 ///
 /// Each card reflects the order's lifecycle:
-///   - PENDING: renders only the crop/crates header, the status chip, and
+///   - PENDING: renders only the crop/weight header, the status chip, and
 ///     the dropoff row. Nothing else — no "searching" strip.
 ///   - ACCEPTED / PICKED_UP / IN_TRANSIT: shows the assigned-rider card
 ///     with name, vehicle info, and a CALL RIDER button.
@@ -408,13 +408,13 @@ class _OrderCard extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // ----- Header: crop • crates + status chip ---------------------
+            // ----- Header: crop • weight + status chip ---------------------
             Row(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Expanded(
                   child: Text(
-                    '${order.cropType} • ${order.crateCount} Crates',
+                    '${order.cropType} • ${order.weightKg.toStringAsFixed(0)} kg',
                     style: theme.textTheme.titleMedium?.copyWith(
                       fontWeight: FontWeight.bold,
                     ),

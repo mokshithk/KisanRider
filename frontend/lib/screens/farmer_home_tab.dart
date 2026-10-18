@@ -715,13 +715,14 @@ class _ActiveShipmentCard extends StatelessWidget {
     final theme = Theme.of(context);
 
     final crop = (order['crop_type'] ?? '').toString().trim();
-    final crateCount = ((order['crate_count'] ?? 0) as num).toInt();
+    final weightKg = ((order['weight_kg'] ?? 0) as num).toDouble();
     final rawStatus = (order['status'] ?? '').toString().toUpperCase();
     final dropoff = (order['dropoff_location'] ?? '').toString().trim();
     final otp = (order['pickup_otp'] ?? '').toString().trim();
 
-    final headerLabel =
-        crop.isEmpty ? '$crateCount crates' : '$crop · $crateCount crates';
+    final headerLabel = crop.isEmpty
+        ? '${weightKg.toStringAsFixed(0)} kg'
+        : '$crop · ${weightKg.toStringAsFixed(0)} kg';
 
     return Container(
       padding: const EdgeInsets.all(14),

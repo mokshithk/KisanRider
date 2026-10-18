@@ -181,20 +181,17 @@ class RiderTripCropInfo {
   RiderTripCropInfo({
     required this.cropName,
     required this.weightKg,
-    required this.crateCount,
   });
 
   factory RiderTripCropInfo.fromJson(Map<String, dynamic> json) {
     return RiderTripCropInfo(
       cropName: (json['crop_name'] ?? '—').toString(),
       weightKg: ((json['weight_kg'] ?? 0) as num).toDouble(),
-      crateCount: ((json['crate_count'] ?? 0) as num).toInt(),
     );
   }
 
   final String cropName;
   final double weightKg;
-  final int crateCount;
 }
 
 class RiderTripFareBreakdown {
@@ -236,7 +233,7 @@ class RiderTripFareBreakdown {
 ///   1. Completion Header — delivery timestamp + total distance.
 ///   2. Farmer Info — name, phone (with call button), farm address.
 ///   3. Mandi Unloading Info — APMC, trader, stall number.
-///   4. Crop Load — crop, weight, crate count.
+///   4. Crop Load — crop and weight.
 ///   5. Fare & Earnings — gross, platform commission, net, payment mode.
 class RiderTripDetailScreen extends StatefulWidget {
   const RiderTripDetailScreen({super.key, required this.tripId});
@@ -685,10 +682,6 @@ class _CropCard extends StatelessWidget {
           _DetailRow(
             label: 'Total Weight',
             value: '${crop.weightKg.toStringAsFixed(0)} kg',
-          ),
-          _DetailRow(
-            label: 'Crate Count',
-            value: crop.crateCount.toString(),
           ),
         ],
       ),
