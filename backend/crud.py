@@ -1,11 +1,5 @@
 """
 CRUD layer for KisanRider.
-
-Spatial notes:
-- pickup_location is stored as geometry(POINT, 4326).
-- For distance filtering/sorting we cast to `geography` inline in the query,
-  which makes PostGIS compute true great-circle distances in meters over
-  the WGS84 spheroid.
 """
 
 import random
@@ -32,24 +26,10 @@ import models
 import schemas
 
 
-# ---------------------------------------------------------------------------
-# Settlement economics — single place to tune the money math
-# ---------------------------------------------------------------------------
-
-_PLATFORM_FEE_RATE = 0.02  # 2%
-_DEFAULT_RATE_PER_KG = 40.0  # ₹ per kg
+_PLATFORM_FEE_RATE = 0.02
+_DEFAULT_RATE_PER_KG = 40.0
 _DEFAULT_DISTANCE_KM = 10.0
-
-# Rate at which the platform takes a cut of the rider's gross transport
-# fare. Distinct from `_PLATFORM_FEE_RATE` above, which is a percentage of
-# the *farmer's* gross crop value. Kept as its own constant so the two
-# sides of the marketplace can be tuned independently.
-_RIDER_PLATFORM_COMMISSION_RATE = 0.02  # 2% of gross transport fare
-
-# Inverse of the distance-fare coefficient in `_compute_settlement_values`
-# (distance_fare = distance_km * 15.0). Used to reconstruct distance_km
-# from a stored Settlement row when we need to display it on the rider
-# trip detail screen — the Trip table itself doesn't store distance.
+_RIDER_PLATFORM_COMMISSION_RATE = 0.02
 _DISTANCE_FARE_PER_KM = 15.0
 
 
@@ -58,16 +38,10 @@ _DISTANCE_FARE_PER_KM = 15.0
 # ---------------------------------------------------------------------------
 
 def get_user_by_phone(db: Session, phone: str) -> Optional[models.User]:
-    """Legacy lookup — used by the /users/ endpoint and dev tooling."""
     return db.query(models.User).filter(models.User.phone == phone).first()
 
 
 def get_user_by_email(db: Session, email: str) -> Optional[models.User]:
-    """
-    Primary lookup for the email-based signup/login flow.
-
-    Case-insensitive because email is case-insensitive in practice.
-    """
     normalized = email.strip().lower()
     return (
         db.query(models.User)
@@ -81,13 +55,10 @@ def get_user_by_id(db: Session, user_id: UUID) -> Optional[models.User]:
 
 
 def create_user(db: Session, user_schema: schemas.UserCreate) -> models.User:
-    """Legacy /users/ path — no email, no password, no OTP. Kept for compat."""
     db_user = models.User(
         phone=user_schema.phone,
         role=user_schema.role,
         full_name=user_schema.full_name,
-        # Synthesize an email so the NOT NULL constraint holds. The
-        # @legacy. domain marks these as phone-only accounts.
         email=f"{user_schema.phone}@legacy.kisanrider.local",
         is_verified=True,
     )
@@ -111,19 +82,6 @@ def create_user_signup(
     district: Optional[str],
     state: Optional[str],
 ) -> models.User:
-    """
-    Insert a user created through the email-OTP signup flow.
-
-    The caller is responsible for hashing the password; passing an
-    already-hashed value keeps this function framework-agnostic (no
-    passlib import here) and prevents an accidental plaintext column
-    write.
-
-    Email is lowercased before insert so it matches what
-    get_user_by_email expects on lookup. `phone` is left null — this
-    flow doesn't collect one. `is_verified` is set True because we only
-    reach this function after OTP verification has succeeded.
-    """
     db_user = models.User(
         email=email.strip().lower(),
         role=role,
@@ -146,13 +104,6 @@ def create_user_signup(
 def update_user_password(
     db: Session, user: models.User, password_hash: str
 ) -> models.User:
-    """
-    Overwrite `user.password_hash` with a freshly hashed password and commit.
-
-    Caller hashes the plaintext (same convention as create_user_signup) —
-    this function never sees the plaintext. Used by the password-reset flow
-    after the OTP has been verified.
-    """
     user.password_hash = password_hash
     try:
         db.commit()
@@ -166,22 +117,6 @@ def update_user_password(
 def apply_user_updates(
     db: Session, user: models.User, updates: dict
 ) -> models.User:
-    """
-    Apply a dict of column-name -> value to `user` and commit.
-
-    Single chokepoint for every field-level update from the Farmer/Rider
-    Account screens so the profile endpoints don't each reimplement the
-    same setattr/commit/rollback dance.
-
-    The caller is responsible for filtering the dict — pass only the keys
-    the client actually sent. In the endpoints, that's achieved with
-    `payload.model_dump(exclude_unset=True)`: fields the client omitted are
-    absent from the dict (so they stay as stored), while fields sent as
-    `null` are present with value `None` (so they get cleared).
-
-    Empty dicts are a no-op against the DB; we still return the user so the
-    endpoint can uniformly serialize the current state.
-    """
     if not updates:
         return user
 
@@ -204,13 +139,6 @@ def apply_user_updates(
 def get_saved_addresses_for_farmer(
     db: Session, farmer_id: UUID
 ) -> List[models.SavedAddress]:
-    """
-    All bookmarked pickup locations for a farmer, newest first.
-
-    Ordered by `created_at DESC` so the most recently added address
-    appears first in the chip row — that's usually what a farmer who
-    just saved an address wants to reuse.
-    """
     return (
         db.query(models.SavedAddress)
         .filter(models.SavedAddress.farmer_id == farmer_id)
@@ -229,15 +157,6 @@ def create_saved_address(
     latitude: Optional[float],
     longitude: Optional[float],
 ) -> models.SavedAddress:
-    """
-    Insert a bookmarked pickup location. Used by both the manual
-    POST /farmer/addresses endpoint and the auto-save side effect of
-    create_produce_request (when `save_address_for_future=True`).
-
-    Commits on success, rolls back and re-raises on failure. Callers
-    that batch this with other writes (like create_produce_request) must
-    handle the commit ordering — see the note in create_produce_request.
-    """
     db_address = models.SavedAddress(
         farmer_id=farmer_id,
         title=title.strip(),
@@ -261,7 +180,6 @@ def create_saved_address(
 # ---------------------------------------------------------------------------
 
 def _to_response(pr: models.ProduceRequest) -> schemas.ProduceRequestResponse:
-    """Convert an ORM row (with WKBElement geometry) into the API schema."""
     try:
         point = to_shape(pr.pickup_location)
     except Exception as e:
@@ -273,12 +191,15 @@ def _to_response(pr: models.ProduceRequest) -> schemas.ProduceRequestResponse:
         id=pr.id,
         farmer_id=pr.farmer_id,
         crop_type=pr.crop_type,
-        crate_count=pr.crate_count,
-        weight_kg=float(pr.weight_kg),
+        weight_kg=float(pr.weight_kg or 0),
         latitude=point.y,
         longitude=point.x,
         pickup_address=pr.pickup_address,
         pickup_landmark=pr.pickup_landmark,
+        dropoff_district=pr.dropoff_district,
+        dropoff_mandi_id=pr.dropoff_mandi_id,
+        dropoff_mandi_name=pr.dropoff_mandi_name,
+        dropoff_stall_number=pr.dropoff_stall_number,
         dropoff_location=pr.dropoff_location,
         dropoff_lat=pr.dropoff_lat,
         dropoff_lng=pr.dropoff_lng,
@@ -292,31 +213,6 @@ def create_produce_request(
     request_schema: schemas.ProduceRequestCreate,
     farmer_id: UUID,
 ) -> schemas.ProduceRequestResponse:
-    """
-    Insert a produce request; generates the pickup OTP.
-
-    ## Pickup 3-way selector side effect
-
-    When `save_address_for_future` is True AND a non-empty
-    `pickup_address` was provided, this function also creates a
-    SavedAddress for the farmer. The auto-saved title is derived from
-    the address (first 60 chars), since the booking form doesn't collect
-    a title.
-
-    ## Transaction shape
-
-    The ProduceRequest and the optional SavedAddress are written in
-    separate transactions. That's intentional: if the auto-save fails for
-    some reason (e.g. the address is malformed), the booking itself
-    still succeeds — the farmer gets their trip, just without the
-    bookmark. Losing the bookmark is a much smaller problem than losing
-    the booking.
-
-    ## PostGIS
-
-    The `pickup_location` WKT string uses `POINT(lng lat)` ordering —
-    the opposite of the (lat, lng) convention the client uses.
-    """
     try:
         point_wkt = WKTElement(
             f"POINT({request_schema.longitude} {request_schema.latitude})",
@@ -330,15 +226,24 @@ def create_produce_request(
 
     pickup_otp = f"{random.randint(1000, 9999)}"
 
+    dropoff_location = request_schema.dropoff_location
+    if not dropoff_location and request_schema.dropoff_mandi_name:
+        mandi_name = request_schema.dropoff_mandi_name.strip()
+        stall = (request_schema.dropoff_stall_number or "").strip()
+        dropoff_location = f"{mandi_name} - {stall}" if stall else mandi_name
+
     db_request = models.ProduceRequest(
         farmer_id=farmer_id,
         crop_type=request_schema.crop_type,
-        crate_count=request_schema.crate_count,
         weight_kg=request_schema.weight_kg,
         pickup_location=point_wkt,
         pickup_address=request_schema.pickup_address,
         pickup_landmark=request_schema.pickup_landmark,
-        dropoff_location=request_schema.dropoff_location,
+        dropoff_district=request_schema.dropoff_district,
+        dropoff_mandi_id=request_schema.dropoff_mandi_id,
+        dropoff_mandi_name=request_schema.dropoff_mandi_name,
+        dropoff_stall_number=request_schema.dropoff_stall_number,
+        dropoff_location=dropoff_location,
         dropoff_lat=request_schema.dropoff_lat,
         dropoff_lng=request_schema.dropoff_lng,
         pickup_otp=pickup_otp,
@@ -353,10 +258,6 @@ def create_produce_request(
         db.rollback()
         raise
 
-    # Side effect: bookmark the address if the farmer asked us to.
-    # Failures here are swallowed — the booking already succeeded, and
-    # the farmer would rather keep their trip than see an error about a
-    # bookmark they may not even remember ticking.
     if (
         request_schema.save_address_for_future
         and request_schema.pickup_address
@@ -374,19 +275,21 @@ def create_produce_request(
                 longitude=request_schema.longitude,
             )
         except SQLAlchemyError:
-            # Deliberately swallowed — see docstring above.
             pass
 
     return schemas.ProduceRequestResponse(
         id=db_request.id,
         farmer_id=db_request.farmer_id,
         crop_type=db_request.crop_type,
-        crate_count=db_request.crate_count,
-        weight_kg=float(db_request.weight_kg),
+        weight_kg=float(db_request.weight_kg or 0),
         latitude=request_schema.latitude,
         longitude=request_schema.longitude,
         pickup_address=db_request.pickup_address,
         pickup_landmark=db_request.pickup_landmark,
+        dropoff_district=db_request.dropoff_district,
+        dropoff_mandi_id=db_request.dropoff_mandi_id,
+        dropoff_mandi_name=db_request.dropoff_mandi_name,
+        dropoff_stall_number=db_request.dropoff_stall_number,
         dropoff_location=db_request.dropoff_location,
         dropoff_lat=db_request.dropoff_lat,
         dropoff_lng=db_request.dropoff_lng,
@@ -409,26 +312,6 @@ def get_produce_request_by_id(
 def _to_farmer_response(
     pr: models.ProduceRequest,
 ) -> schemas.FarmerProduceRequestResponse:
-    """
-    Extend _to_response() with the request's trip (if any) and its rider.
-
-    ## Why the rider summary carries so many phone fields
-
-    The User model has two phone columns and one legacy alias:
-
-      - `phone` — legacy login identifier, empty for modern accounts.
-      - `phone_number` — modern contact number, populated from the Account
-        screens.
-
-    Both are forwarded, plus the rider's vehicle details, so the farmer-
-    side client can render an actionable "assigned rider" card with a
-    working CALL button the moment the trip flips out of PENDING.
-
-    A trip exists on the ProduceRequest the instant a rider accepts, so
-    the summary is populated for every status other than PENDING. When
-    `pr.trip` is None (still PENDING), `trip` stays None and the client
-    shows the "Searching for nearby Rider…" state.
-    """
     base = _to_response(pr)
 
     trip_summary = None
@@ -438,15 +321,7 @@ def _to_farmer_response(
             schemas.RiderSummary(
                 id=rider.id,
                 full_name=rider.full_name,
-                # Legacy column — may be null. Empty string keeps the
-                # field non-None in the response (the schema declares
-                # `phone: str`), which avoids a needless Optional in the
-                # client model.
                 phone=rider.phone or "",
-                # Modern contact number — this is what the farmer should
-                # dial. `phone_number` is nullable, so a rider who hasn't
-                # set one yet yields None here and the client hides the
-                # CALL button rather than rendering a dead one.
                 phone_number=rider.phone_number,
                 vehicle_number=rider.vehicle_number,
                 vehicle_type=rider.vehicle_type,
@@ -472,7 +347,6 @@ def _to_farmer_response(
 def get_produce_requests_for_farmer(
     db: Session, farmer_id: UUID
 ) -> List[schemas.FarmerProduceRequestResponse]:
-    """All produce requests a farmer has created, newest first."""
     requests = (
         db.query(models.ProduceRequest)
         .options(
@@ -488,7 +362,6 @@ def get_produce_requests_for_farmer(
 def get_farmer_produce_requests(
     db: Session, farmer_id: UUID
 ) -> List[schemas.ProduceRequestResponse]:
-    """All produce requests created by `farmer_id`, newest first (flat view)."""
     rows = (
         db.query(models.ProduceRequest)
         .filter(models.ProduceRequest.farmer_id == farmer_id)
@@ -506,19 +379,6 @@ def get_nearby_produce_requests(
     status_filter: Optional[str] = "PENDING",
     limit: int = 50,
 ) -> List[schemas.NearbyProduceRequestResponse]:
-    """
-    Find PENDING produce requests within `radius_km` of (lat, lng),
-    newest first.
-
-    The rider-facing Available feed calls this endpoint. Newest-first
-    ordering means a freshly-posted booking appears at the top of the
-    list the moment the client's background poll picks it up, which is
-    what the UI implies by "Available Requests".
-
-    `distance_km` is still computed and returned on every row — the
-    client renders it as a badge on each card. Only the *ordering* has
-    changed from the previous distance-based sort.
-    """
     pr = models.ProduceRequest
 
     query_point = ST_SetSRID(ST_MakePoint(lng, lat), 4326)
@@ -537,12 +397,15 @@ def get_nearby_produce_requests(
             pr.id,
             pr.farmer_id,
             pr.crop_type,
-            pr.crate_count,
             pr.weight_kg,
             pr.status,
             pr.created_at,
             pr.pickup_address,
             pr.pickup_landmark,
+            pr.dropoff_district,
+            pr.dropoff_mandi_id,
+            pr.dropoff_mandi_name,
+            pr.dropoff_stall_number,
             pr.dropoff_location,
             pr.dropoff_lat,
             pr.dropoff_lng,
@@ -556,7 +419,6 @@ def get_nearby_produce_requests(
     if status_filter:
         query = query.filter(pr.status == status_filter)
 
-    # CHANGED: newest first. Was `order_by(distance_km.asc())`.
     query = query.order_by(pr.created_at.desc()).limit(limit)
 
     try:
@@ -569,12 +431,15 @@ def get_nearby_produce_requests(
             id=row.id,
             farmer_id=row.farmer_id,
             crop_type=row.crop_type,
-            crate_count=row.crate_count,
-            weight_kg=float(row.weight_kg),
+            weight_kg=float(row.weight_kg or 0),
             latitude=row.latitude,
             longitude=row.longitude,
             pickup_address=row.pickup_address,
             pickup_landmark=row.pickup_landmark,
+            dropoff_district=row.dropoff_district,
+            dropoff_mandi_id=row.dropoff_mandi_id,
+            dropoff_mandi_name=row.dropoff_mandi_name,
+            dropoff_stall_number=row.dropoff_stall_number,
             dropoff_location=row.dropoff_location,
             dropoff_lat=row.dropoff_lat,
             dropoff_lng=row.dropoff_lng,
@@ -589,7 +454,6 @@ def get_nearby_produce_requests(
 def verify_pickup_otp(
     db: Session, request_id: UUID, otp: str
 ) -> Optional[models.ProduceRequest]:
-    """Pickup-handoff confirmation; flips the ProduceRequest to PICKED_UP on match."""
     pr = (
         db.query(models.ProduceRequest)
         .filter(models.ProduceRequest.id == request_id)
@@ -634,19 +498,6 @@ def get_trip_by_id(db: Session, trip_id: UUID) -> Optional[models.Trip]:
 def accept_produce_request(
     db: Session, request_id: UUID, rider_id: UUID
 ) -> models.Trip:
-    """
-    A rider accepts a PENDING produce request, creating a Trip.
-
-    ## Pickup snapshot
-
-    The ProduceRequest's `pickup_address`, `pickup_landmark`, and the
-    (lat, lng) decoded from `pickup_location` are copied onto the new
-    Trip row. This lets the rider-side UI read pickup details directly
-    off the Trip without joining back, and — more importantly — freezes
-    the pickup address as it was at accept time. If the farmer later
-    edits or deletes a SavedAddress, the completed trip still shows the
-    address the rider actually drove to.
-    """
     try:
         pr = (
             db.query(models.ProduceRequest)
@@ -660,7 +511,6 @@ def accept_produce_request(
 
         pr.status = "ACCEPTED"
 
-        # Decode the PostGIS point into plain floats for the snapshot.
         pickup_lat: Optional[float] = None
         pickup_lng: Optional[float] = None
         try:
@@ -668,9 +518,6 @@ def accept_produce_request(
             pickup_lat = float(point.y)
             pickup_lng = float(point.x)
         except Exception:
-            # A malformed geometry shouldn't block the accept — the
-            # Trip just won't carry coordinates, which the client
-            # handles by falling back to the ProduceRequest's point.
             pass
 
         db_trip = models.Trip(
@@ -700,8 +547,6 @@ def update_trip_status(
     status: str,
     distance_km: Optional[float] = None,
 ) -> Optional[models.Trip]:
-    """Transition a Trip; on DELIVERED, also mark the request COMPLETED
-    and auto-create a Settlement."""
     try:
         trip = (
             db.query(models.Trip)
@@ -754,12 +599,6 @@ def update_trip_status(
 def get_active_trips_for_rider(
     db: Session, rider_id: UUID
 ) -> List[models.Trip]:
-    """
-    All of the rider's active trips (ACCEPTED or PICKED_UP), newest first.
-
-    Returns ORM Trip rows. For the API-shaped view with privacy-aware
-    contact fields, use [get_active_trips_out_for_rider].
-    """
     return (
         db.query(models.Trip)
         .options(joinedload(models.Trip.produce_request))
@@ -777,12 +616,6 @@ def get_active_trips_for_rider(
 # ---------------------------------------------------------------------------
 
 def _first_name(full_name: Optional[str]) -> Optional[str]:
-    """
-    Return the first whitespace-delimited token of a full name, or None.
-
-    Used in the rider-facing browse feed to show a human reference (e.g.
-    "Ravi") without exposing the farmer's full name or phone number.
-    """
     if not full_name:
         return None
     parts = full_name.strip().split()
@@ -790,14 +623,6 @@ def _first_name(full_name: Optional[str]) -> Optional[str]:
 
 
 def _estimate_rider_fare(pr: models.ProduceRequest) -> float:
-    """
-    Best-effort rider payout estimate for a PENDING request.
-
-    Uses the same arithmetic a real Settlement applies, but with the
-    default distance assumption — the rider hasn't yet reported the
-    actual distance they'll drive. Good enough for the browse feed; the
-    authoritative number is computed when the trip is marked delivered.
-    """
     weight_kg = float(pr.weight_kg or 0)
     values = _compute_settlement_values(
         weight_kg,
@@ -808,7 +633,6 @@ def _estimate_rider_fare(pr: models.ProduceRequest) -> float:
 
 
 def _pickup_latlng(pr: models.ProduceRequest) -> tuple[float, float]:
-    """Return (lat, lng) for the pickup location, or (0, 0) on decode failure."""
     try:
         point = to_shape(pr.pickup_location)
         return point.y, point.x
@@ -819,23 +643,12 @@ def _pickup_latlng(pr: models.ProduceRequest) -> tuple[float, float]:
 def _to_trip_available(
     pr: models.ProduceRequest,
 ) -> schemas.TripAvailableOut:
-    """
-    Shape a PENDING ProduceRequest for the rider browse feed.
-
-    Farmer contact info is withheld by design. Only the farmer's first
-    name is included, so the rider has a human reference without an
-    identifier they could misuse.
-
-    Pickup address/landmark are exposed (they're not sensitive — the
-    rider needs to know where to drive) but the farmer's phone is not.
-    """
     farmer = pr.farmer
     lat, lng = _pickup_latlng(pr)
 
     return schemas.TripAvailableOut(
         trip_id=pr.id,
         crop_type=pr.crop_type,
-        crate_count=pr.crate_count,
         weight_kg=float(pr.weight_kg or 0),
         latitude=lat,
         longitude=lng,
@@ -851,20 +664,6 @@ def _to_trip_available(
 
 
 def _compose_pickup_address(pr: models.ProduceRequest) -> Optional[str]:
-    """
-    Build the human-readable pickup display string for TripActiveOut.
-
-    Priority order:
-      1. The farmer-entered address from the booking (`pickup_address`),
-         with `pickup_landmark` appended as a second line when present.
-      2. The farmer's profile `farm_address` + `landmark` — a fallback
-         for bookings made before the 3-way pickup picker existed.
-      3. None — the client falls back to displaying raw coordinates.
-
-    Doing this on the server means the exact same string is shown to
-    both sides (rider on their Active Trips tab, farmer on their Orders
-    tab), which avoids the "rider saw X, farmer saw Y" class of bug.
-    """
     farmer = pr.farmer
 
     parts: list[str] = []
@@ -874,7 +673,6 @@ def _compose_pickup_address(pr: models.ProduceRequest) -> Optional[str]:
         parts.append(pr.pickup_landmark.strip())
 
     if not parts and farmer:
-        # Fallback for pre-picker bookings.
         if farmer.farm_address:
             parts.append(farmer.farm_address.strip())
         if farmer.landmark:
@@ -886,36 +684,15 @@ def _compose_pickup_address(pr: models.ProduceRequest) -> Optional[str]:
 def _to_trip_active(
     pr: models.ProduceRequest,
 ) -> schemas.TripActiveOut:
-    """
-    Shape a ProduceRequest (with optional Trip) for the active view.
-
-    Contact details are unlocked only when a rider has been assigned —
-    i.e. when the ProduceRequest has a Trip attached with a non-cancelled
-    status. Before that, both parties see nulls; after, both sides see
-    each other's phone number and the rider's vehicle info.
-
-    Handles the PENDING case gracefully: a ProduceRequest without a Trip
-    yields a response where `trip_id` falls back to the request id and
-    every contact field is null. This lets `GET /farmer/orders/{id}`
-    return the same schema before and after acceptance.
-    """
     trip = pr.trip
     farmer = pr.farmer
     rider = trip.rider if trip else None
 
-    # A Trip exists as soon as a rider accepts. Cancelled trips keep the
-    # row but the parties no longer need to reach each other, so we treat
-    # only the active-and-completed states as "contactable".
     has_rider = (
         trip is not None
         and trip.status in ("ACCEPTED", "PICKED_UP", "DELIVERED")
     )
 
-    # Prefer the Trip's frozen pickup snapshot when it exists (rider has
-    # accepted), then fall back to the ProduceRequest's current values.
-    # The Trip snapshot is what the rider actually drove to; using it
-    # keeps the completed-trip view stable even if the farmer later
-    # edits their saved addresses.
     pickup_address = (
         trip.pickup_address if trip and trip.pickup_address
         else _compose_pickup_address(pr)
@@ -932,23 +709,22 @@ def _to_trip_active(
         produce_request_id=pr.id,
         status=(trip.status if trip else pr.status),
         crop_type=pr.crop_type,
-        crate_count=pr.crate_count,
         weight_kg=float(pr.weight_kg or 0),
         latitude=lat,
         longitude=lng,
         pickup_address=pickup_address,
         pickup_landmark=pickup_landmark,
         dropoff_address=pr.dropoff_location,
+        dropoff_district=pr.dropoff_district,
+        dropoff_mandi_id=pr.dropoff_mandi_id,
+        dropoff_mandi_name=pr.dropoff_mandi_name,
+        dropoff_stall_number=pr.dropoff_stall_number,
         dropoff_lat=pr.dropoff_lat,
         dropoff_lng=pr.dropoff_lng,
-        # Farmer contact: unlocked for the assigned rider (and the farmer
-        # themselves, who already knows their own number anyway).
         farmer_full_name=(farmer.full_name if farmer and has_rider else None),
         farmer_phone_number=(
             farmer.phone_number if farmer and has_rider else None
         ),
-        # Rider contact + vehicle: unlocked for the farmer once a rider is
-        # assigned.
         rider_full_name=(rider.full_name if rider and has_rider else None),
         rider_phone_number=(
             rider.phone_number if rider and has_rider else None
@@ -965,15 +741,6 @@ def get_available_trips_for_rider(
     radius_km: float,
     limit: int = 50,
 ) -> List[schemas.TripAvailableOut]:
-    """
-    PENDING produce requests within `radius_km` of (lat, lng), shaped as
-    the rider-facing browse feed.
-
-    Newest-first ordering: a freshly-posted booking appears at the top
-    of the feed. Mirrors `get_nearby_produce_requests` (which serves the
-    actual rider Available tab) and returns the privacy-aware
-    TripAvailableOut shape instead of the raw ProduceRequest fields.
-    """
     pr = models.ProduceRequest
 
     query_point = ST_SetSRID(ST_MakePoint(lng, lat), 4326)
@@ -990,7 +757,6 @@ def get_available_trips_for_rider(
             .options(joinedload(pr.farmer))
             .filter(pr.status == "PENDING")
             .filter(ST_DWithin(stored_geog, query_point_geog, radius_km * 1000))
-            # CHANGED: newest first. Was `order_by(distance_km.asc())`.
             .order_by(pr.created_at.desc())
             .limit(limit)
             .all()
@@ -1004,10 +770,6 @@ def get_available_trips_for_rider(
 def get_active_trips_out_for_rider(
     db: Session, rider_id: UUID
 ) -> List[schemas.TripActiveOut]:
-    """
-    The rider's active trips (ACCEPTED or PICKED_UP) shaped as
-    TripActiveOut, with farmer contact info unlocked.
-    """
     trips = (
         db.query(models.Trip)
         .options(
@@ -1029,13 +791,6 @@ def get_active_trips_out_for_rider(
 def get_trip_active_by_request_id(
     db: Session, request_id: UUID
 ) -> Optional[schemas.TripActiveOut]:
-    """
-    Fetch a ProduceRequest by id and shape it as TripActiveOut.
-
-    Used by the accept endpoints to return the freshly-created trip with
-    contact info already unlocked, without a second round-trip from the
-    client.
-    """
     pr = (
         db.query(models.ProduceRequest)
         .options(
@@ -1051,18 +806,6 @@ def get_trip_active_by_request_id(
 def get_farmer_order(
     db: Session, order_id: UUID, farmer_id: UUID
 ) -> Optional[schemas.TripActiveOut]:
-    """
-    Fetch a single order (ProduceRequest) belonging to `farmer_id`,
-    shaped as TripActiveOut.
-
-    Returns None if the order doesn't exist or belongs to a different
-    farmer (so the endpoint 404s rather than leaking existence).
-
-    NOTE: This legacy accessor is still consumed by the phone-number-
-    privacy flow in some callers. New code should use
-    [get_farmer_order_detail], which returns the richer
-    FarmerOrderDetailResponse shape the Order Detail screen expects.
-    """
     pr = (
         db.query(models.ProduceRequest)
         .options(
@@ -1082,12 +825,6 @@ def get_farmer_order(
 # ---------------------------------------------------------------------------
 
 def _order_display_status(pr: models.ProduceRequest) -> str:
-    """
-    Collapse the ProduceRequest / Trip status pair into one client-facing
-    value. See OrderHistoryItemResponse for the vocabulary:
-
-      PENDING / IN_TRANSIT / COMPLETED / CANCELLED
-    """
     trip = pr.trip
     if trip is not None:
         if trip.status == "DELIVERED":
@@ -1108,17 +845,6 @@ def _extract_pickup_village(
     pr: models.ProduceRequest,
     farmer: Optional[models.User],
 ) -> Optional[str]:
-    """
-    Best-effort pickup locality for the summary card.
-
-    Priority:
-      1. The farmer's profile `taluk_village` — structured, reliable.
-         We take the first comma-separated segment so "Koppa, Kolar"
-         displays as "Koppa" on the card.
-      2. The first comma-separated segment of the booking's
-         `pickup_address` — usually the village name when the farmer
-         typed a full address.
-    """
     if farmer is not None and farmer.taluk_village:
         first = farmer.taluk_village.strip().split(",")[0].strip()
         if first:
@@ -1135,15 +861,6 @@ def _extract_pickup_village(
 def _split_dropoff(
     dropoff_location: Optional[str],
 ) -> tuple[Optional[str], Optional[str]]:
-    """
-    The Book Transport form packs the mandi name and stall into one
-    string formatted as 'MandiName - StallInfo' (see
-    FarmerBookTransportTab._submit in farmer_dashboard.dart). Split it
-    back apart so the history card can render them as discrete fields
-    without fragile client-side string surgery.
-
-    Returns (mandi_name, stall_number), either of which may be None.
-    """
     if not dropoff_location:
         return None, None
 
@@ -1156,16 +873,20 @@ def _split_dropoff(
     return (parts[0].strip() or None), None
 
 
+def _mandi_and_stall_from_pr(
+    pr: models.ProduceRequest,
+) -> tuple[Optional[str], Optional[str]]:
+    if pr.dropoff_mandi_name:
+        return (
+            pr.dropoff_mandi_name.strip() or None,
+            (pr.dropoff_stall_number or "").strip() or None,
+        )
+    return _split_dropoff(pr.dropoff_location)
+
+
 def get_farmer_order_history(
     db: Session, farmer_id: UUID
 ) -> List[schemas.OrderHistoryItemResponse]:
-    """
-    Summary list for the Order History screen: every order belonging to
-    `farmer_id`, newest first.
-
-    Eager-loads the trip and the farmer so the status normalization and
-    village derivation don't trigger an N+1 query per row.
-    """
     rows = (
         db.query(models.ProduceRequest)
         .options(
@@ -1179,7 +900,7 @@ def get_farmer_order_history(
 
     result: List[schemas.OrderHistoryItemResponse] = []
     for pr in rows:
-        mandi_name, stall_number = _split_dropoff(pr.dropoff_location)
+        mandi_name, stall_number = _mandi_and_stall_from_pr(pr)
         result.append(
             schemas.OrderHistoryItemResponse(
                 id=pr.id,
@@ -1198,12 +919,6 @@ def get_farmer_order_history(
 def _decode_pickup_coords(
     pr: models.ProduceRequest,
 ) -> tuple[Optional[float], Optional[float]]:
-    """
-    Decode the stored PostGIS point into (lat, lng) floats, or
-    (None, None) if the geometry is malformed. Used by the detail view
-    where Optional is the correct contract — the client falls back to
-    the free-text address fields when coordinates aren't available.
-    """
     try:
         point = to_shape(pr.pickup_location)
         return float(point.y), float(point.x)
@@ -1214,16 +929,6 @@ def _decode_pickup_coords(
 def get_farmer_order_detail(
     db: Session, order_id: UUID, farmer_id: UUID
 ) -> Optional[schemas.FarmerOrderDetailResponse]:
-    """
-    Full nested detail view for a single order owned by `farmer_id`.
-
-    Returns None when the order doesn't exist OR belongs to a different
-    farmer — the endpoint surfaces a 404 in both cases so order existence
-    isn't leaked across accounts.
-
-    Eager-loads the trip, its rider, and its settlement so the response
-    can be built in one round-trip.
-    """
     pr = (
         db.query(models.ProduceRequest)
         .options(
@@ -1245,6 +950,15 @@ def get_farmer_order_detail(
 
     pickup_lat, pickup_lng = _decode_pickup_coords(pr)
 
+    dropoff_display = pr.dropoff_location
+    if not dropoff_display and pr.dropoff_mandi_name:
+        stall = (pr.dropoff_stall_number or "").strip()
+        dropoff_display = (
+            f"{pr.dropoff_mandi_name.strip()} - {stall}"
+            if stall
+            else pr.dropoff_mandi_name.strip()
+        )
+
     return schemas.FarmerOrderDetailResponse(
         id=pr.id,
         status=_order_display_status(pr),
@@ -1253,6 +967,7 @@ def get_farmer_order_detail(
         completed_at=(trip.completed_at if trip is not None else None),
         trip_id=(trip.id if trip is not None else None),
         pickup_otp=pr.pickup_otp,
+        cancellation_reason=pr.cancellation_reason,
         rider=(
             schemas.OrderRiderInfo(
                 id=rider.id,
@@ -1271,7 +986,7 @@ def get_farmer_order_detail(
             longitude=pickup_lng,
         ),
         dropoff=schemas.OrderLocationInfo(
-            address=pr.dropoff_location,
+            address=dropoff_display,
             landmark=None,
             latitude=pr.dropoff_lat,
             longitude=pr.dropoff_lng,
@@ -1279,7 +994,6 @@ def get_farmer_order_detail(
         crop=schemas.OrderCropInfo(
             crop_name=pr.crop_type or "—",
             weight_kg=float(pr.weight_kg or 0),
-            crate_count=pr.crate_count or 0,
         ),
         settlement=(
             schemas.OrderSettlementInfo(
@@ -1293,7 +1007,134 @@ def get_farmer_order_detail(
             if settlement is not None
             else None
         ),
+        dropoff_district=pr.dropoff_district,
+        dropoff_mandi_name=pr.dropoff_mandi_name,
+        dropoff_stall_number=pr.dropoff_stall_number,
     )
+
+
+# NEW: ---------------------------------------------------------------------
+# Farmer Order Edit / Cancel
+# ---------------------------------------------------------------------------
+
+_ACCEPTANCE_LOCK_MESSAGE = (
+    "Order cannot be modified or cancelled after acceptance"
+)
+
+_ORDER_UPDATE_FIELD_MAP = {
+    "crop_name": "crop_type",
+    "dropoff_mandi": "dropoff_mandi_name",
+    "pickup_notes": "pickup_landmark",
+    # weight_kg, dropoff_district, dropoff_stall_number pass through
+}
+
+
+def update_farmer_order(
+    db: Session,
+    order_id: UUID,
+    farmer_id: UUID,
+    updates: dict,
+) -> models.ProduceRequest:
+    """
+    Apply a partial update to a PENDING produce request.
+
+    Raises ValueError on:
+      - order not found / not owned by this farmer
+      - order not in PENDING status (accepted trips are locked)
+
+    Empty `updates` is a no-op commit-free path.
+    """
+    pr = (
+        db.query(models.ProduceRequest)
+        .filter(models.ProduceRequest.id == order_id)
+        .with_for_update()
+        .first()
+    )
+    if pr is None or pr.farmer_id != farmer_id:
+        raise ValueError("Order not found")
+
+    if pr.status != "PENDING":
+        raise ValueError(_ACCEPTANCE_LOCK_MESSAGE)
+
+    if not updates:
+        return pr
+
+    try:
+        for field, value in updates.items():
+            model_field = _ORDER_UPDATE_FIELD_MAP.get(field, field)
+            if model_field == "dropoff_mandi_name":
+                # Keep the legacy composite `dropoff_location` in sync so
+                # display code that still parses it sees the new name.
+                pr.dropoff_mandi_name = value
+                stall = (pr.dropoff_stall_number or "").strip()
+                pr.dropoff_location = (
+                    f"{value} - {stall}" if stall and value else value
+                )
+            elif model_field == "dropoff_stall_number":
+                pr.dropoff_stall_number = value
+                mandi = (pr.dropoff_mandi_name or "").strip()
+                pr.dropoff_location = (
+                    f"{mandi} - {value}" if mandi and value else (mandi or value)
+                )
+            else:
+                setattr(pr, model_field, value)
+        db.commit()
+        db.refresh(pr)
+        return pr
+    except SQLAlchemyError:
+        db.rollback()
+        raise
+
+
+def cancel_farmer_order(
+    db: Session,
+    order_id: UUID,
+    farmer_id: UUID,
+    reason: Optional[str],
+) -> models.ProduceRequest:
+    """
+    Cancel a PENDING produce request.
+
+    Raises ValueError on:
+      - order not found / not owned by this farmer
+      - order not in PENDING status (accepted trips are locked)
+
+    A driver-level SQL error (bad SQL, constraint violation, etc.) is
+    rolled back and re-raised as SQLAlchemyError so the router can translate
+    it into a generic 500 response.
+
+    NOTE: this deliberately does NOT use
+    `joinedload(ProduceRequest.trip)` + `with_for_update()`. The `trip`
+    relationship is nullable (a PENDING order normally has no Trip row yet),
+    and Postgres rejects `SELECT ... FOR UPDATE` against the nullable side
+    of an outer join:
+
+        FOR UPDATE cannot be applied to the nullable side of an outer join
+
+    which was the cause of the crash on cancellation. A PENDING order
+    cannot have a live Trip row assigned to it anyway (the Trip is only
+    created on accept), so we simply update the ProduceRequest row.
+    """
+    pr = (
+        db.query(models.ProduceRequest)
+        .filter(models.ProduceRequest.id == order_id)
+        .first()
+    )
+    if pr is None or pr.farmer_id != farmer_id:
+        raise ValueError("Order not found")
+
+    if pr.status != "PENDING":
+        raise ValueError(_ACCEPTANCE_LOCK_MESSAGE)
+
+    try:
+        pr.status = "CANCELLED"
+        pr.cancellation_reason = (reason or "").strip() or None
+        db.commit()
+        db.refresh(pr)
+        return pr
+    except SQLAlchemyError:
+        db.rollback()
+        raise
 
 
 # ---------------------------------------------------------------------------
@@ -1304,15 +1145,6 @@ def _rider_trip_payment_method_list(
     trip: models.Trip,
     settlement: Optional[models.Settlement],
 ) -> str:
-    """
-    Payment-method label for the rider's Trip History summary card.
-
-      "Wallet Credited" — Settlement is PAID (funds went through the
-                           platform wallet)
-      "Cash Collected"  — Settlement exists but is still PENDING (rider
-                           was paid at the mandi)
-      "—"               — Cancelled trip, or no Settlement row
-    """
     if trip.status == "CANCELLED":
         return "—"
     if settlement is None:
@@ -1326,14 +1158,6 @@ def _rider_trip_payment_method_detail(
     trip: models.Trip,
     settlement: Optional[models.Settlement],
 ) -> str:
-    """
-    Payment-method label for the rider's Trip Detail screen. Same
-    underlying fact as the list label — phrased for the detail context.
-
-      "QR Payment at Mandi" — Settlement PAID (digital settlement)
-      "Cash in Hand"        — Settlement PENDING (rider collected cash)
-      "—"                   — Cancelled trip, or no Settlement row
-    """
     if trip.status == "CANCELLED":
         return "—"
     if settlement is None:
@@ -1346,15 +1170,6 @@ def _rider_trip_payment_method_detail(
 def _rider_trip_distance_km(
     settlement: Optional[models.Settlement],
 ) -> Optional[float]:
-    """
-    Reconstruct distance in km from a Settlement row.
-
-    The Settlement table stores `distance_fare = distance_km *
-    _DISTANCE_FARE_PER_KM` (see `_compute_settlement_values`); the Trip
-    row itself doesn't carry a distance column. Reversing the formula
-    gives the rider the distance they actually drove without a schema
-    change.
-    """
     if settlement is None or settlement.distance_fare is None:
         return None
     try:
@@ -1366,14 +1181,6 @@ def _rider_trip_distance_km(
 def get_rider_trip_history(
     db: Session, rider_id: UUID
 ) -> List[schemas.RiderTripHistoryItemResponse]:
-    """
-    Summary list for the Rider Trip History screen: DELIVERED and
-    CANCELLED trips assigned to `rider_id`, newest first.
-
-    Active trips (ACCEPTED, PICKED_UP) are deliberately excluded — the
-    rider's Active Trips tab is the right place for those, and this
-    screen is framed as a *history* of completed work.
-    """
     trips = (
         db.query(models.Trip)
         .options(
@@ -1394,9 +1201,6 @@ def get_rider_trip_history(
     for trip in trips:
         pr = trip.produce_request
         if pr is None:
-            # Defensive: an orphaned Trip row (shouldn't happen thanks
-            # to the ondelete=CASCADE on the FK) shouldn't crash the
-            # whole list. Skip it.
             continue
 
         settlement = trip.settlement
@@ -1406,7 +1210,7 @@ def get_rider_trip_history(
             else 0.0
         )
 
-        mandi_name, stall_number = _split_dropoff(pr.dropoff_location)
+        mandi_name, stall_number = _mandi_and_stall_from_pr(pr)
 
         result.append(
             schemas.RiderTripHistoryItemResponse(
@@ -1430,13 +1234,6 @@ def get_rider_trip_history(
 def get_rider_trip_detail(
     db: Session, trip_id: UUID, rider_id: UUID
 ) -> Optional[schemas.RiderTripDetailResponse]:
-    """
-    Full nested detail view for one of the rider's trips.
-
-    Returns None when the trip doesn't exist OR belongs to a different
-    rider — the endpoint surfaces a 404 in both cases, so trip existence
-    isn't leaked across accounts.
-    """
     trip = (
         db.query(models.Trip)
         .options(
@@ -1455,24 +1252,20 @@ def get_rider_trip_detail(
     farmer = pr.farmer if pr is not None else None
     settlement = trip.settlement
 
-    # Pickup coordinates: prefer the Trip's frozen snapshot (set at
-    # accept time), fall back to the ProduceRequest's stored point.
     pickup_lat = trip.pickup_latitude
     pickup_lng = trip.pickup_longitude
     if pickup_lat is None and pr is not None:
         pickup_lat, pickup_lng = _decode_pickup_coords(pr)
 
-    # Dropoff coordinates only exist on the ProduceRequest.
     dropoff_lat = pr.dropoff_lat if pr is not None else None
     dropoff_lng = pr.dropoff_lng if pr is not None else None
 
-    mandi_name, stall_number = _split_dropoff(
-        pr.dropoff_location if pr is not None else None
+    mandi_name, stall_number = (
+        _mandi_and_stall_from_pr(pr) if pr is not None else (None, None)
     )
 
     distance_km = _rider_trip_distance_km(settlement)
 
-    # Fare block: only meaningful for DELIVERED trips with a settlement.
     fare = None
     if trip.status == "DELIVERED" and settlement is not None:
         gross = float(settlement.total_payout or 0)
@@ -1495,17 +1288,12 @@ def get_rider_trip_detail(
                 id=farmer.id,
                 full_name=farmer.full_name,
                 phone_number=farmer.phone_number,
-                # Prefer the structured `farm_address`, fall back to the
-                # shorter `landmark` line so the rider still sees a
-                # human-readable anchor when only that field is set.
                 farm_address=(farmer.farm_address or farmer.landmark),
             )
             if farmer is not None
             else None
         ),
         pickup=schemas.RiderTripLocationInfo(
-            # Prefer the Trip's frozen pickup snapshot over the
-            # ProduceRequest's possibly-edited address.
             address=(
                 trip.pickup_address
                 or (pr.pickup_address if pr is not None else None)
@@ -1519,14 +1307,12 @@ def get_rider_trip_detail(
         ),
         mandi=schemas.RiderTripMandiInfo(
             mandi_name=mandi_name,
-            # Not collected anywhere yet — the client renders "—".
             trader_name=None,
             stall_number=stall_number,
         ),
         crop=schemas.RiderTripCropInfo(
             crop_name=(pr.crop_type if pr is not None else "—"),
             weight_kg=float(pr.weight_kg or 0) if pr is not None else 0.0,
-            crate_count=(pr.crate_count or 0) if pr is not None else 0,
         ),
         fare=fare,
     )
@@ -1539,7 +1325,6 @@ def get_rider_trip_detail(
 def create_crate_scan(
     db: Session, scan_data: schemas.CrateScanCreate, user_id: UUID
 ) -> Optional[models.CrateScan]:
-    """Record a crate QR-code scan against a trip; None if trip doesn't exist."""
     trip_exists = (
         db.query(models.Trip.id)
         .filter(models.Trip.id == scan_data.trip_id)
@@ -1574,7 +1359,6 @@ def _compute_settlement_values(
     distance_km: float,
     rate_per_kg: float,
 ) -> dict:
-    """Single source of truth for the fare/payout arithmetic."""
     base_fare = 50.0
     distance_fare = distance_km * _DISTANCE_FARE_PER_KM
     weight_surcharge = max(0.0, weight_kg - 50.0) * 2.0
@@ -1601,7 +1385,6 @@ def _ensure_settlement_for_trip(
     pr: Optional[models.ProduceRequest],
     distance_km: Optional[float],
 ) -> Optional[models.Settlement]:
-    """Create a Settlement row for `trip` if one doesn't already exist."""
     existing = (
         db.query(models.Settlement.id)
         .filter(models.Settlement.trip_id == trip.id)
@@ -1644,7 +1427,6 @@ def _ensure_settlement_for_trip(
 def create_settlement(
     db: Session, settlement_in: schemas.SettlementCreate
 ) -> Optional[models.Settlement]:
-    """Manual / admin creation of a settlement for a DELIVERED trip."""
     trip = (
         db.query(models.Trip)
         .options(joinedload(models.Trip.produce_request))
@@ -1711,7 +1493,6 @@ def create_settlement(
 def get_settlements_for_user(
     db: Session, user_id: UUID, role: str
 ) -> List[models.Settlement]:
-    """Role-based payout history — FARMER filters on farmer_id, RIDER on rider_id."""
     query = db.query(models.Settlement)
 
     if role == "FARMER":
@@ -1729,7 +1510,6 @@ def get_settlements_for_user(
 # ---------------------------------------------------------------------------
 
 def get_admin_stats(db: Session) -> schemas.AdminStatsResponse:
-    """Platform-wide summary counts."""
     total_users = db.query(func.count(models.User.id)).scalar() or 0
     total_farmers = (
         db.query(func.count(models.User.id))

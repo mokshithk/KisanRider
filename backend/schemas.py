@@ -588,7 +588,14 @@ class DutyStatusUpdate(BaseModel):
 
 class ProduceRequestCreate(BaseModel):
     """
-    Body for POST /produce-requests/ and POST /trips/.
+    Body for POST /produce-requests/, POST /trips/, and POST /farmer/orders/create.
+
+    ## Quantity metric
+
+    `weight_kg` (float, kilograms) is the SOLE quantity field. The
+    previous `crate_count` int has been removed by the Book Transport
+    refactor — fare, surcharge, and settlement math are all keyed off
+    weight now.
 
     ## Pickup fields
 
@@ -605,12 +612,27 @@ class ProduceRequestCreate(BaseModel):
     addresses list. Not stored on the ProduceRequest itself — it only
     drives a side-effect inside `crud.create_produce_request`.
 
-    ## Dropoff fields
+    ## Dropoff fields — structured (new)
 
-    Unchanged from before: `dropoff_location`, `dropoff_lat`, `dropoff_lng`.
+    The Book Transport form now sends structured dropoff fields so the
+    backend can work with the market, its id, its district, and the
+    stall number directly without parsing a composite string:
+
+      - `dropoff_district`     — the district the market falls under.
+      - `dropoff_mandi_id`     — a stable identifier for the market
+                                  (e.g. "apmc::kolar apmc").
+      - `dropoff_mandi_name`   — display name of the market.
+      - `dropoff_stall_number` — optional stall / shop / bay.
+
+    ## Dropoff fields — legacy (kept for backward compat)
+
+    `dropoff_location`, `dropoff_lat`, and `dropoff_lng` are still accepted
+    so older clients keep working. When the structured fields are present
+    but `dropoff_location` is omitted, the server derives it from
+    `dropoff_mandi_name` + `dropoff_stall_number` so downstream display
+    code keeps working.
     """
     crop_type: str = Field(..., min_length=1, max_length=80)
-    crate_count: int = Field(..., gt=0, description="Number of crates, must be positive")
     weight_kg: float = Field(..., gt=0, description="Total weight in kilograms")
 
     # ----- Pickup ----------------------------------------------------------
@@ -632,10 +654,31 @@ class ProduceRequestCreate(BaseModel):
         ),
     )
 
-    # ----- Dropoff ---------------------------------------------------------
+    # ----- Dropoff — structured (new) --------------------------------------
+    dropoff_district: Optional[str] = Field(
+        None, max_length=80,
+        description="District the destination market falls under.",
+    )
+    dropoff_mandi_id: Optional[str] = Field(
+        None, max_length=160,
+        description=(
+            "Stable identifier for the destination market, e.g. "
+            "'apmc::kolar apmc' or 'local::manjeshwar fish market'."
+        ),
+    )
+    dropoff_mandi_name: Optional[str] = Field(
+        None, max_length=200,
+        description="Display name of the destination market.",
+    )
+    dropoff_stall_number: Optional[str] = Field(
+        None, max_length=80,
+        description="Optional stall / shop / bay at the market.",
+    )
+
+    # ----- Dropoff — legacy -------------------------------------------------
     dropoff_location: Optional[str] = Field(
         None, max_length=255,
-        description="Free-text dropoff address/landmark (MVP)",
+        description="Free-text dropoff address/landmark (legacy).",
     )
     dropoff_lat: Optional[float] = Field(None, ge=-90, le=90)
     dropoff_lng: Optional[float] = Field(None, ge=-180, le=180)
@@ -647,15 +690,23 @@ class ProduceRequestResponse(BaseModel):
     id: UUID
     farmer_id: UUID
     crop_type: str
-    crate_count: int
     weight_kg: float
     latitude: float
     longitude: float
     pickup_address: Optional[str] = None
     pickup_landmark: Optional[str] = None
+
+    # Structured dropoff (new)
+    dropoff_district: Optional[str] = None
+    dropoff_mandi_id: Optional[str] = None
+    dropoff_mandi_name: Optional[str] = None
+    dropoff_stall_number: Optional[str] = None
+
+    # Legacy dropoff (kept for backward compat)
     dropoff_location: Optional[str] = None
     dropoff_lat: Optional[float] = None
     dropoff_lng: Optional[float] = None
+
     status: str
     created_at: datetime
 
@@ -751,6 +802,11 @@ class TripAvailableOut(BaseModel):
     first name is included, so the rider has a human reference without an
     identifier they can misuse.
 
+    ## Quantity
+
+    `weight_kg` is the sole quantity field. `crate_count` has been removed
+    by the Book Transport refactor.
+
     ## Naming
 
     `trip_id` here is the ProduceRequest's id in the current data model —
@@ -761,7 +817,6 @@ class TripAvailableOut(BaseModel):
     """
     trip_id: UUID
     crop_type: str
-    crate_count: int
     weight_kg: float
     latitude: float
     longitude: float
@@ -796,6 +851,11 @@ class TripActiveOut(BaseModel):
     already knows their own number; the rider isn't yet party to the
     deal).
 
+    ## Quantity
+
+    `weight_kg` is the sole quantity field. `crate_count` has been removed
+    by the Book Transport refactor.
+
     ## Status values
 
     `status` is typed as `str` rather than a `Literal` because the model
@@ -811,13 +871,19 @@ class TripActiveOut(BaseModel):
     didn't provide one, it falls back to the address stored on their
     profile — so a rider always sees *something* human-readable, never
     just a coordinate pair.
+
+    ## Dropoff fields
+
+    Both the structured (`dropoff_district`, `dropoff_mandi_id`,
+    `dropoff_mandi_name`, `dropoff_stall_number`) and legacy
+    (`dropoff_address`, `dropoff_lat`, `dropoff_lng`) shapes are exposed
+    so clients can prefer structured when available.
     """
     trip_id: UUID
     produce_request_id: UUID
     status: str
 
     crop_type: str
-    crate_count: int
     weight_kg: float
     latitude: float
     longitude: float
@@ -825,6 +891,13 @@ class TripActiveOut(BaseModel):
     pickup_address: Optional[str] = None
     pickup_landmark: Optional[str] = None
     dropoff_address: Optional[str] = None
+
+    # Structured dropoff (new)
+    dropoff_district: Optional[str] = None
+    dropoff_mandi_id: Optional[str] = None
+    dropoff_mandi_name: Optional[str] = None
+    dropoff_stall_number: Optional[str] = None
+
     dropoff_lat: Optional[float] = None
     dropoff_lng: Optional[float] = None
 
@@ -929,10 +1002,10 @@ class OrderHistoryItemResponse(BaseModel):
     ## Derived fields
 
     `pickup_village` and `mandi_name` / `stall_number` are derived from
-    the ProduceRequest's stored free-text fields (the schema doesn't
-    carry them as discrete columns) so the client doesn't have to parse
-    strings it can't reliably see the origin of. Derivation rules live
-    in `crud._extract_pickup_village` and `crud._split_dropoff`.
+    the ProduceRequest's stored fields. When the structured dropoff
+    columns are populated they win; otherwise the legacy `dropoff_location`
+    parser is used. Derivation rules live in
+    `crud._extract_pickup_village` and `crud._mandi_and_stall_from_pr`.
     """
     id: UUID
     crop_name: str
@@ -943,6 +1016,37 @@ class OrderHistoryItemResponse(BaseModel):
     mandi_name: Optional[str] = None
     stall_number: Optional[str] = None
 
+# ---------------------------------------------------------------------------
+# Farmer Order Edit + Cancel schemas
+# ---------------------------------------------------------------------------
+
+class FarmerOrderUpdate(BaseModel):
+    """
+    Body for PUT /farmer/orders/{order_id}.
+
+    All fields are optional. The endpoint uses
+    `model_dump(exclude_unset=True)`, so only fields the client sends are
+    written. Sending a field as `null` clears it.
+
+    Field name mapping (request -> model column):
+      crop_name             -> crop_type
+      dropoff_mandi         -> dropoff_mandi_name
+      pickup_notes          -> pickup_landmark
+      weight_kg             -> weight_kg  (same name)
+      dropoff_district      -> dropoff_district  (same name)
+      dropoff_stall_number  -> dropoff_stall_number  (same name)
+    """
+    weight_kg: Optional[float] = Field(None, gt=0)
+    crop_name: Optional[str] = Field(None, min_length=1, max_length=80)
+    dropoff_district: Optional[str] = Field(None, max_length=80)
+    dropoff_mandi: Optional[str] = Field(None, max_length=200)
+    dropoff_stall_number: Optional[str] = Field(None, max_length=80)
+    pickup_notes: Optional[str] = Field(None, max_length=255)
+
+
+class FarmerOrderCancel(BaseModel):
+    """Body for POST /farmer/orders/{order_id}/cancel."""
+    cancellation_reason: Optional[str] = Field(None, max_length=500)
 
 class OrderRiderInfo(BaseModel):
     """
@@ -977,10 +1081,14 @@ class OrderLocationInfo(BaseModel):
 
 
 class OrderCropInfo(BaseModel):
-    """Produce being shipped, as entered by the farmer at booking time."""
+    """
+    Produce being shipped, as entered by the farmer at booking time.
+
+    `weight_kg` is the sole quantity metric. `crate_count` has been
+    removed by the Book Transport refactor.
+    """
     crop_name: str
     weight_kg: float
-    crate_count: int
 
 
 class OrderSettlementInfo(BaseModel):
@@ -1006,24 +1114,7 @@ class OrderSettlementInfo(BaseModel):
 
 
 class FarmerOrderDetailResponse(BaseModel):
-    """
-    Full nested order view for the Order Detail screen.
-
-    Structure mirrors the Flutter screen top-to-bottom:
-
-      - id / status / trip_status / created_at / completed_at
-        drive the header card and the 4-step status timeline.
-        `status` is the normalized value from
-        OrderHistoryItemResponse; `trip_status` is the raw Trip.status
-        (ACCEPTED / PICKED_UP / DELIVERED / CANCELLED) or None while
-        the order is still PENDING — the timeline differentiates
-        "rider assigned" from "in transit" using the raw value.
-      - rider (None while PENDING) drives the "Rider & Vehicle" section.
-      - pickup / dropoff drive the "Location Details" section.
-      - crop drives the "Crop Details" section.
-      - settlement (None until the trip is DELIVERED and the settlement
-        row has been created) drives the "Financial Breakdown" section.
-    """
+    """... existing docstring ..."""
     id: UUID
     status: str
     trip_status: Optional[str] = None
@@ -1031,12 +1122,20 @@ class FarmerOrderDetailResponse(BaseModel):
     completed_at: Optional[datetime] = None
     trip_id: Optional[UUID] = None
     pickup_otp: Optional[str] = None
+    cancellation_reason: Optional[str] = None   # NEW
 
     rider: Optional[OrderRiderInfo] = None
     pickup: OrderLocationInfo
     dropoff: OrderLocationInfo
     crop: OrderCropInfo
     settlement: Optional[OrderSettlementInfo] = None
+
+    # Structured dropoff fields — exposed so the Edit Request flow can
+    # pre-populate the Book Transport form without re-parsing the composite
+    # `dropoff.address` string.
+    dropoff_district: Optional[str] = None
+    dropoff_mandi_name: Optional[str] = None
+    dropoff_stall_number: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -1067,7 +1166,7 @@ class RiderTripHistoryItemResponse(BaseModel):
 
     `pickup_village` / `mandi_name` / `stall_number` follow the same
     derivation rules as the farmer's Order History — see
-    `crud._extract_pickup_village` and `crud._split_dropoff`.
+    `crud._extract_pickup_village` and `crud._mandi_and_stall_from_pr`.
     """
     id: UUID
     crop_name: str
@@ -1118,9 +1217,9 @@ class RiderTripMandiInfo(BaseModel):
     `trader_name` isn't collected by the current booking flow — kept
     Optional so the client renders "—" without a schema change once the
     field is added downstream. `mandi_name` and `stall_number` are
-    parsed server-side out of the ProduceRequest's `dropoff_location`
-    string (formatted as "MandiName - StallInfo" by the Book Transport
-    form).
+    sourced from the ProduceRequest's structured dropoff columns when
+    populated, and fall back to the legacy `dropoff_location` parser for
+    older rows (see `crud._mandi_and_stall_from_pr`).
     """
     mandi_name: Optional[str] = None
     trader_name: Optional[str] = None
@@ -1128,10 +1227,14 @@ class RiderTripMandiInfo(BaseModel):
 
 
 class RiderTripCropInfo(BaseModel):
-    """Produce that was carried on this trip."""
+    """
+    Produce that was carried on this trip.
+
+    `weight_kg` is the sole quantity metric. `crate_count` has been
+    removed by the Book Transport refactor.
+    """
     crop_name: str
     weight_kg: float
-    crate_count: int
 
 
 class RiderTripFareBreakdown(BaseModel):

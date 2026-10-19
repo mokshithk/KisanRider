@@ -103,7 +103,6 @@ class AvailableRequest {
   AvailableRequest({
     required this.id,
     required this.cropType,
-    required this.crateCount,
     required this.weightKg,
     required this.latitude,
     required this.longitude,
@@ -131,7 +130,6 @@ class AvailableRequest {
     return AvailableRequest(
       id: (json['id'] ?? '').toString(),
       cropType: (json['crop_type'] ?? '') as String,
-      crateCount: ((json['crate_count'] ?? 0) as num).toInt(),
       weightKg: ((json['weight_kg'] ?? 0) as num).toDouble(),
       latitude: ((json['latitude'] ?? 0) as num).toDouble(),
       longitude: ((json['longitude'] ?? 0) as num).toDouble(),
@@ -146,7 +144,6 @@ class AvailableRequest {
 
   final String id;
   final String cropType;
-  final int crateCount;
   final double weightKg;
   final double latitude;
   final double longitude;
@@ -207,7 +204,6 @@ class ActiveTrip {
     required this.produceRequestId,
     required this.status,
     required this.cropType,
-    required this.crateCount,
     required this.weightKg,
     required this.latitude,
     required this.longitude,
@@ -233,7 +229,6 @@ class ActiveTrip {
         produceRequestId: (json['produce_request_id'] ?? '').toString(),
         status: (json['status'] ?? '') as String,
         cropType: (json['crop_type'] ?? '') as String,
-        crateCount: ((json['crate_count'] ?? 0) as num).toInt(),
         weightKg: ((json['weight_kg'] ?? 0) as num).toDouble(),
         latitude: ((json['latitude'] ?? 0) as num).toDouble(),
         longitude: ((json['longitude'] ?? 0) as num).toDouble(),
@@ -258,7 +253,6 @@ class ActiveTrip {
           (pr['id'] ?? json['produce_request_id'] ?? '').toString(),
       status: (json['status'] ?? '') as String,
       cropType: (pr['crop_type'] ?? '') as String,
-      crateCount: ((pr['crate_count'] ?? 0) as num).toInt(),
       weightKg: ((pr['weight_kg'] ?? 0) as num).toDouble(),
       latitude: ((pr['latitude'] ?? 0) as num).toDouble(),
       longitude: ((pr['longitude'] ?? 0) as num).toDouble(),
@@ -270,7 +264,6 @@ class ActiveTrip {
   final String produceRequestId;
   final String status;
   final String cropType;
-  final int crateCount;
   final double weightKg;
   final double latitude;
   final double longitude;

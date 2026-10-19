@@ -12,6 +12,7 @@ import random  # noqa: F401  (kept for parity with downstream modules)
 import time
 import uuid
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import List, Optional
 from uuid import UUID
@@ -20,9 +21,9 @@ import httpx
 from fastapi import Depends, FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from sqlalchemy import text
+from sqlalchemy import and_, or_, text
 from sqlalchemy.exc import SQLAlchemyError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 import auth
 import config
@@ -75,8 +76,19 @@ async def lifespan(app: FastAPI):
           ON users (phone_number);
 
         ALTER TABLE produce_requests
-          ADD COLUMN IF NOT EXISTS pickup_address   VARCHAR(500),
-          ADD COLUMN IF NOT EXISTS pickup_landmark  VARCHAR(255);
+          ADD COLUMN IF NOT EXISTS pickup_address        VARCHAR(500),
+          ADD COLUMN IF NOT EXISTS pickup_landmark       VARCHAR(255),
+          ADD COLUMN IF NOT EXISTS dropoff_district      VARCHAR(80),
+          ADD COLUMN IF NOT EXISTS dropoff_mandi_id      VARCHAR(160),
+          ADD COLUMN IF NOT EXISTS dropoff_mandi_name    VARCHAR(200),
+          ADD COLUMN IF NOT EXISTS dropoff_stall_number  VARCHAR(80);
+
+        -- The Book Transport refactor moved the sole quantity metric to
+        -- `weight_kg`. `crate_count` is no longer written by the ORM;
+        -- make it nullable so any legacy INSERT that still sends it
+        -- doesn't fail on the NOT NULL constraint.
+        ALTER TABLE produce_requests
+          ALTER COLUMN crate_count DROP NOT NULL;
 
         ALTER TABLE trips
           ADD COLUMN IF NOT EXISTS pickup_address   VARCHAR(500),
@@ -85,6 +97,19 @@ async def lifespan(app: FastAPI):
           ADD COLUMN IF NOT EXISTS pickup_longitude DOUBLE PRECISION;
     """
     models.Base.metadata.create_all(bind=engine)
+    
+    # Auto-migration for the new cancellation_reason column
+    with engine.connect() as conn:
+        try:
+            conn.execute(text(
+                "ALTER TABLE produce_requests "
+                "ADD COLUMN IF NOT EXISTS cancellation_reason VARCHAR(500);"
+            ))
+            conn.commit()
+            print("[startup] Checked/added cancellation_reason column.")
+        except Exception as e:
+            print(f"[startup] Migration note: {e}")
+            
     yield
 
 
@@ -191,24 +216,34 @@ def _bbox_around(
     return (lat - lat_delta, lng - lng_delta, lat + lat_delta, lng + lng_delta)
 
 
-@app.get("/mandis/search")
-async def search_mandis(
-    district: str = Query(..., min_length=1, max_length=80),
-):
+async def _overpass_search_local_markets(district_clean: str) -> list[dict]:
     """
-    Find APMC mandis / market yards in a district via OpenStreetMap's
-    Overpass API (free, no API key).
+    Shared helper: run the Overpass query for a district and return a
+    deduplicated list of `{name, address, lat, lng}` dicts.
+
+    This is the *local market* data source — it catches unregistered
+    town markets, fish markets, and regional yards (e.g. "Manjeshwar
+    Fish Market") that a district-level APMC register wouldn't list.
+
+    Both `GET /mandis/search` (legacy) and `GET /mandi/markets` (the
+    dual-source endpoint) reuse this helper so the caching and filtering
+    behavior stay consistent. Results are cached for one hour per
+    district; the cache is shared between the two endpoints.
+
+    Raises `HTTPException(502)` if every Overpass mirror fails — the
+    caller decides whether to surface that to the client or fall back to
+    an empty list (the `/mandi/markets` endpoint does the latter so the
+    APMC results still come through).
     """
-    district_clean = district.strip()
     center = _DISTRICT_CENTERS.get(district_clean)
     if center is None:
-        raise HTTPException(status_code=400, detail=f"Unknown district: {district_clean}")
+        return []
 
     cache_key = district_clean.lower()
     now = time.time()
     cached = _MANDI_CACHE.get(cache_key)
     if cached and (now - cached[0]) < _MANDI_CACHE_TTL:
-        return {"district": district_clean, "mandis": cached[1]}
+        return cached[1]
 
     lat, lng = center
     south, west, north, east = _bbox_around(lat, lng, radius_km=30.0)
@@ -218,7 +253,7 @@ async def search_mandis(
     [out:json][timeout:60];
     (
       nwr["amenity"="marketplace"]({bbox});
-      nwr["name"~"\\b(APMC|Mandi)\\b",i]({bbox});
+      nwr["name"~"\\\\b(APMC|Mandi)\\\\b",i]({bbox});
     );
     out center tags;
     """
@@ -293,8 +328,28 @@ async def search_mandis(
         unique.append(m)
 
     _MANDI_CACHE[cache_key] = (now, unique)
+    return unique
 
-    return {"district": district_clean, "mandis": unique}
+
+@app.get("/mandis/search")
+async def search_mandis(
+    district: str = Query(..., min_length=1, max_length=80),
+):
+    """
+    Find APMC mandis / market yards in a district via OpenStreetMap's
+    Overpass API (free, no API key).
+
+    LEGACY endpoint — returns only the Overpass-discovered local
+    markets. For the dual-source view that merges official APMC yards
+    from the Agmarknet register with these local markets, use
+    `GET /mandi/markets`.
+    """
+    district_clean = district.strip()
+    if district_clean not in _DISTRICT_CENTERS:
+        raise HTTPException(status_code=400, detail=f"Unknown district: {district_clean}")
+
+    mandis = await _overpass_search_local_markets(district_clean)
+    return {"district": district_clean, "mandis": mandis}
 
 
 # ---------------------------------------------------------------------------
@@ -689,6 +744,7 @@ async def _fetch_live_rates(
                 ]
 
             if not records:
+                print("[mandi-rates] No records found in Data.gov API response.")
                 return None
 
             parsed = _parse_live_records(records, filter_district=district)
@@ -780,6 +836,205 @@ async def get_mandi_rates(
         "available_districts": _MANDI_RATE_DISTRICTS,
         "rates": rates,
     }
+
+
+# ---------------------------------------------------------------------------
+# Dual-source market listing (APMC_YARD + LOCAL_MARKET)
+# ---------------------------------------------------------------------------
+
+async def _fetch_apmc_yards(district_clean: str) -> list[dict]:
+    """
+    Return the official APMC yards registered under `district_clean`.
+
+    Data Source B for `/mandi/markets`. Tries Data.gov.in / Agmarknet
+    first (via the existing `_fetch_live_rates` helper); falls back to
+    the local `_MOCK_MANDI_RATES` dataset if the live call fails or
+    `DATA_GOV_API_KEY` is unset.
+
+    Each entry is shaped to match the merged `/mandi/markets` response:
+
+        {
+          "id":       "apmc::<lowercased name>",
+          "name":     "Kolar APMC",
+          "type":     "APMC_YARD",
+          "district": "Kolar",
+          "address":  None,
+          "lat":      None,
+          "lng":      None,
+        }
+
+    Only rows whose `mandi` name contains "APMC" (case-insensitive) are
+    included — the Agmarknet `market` field also carries vegetable /
+    fish market names, and those belong to the LOCAL_MARKET source.
+    """
+    yards: list[dict] = []
+    seen: set[str] = set()
+
+    def _add(name: str) -> None:
+        cleaned = name.strip()
+        if not cleaned:
+            return
+        key = cleaned.lower()
+        if key in seen:
+            return
+        seen.add(key)
+        yards.append({
+            "id": f"apmc::{key}",
+            "name": cleaned,
+            "type": "APMC_YARD",
+            "district": district_clean,
+            "address": None,
+            "lat": None,
+            "lng": None,
+        })
+
+    # Try the live Agmarknet feed first.
+    api_key = os.environ.get("DATA_GOV_API_KEY")
+    if api_key:
+        live = await _fetch_live_rates(api_key, district_clean)
+        if live:
+            for r in live:
+                mandi_name = (r.get("mandi") or "").strip()
+                if not mandi_name:
+                    continue
+                if "apmc" not in mandi_name.lower():
+                    continue
+                _add(mandi_name)
+
+    # Fall back to mock APMC data if live data yielded nothing.
+    if not yards:
+        for r in _mock_rates_for(district_clean):
+            mandi_name = (r.get("mandi") or "").strip()
+            if not mandi_name:
+                continue
+            if "apmc" not in mandi_name.lower():
+                continue
+            _add(mandi_name)
+
+    return yards
+
+
+@app.get(
+    "/mandi/markets",
+    summary="Dual-source market listing (APMC yards + local markets)",
+)
+async def list_mandi_markets(
+    district: str = Query(
+        ..., min_length=1, max_length=80,
+        description="Karnataka district name.",
+    ),
+):
+    """
+    Unified market listing for a Karnataka district, combining two
+    independent data sources.
+
+    ## Data sources
+
+    **Source A — Local markets (`LOCAL_MARKET`)**
+
+        The existing OpenStreetMap / Overpass lookup (`/mandis/search`),
+        which catches town markets, fish markets, and regional yards
+        that aren't on the official APMC register — e.g.
+        "Manjeshwar Fish Market".
+
+    **Source B — Official APMC yards (`APMC_YARD`)**
+
+        The Agmarknet / Data.gov.in register for the district, filtered
+        to entries whose market name contains "APMC" — e.g.
+        "Bantwala APMC", "Puttur APMC". Falls back to the local mock
+        dataset when the live API is unavailable or has no coverage.
+
+    ## Merge & deduplicate
+
+    Both sources are merged into one array and deduplicated by
+    case-insensitive market name. APMC yards are emitted first (official
+    data before heuristic web-scraped data), then local markets — so the
+    dropdown in the Book Transport screen shows the government-listed
+    destinations at the top.
+
+    Each item carries a `type` field so the client can badge the entry:
+
+      - `APMC_YARD`     — official government mandi.
+      - `LOCAL_MARKET`  — local town / fish / regional market.
+
+    ## Response shape
+
+      {
+        "district": "Kolar",
+        "markets": [
+          {
+            "id":       "apmc::kolar apmc",
+            "name":     "Kolar APMC",
+            "type":     "APMC_YARD",
+            "district": "Kolar",
+            "address":  null,
+            "lat":      null,
+            "lng":      null
+          },
+          {
+            "id":       "local::manjeshwar fish market",
+            "name":     "Manjeshwar Fish Market",
+            "type":     "LOCAL_MARKET",
+            "district": "Kolar",
+            "address":  "Manjeshwar, Kolar, Karnataka",
+            "lat":      12.7145,
+            "lng":      74.8823
+          }
+        ]
+      }
+
+    ## Error handling
+
+    If Overpass is down, the endpoint still returns the APMC results
+    (with `markets` containing only `APMC_YARD` entries) rather than
+    surfacing a 502. An unknown district raises a 400 before either
+    source is queried.
+    """
+    district_clean = district.strip()
+    if district_clean not in _DISTRICT_CENTERS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown district: {district_clean}",
+        )
+
+    # Source B — official APMC yards (Agmarknet / mock fallback).
+    apmc_entries = await _fetch_apmc_yards(district_clean)
+
+    # Source A — local markets via Overpass. Failures here are swallowed
+    # so the APMC results still reach the client.
+    try:
+        local_markets = await _overpass_search_local_markets(district_clean)
+    except HTTPException:
+        local_markets = []
+
+    local_entries: list[dict] = []
+    for m in local_markets:
+        name = (m.get("name") or "").strip()
+        if not name:
+            continue
+        local_entries.append({
+            "id": f"local::{name.lower()}",
+            "name": name,
+            "type": "LOCAL_MARKET",
+            "district": district_clean,
+            "address": m.get("address"),
+            "lat": m.get("lat"),
+            "lng": m.get("lng"),
+        })
+
+    # Merge & deduplicate by case-insensitive name. APMC yards come
+    # first, so an entry like "Kolar APMC" that Overpass also picked up
+    # will be served from the APMC branch (correct type label).
+    seen_names: set[str] = set()
+    merged: list[dict] = []
+    for entry in apmc_entries + local_entries:
+        key = entry["name"].strip().lower()
+        if not key or key in seen_names:
+            continue
+        seen_names.add(key)
+        merged.append(entry)
+
+    return {"district": district_clean, "markets": merged}
 
 
 # ---------------------------------------------------------------------------
@@ -1235,7 +1490,7 @@ def create_farmer_address(
 
 
 # ---------------------------------------------------------------------------
-# Farmer Orders — Order History + Single-order Detail
+# Farmer Orders — Order History + Single-order Detail + Create
 # ---------------------------------------------------------------------------
 #
 # NOTE ON ROUTE ORDERING: `/farmer/orders/history` is declared BEFORE
@@ -1244,6 +1499,11 @@ def create_farmer_address(
 # not a UUID, so if the parameterized route were registered first, the
 # history request would 422 on UUID validation instead of falling through.
 # Do not reorder these two decorators.
+#
+# `/farmer/orders/create` is declared AFTER `/farmer/orders/{order_id}`
+# because it uses the POST method, which the parameterized GET route
+# doesn't match anyway. Placed here so the whole "orders" family stays
+# together in the file.
 # ---------------------------------------------------------------------------
 
 @app.get(
@@ -1270,7 +1530,9 @@ def get_farmer_order_history(
 
     `status` is normalized (PENDING / IN_TRANSIT / COMPLETED / CANCELLED).
     `pickup_village` and `mandi_name` / `stall_number` are derived
-    server-side from the stored free-text fields — see
+    server-side from the stored fields — the structured `dropoff_mandi_name`
+    / `dropoff_stall_number` columns when populated, or parsed out of the
+    legacy composite `dropoff_location` string otherwise. See
     `crud.get_farmer_order_history` for the derivation rules.
     """
     try:
@@ -1300,7 +1562,7 @@ def get_farmer_order_detail(
       - rider         — None while no rider has accepted.
       - pickup        — pickup address block (lat/lng when available).
       - dropoff       — APMC mandi + stall block.
-      - crop          — crop type, weight, crate count.
+      - crop          — crop type and weight.
       - settlement    — None until the trip is DELIVERED (settlement is
                         auto-created by the trip status transition).
 
@@ -1308,6 +1570,182 @@ def get_farmer_order_detail(
     order existence is deliberately not leaked across accounts.
     """
     result = crud.get_farmer_order_detail(db, order_id, current_user.id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Order not found")
+    return result
+
+
+@app.post(
+    "/farmer/orders/create",
+    response_model=schemas.ProduceRequestResponse,
+    status_code=201,
+    summary="Create a farmer order (alias for POST /produce-requests/)",
+)
+def create_farmer_order(
+    request: schemas.ProduceRequestCreate,
+    current_user: models.User = Depends(auth.require_role("FARMER")),
+    db: Session = Depends(get_db),
+):
+    """
+    Create a produce pickup request for the authenticated farmer.
+
+    Naming alias for `POST /produce-requests/` that matches the URL
+    convention used by the other `/farmer/orders/*` endpoints. Same
+    payload, same behavior, same response shape.
+
+    ## Payload
+
+    Accepts `schemas.ProduceRequestCreate`, whose fields map to the
+    Book Transport form's inputs:
+
+      - `weight_kg`                 — total weight in kilograms (sole
+                                      quantity metric; `crate_count`
+                                      was removed by the refactor).
+      - `latitude` / `longitude`    — the pickup location's coordinates
+                                      (required — PostGIS needs them).
+      - `pickup_address`            — human-readable pickup address the
+                                      farmer typed or selected from a
+                                      saved place (optional).
+      - `pickup_landmark`           — short landmark line (optional).
+      - `dropoff_district`          — target district.
+      - `dropoff_mandi_id` and/or `dropoff_mandi_name` — the market
+                                      destination. `dropoff_mandi_id`
+                                      is a stable identifier from
+                                      GET /mandi/markets; `dropoff_mandi_name`
+                                      is the display name.
+      - `dropoff_stall_number`      — optional stall / shop / bay.
+
+    ## What happens on success
+
+    1. A ProduceRequest row is created with `status="PENDING"` and a
+       fresh 4-digit pickup OTP.
+    2. If `save_address_for_future=True` and a non-empty
+       `pickup_address` was supplied, the address is also persisted to
+       SavedAddress.
+    3. The response carries the full ProduceRequest shape (including the
+       structured dropoff fields). The pickup OTP is exposed via the
+       FarmerProduceRequestResponse shape on subsequent GETs.
+    """
+    try:
+        return crud.create_produce_request(db, request, current_user.id)
+    except (SQLAlchemyError, ValueError) as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+# ---------------------------------------------------------------------------
+# Farmer Order Edit + Cancel
+# ---------------------------------------------------------------------------
+# Both endpoints are locked to PENDING orders. Once a rider has accepted,
+# the order cannot be modified or cancelled — the trip is already in motion
+# and the rider has committed real resources toward the pickup. Both
+# endpoints return 400 with the same canonical message on a locked order.
+# ---------------------------------------------------------------------------
+
+
+@app.put(
+    "/farmer/orders/{order_id}",
+    response_model=schemas.FarmerOrderDetailResponse,
+    summary="Update a PENDING farmer order",
+)
+def update_farmer_order(
+    order_id: UUID,
+    payload: schemas.FarmerOrderUpdate,
+    current_user: models.User = Depends(auth.require_role("FARMER")),
+    db: Session = Depends(get_db),
+):
+    """
+    Partially update a PENDING order owned by the authenticated farmer.
+
+    Only PENDING orders can be modified. Once a rider has accepted the
+    order, this endpoint returns 400 with:
+
+        "Order cannot be modified or cancelled after acceptance"
+
+    Accepted fields (all optional):
+      - crop_name
+      - weight_kg
+      - dropoff_district
+      - dropoff_mandi
+      - dropoff_stall_number
+      - pickup_notes
+    """
+    updates = payload.model_dump(exclude_unset=True)
+
+    if "crop_name" in updates and updates["crop_name"] is not None:
+        updates["crop_name"] = updates["crop_name"].strip()
+        if not updates["crop_name"]:
+            raise HTTPException(
+                status_code=400, detail="crop_name cannot be empty"
+            )
+
+    try:
+        crud.update_farmer_order(db, order_id, current_user.id, updates)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except SQLAlchemyError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    try:
+        result = crud.get_farmer_order_detail(db, order_id, current_user.id)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Database sync error: {str(e)}")
+        
+    if result is None:
+        raise HTTPException(status_code=404, detail="Order not found")
+    return result
+
+
+@app.post(
+    "/farmer/orders/{order_id}/cancel",
+    response_model=schemas.FarmerOrderDetailResponse,
+    summary="Cancel a PENDING farmer order",
+)
+def cancel_farmer_order(
+    order_id: UUID,
+    payload: Optional[schemas.FarmerOrderCancel] = None,
+    current_user: models.User = Depends(auth.require_role("FARMER")),
+    db: Session = Depends(get_db),
+):
+    """
+    Cancel a PENDING order owned by the authenticated farmer.
+
+    Body is optional; when present, `cancellation_reason` is stored on
+    the order row for support/audit purposes.
+
+    Only PENDING orders can be cancelled. Once a rider has accepted the
+    order, this endpoint returns 400 with:
+
+        "Order cannot be modified or cancelled after acceptance"
+
+    ## Error handling
+
+    `ValueError` from the CRUD layer (order not found / not PENDING /
+    not owned by this farmer) is surfaced as a 400. Any raw
+    `SQLAlchemyError` — the kind of driver-level failure that used to
+    crash the request with a 500 stack trace — is rolled back inside the
+    CRUD layer and translated here into a fixed, user-safe 500 message.
+    The driver error text itself is never returned to the client.
+
+    On success the order's status flips to CANCELLED and the updated
+    order detail is returned so the client can render the "cancelled"
+    banner without a second GET.
+    """
+    reason = payload.cancellation_reason if payload else None
+
+    try:
+        crud.cancel_farmer_order(db, order_id, current_user.id, reason)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except SQLAlchemyError:
+        # Do NOT forward the driver message. Raw SQL / table names must
+        # never leave the server.
+        raise HTTPException(status_code=500, detail="Failed to cancel order")
+
+    try:
+        result = crud.get_farmer_order_detail(db, order_id, current_user.id)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Database sync error: {str(e)}")
+
     if result is None:
         raise HTTPException(status_code=404, detail="Order not found")
     return result
@@ -1472,15 +1910,21 @@ def update_rider_payouts(
 
 
 # ---------------------------------------------------------------------------
-# Rider Trips — Trip History + Single-trip Detail
+# Rider Trips — Trip History + Active List + Single-trip Detail + Actions
 # ---------------------------------------------------------------------------
 #
-# NOTE ON ROUTE ORDERING: `/rider/trips/history` is declared BEFORE
-# `/rider/trips/{trip_id}`. FastAPI matches routes in registration
-# order, and the path converter for `{trip_id}` is UUID — "history" is
-# not a UUID, so if the parameterized route were registered first, the
-# history request would 422 on UUID validation instead of falling
-# through to the correct handler. Do not reorder these two decorators.
+# ROUTE ORDERING (important): static sub-paths under `/rider/trips/` must
+# be declared BEFORE the `/rider/trips/{trip_id}` parameterized route,
+# because FastAPI matches routes in registration order and a UUID path
+# converter will reject "history" and "active" as 422s.
+#
+#   /rider/trips/history   ✅ registered first
+#   /rider/trips/active    ✅ registered second
+#   /rider/trips/{trip_id} ✅ registered last
+#
+# The two POST action routes (`/verify-otp`, `/cancel`) use their own
+# full paths with the `{trip_id}` parameter, so they don't collide with
+# the GET parameterized route at all.
 # ---------------------------------------------------------------------------
 
 @app.get(
@@ -1508,13 +1952,183 @@ def get_rider_trip_history(
     `payment_method` is "Wallet Credited" (settlement PAID) or
     "Cash Collected" (settlement still PENDING); it's "—" for cancelled
     trips. `pickup_village` and `mandi_name` / `stall_number` are
-    derived server-side from the stored free-text fields — see
+    derived server-side from the stored fields — see
     `crud.get_rider_trip_history` for the derivation rules.
     """
     try:
         return crud.get_rider_trip_history(db, current_user.id)
     except SQLAlchemyError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+# ---------------------------------------------------------------------------
+# Rider Active Trips — compact list + operational actions
+# ---------------------------------------------------------------------------
+# These endpoints back the refactored rider "Active Trips" tab, which
+# shows a unified list of ACCEPTED / PICKED_UP / COMPLETED trips with
+# status filter chips, and pushes all operational actions (verify OTP,
+# cancel, mark delivered) into the trip detail view.
+# ---------------------------------------------------------------------------
+
+# How far back the Active list will surface COMPLETED trips. Keeping this
+# short means the feed stays focused on recent operational work — the
+# full historical record lives in `/rider/trips/history`.
+_RIDER_ACTIVE_COMPLETED_LOOKBACK_DAYS = 30
+
+
+@app.get(
+    "/rider/trips/active",
+    summary="Rider's active and recently completed trips (compact list view)",
+)
+def get_rider_active_trips_compact(
+    current_user: models.User = Depends(auth.require_role("RIDER")),
+    db: Session = Depends(get_db),
+):
+    """
+    Return the rider's ACCEPTED / PICKED_UP / IN_TRANSIT / COMPLETED
+    trips in the compact shape the refactored Active Trips list view
+    renders.
+
+    ## Status normalization
+
+    Two different underlying statuses map to the same client-facing
+    status so the filter chips stay a small, closed set:
+
+      ACCEPTED      → "ACCEPTED"
+      PICKED_UP     → "PICKED_UP"
+      IN_TRANSIT    → "PICKED_UP"
+      DELIVERED     → "COMPLETED"
+      COMPLETED     → "COMPLETED"
+
+    `raw_status` is also included so callers that care about the exact
+    backend status (e.g. logging/analytics) can still see it.
+
+    ## Completed trip lookback
+
+    Only COMPLETED trips whose `completed_at` falls within the last
+    `_RIDER_ACTIVE_COMPLETED_LOOKBACK_DAYS` days are returned. Full
+    history lives at `/rider/trips/history`.
+
+    ## Fields
+
+    Every field the list card AND the detail sheet need is returned
+    here in one call, so the operational sheet can render without a
+    second network round-trip:
+
+      order_id            — the Trip's UUID
+      produce_request_id  — the ProduceRequest's UUID
+      crop_name, weight_kg
+      dropoff_mandi, dropoff_stall, dropoff_address
+      pickup_address, pickup_landmark, pickup_latitude, pickup_longitude
+      status (normalized), raw_status
+      created_at, completed_at
+      farmer_full_name, farmer_phone_number, farm_address
+    """
+    cutoff = datetime.utcnow() - timedelta(
+        days=_RIDER_ACTIVE_COMPLETED_LOOKBACK_DAYS
+    )
+
+    try:
+        trips = (
+            db.query(models.Trip)
+            .options(
+                joinedload(models.Trip.produce_request).joinedload(
+                    models.ProduceRequest.farmer
+                ),
+                joinedload(models.Trip.rider),
+            )
+            .filter(
+                models.Trip.rider_id == current_user.id,
+                or_(
+                    models.Trip.status.in_(
+                        ("ACCEPTED", "PICKED_UP", "IN_TRANSIT")
+                    ),
+                    and_(
+                        models.Trip.status.in_(("COMPLETED", "DELIVERED")),
+                        or_(
+                            models.Trip.completed_at.is_(None),
+                            models.Trip.completed_at >= cutoff,
+                        ),
+                    ),
+                ),
+            )
+            .order_by(models.Trip.created_at.desc())
+            .all()
+        )
+    except SQLAlchemyError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    result: list[dict] = []
+    for trip in trips:
+        pr = trip.produce_request
+        if pr is None:
+            continue
+
+        farmer = pr.farmer
+
+        # Resolve pickup lat/lng from the Trip's snapshot, with a
+        # ProduceRequest fallback for older rows.
+        pickup_lat = trip.pickup_latitude
+        pickup_lng = trip.pickup_longitude
+        if pickup_lat is None and pr.pickup_location is not None:
+            try:
+                from geoalchemy2.shape import to_shape as _to_shape
+                point = _to_shape(pr.pickup_location)
+                pickup_lat = float(point.y)
+                pickup_lng = float(point.x)
+            except Exception:
+                pass
+
+        # Normalize status for the client. See the endpoint docstring.
+        raw = (trip.status or "").upper()
+        if raw in ("COMPLETED", "DELIVERED"):
+            display_status = "COMPLETED"
+        elif raw in ("PICKED_UP", "IN_TRANSIT"):
+            display_status = "PICKED_UP"
+        else:
+            display_status = raw or "ACCEPTED"
+
+        result.append({
+            "order_id": str(trip.id),
+            "produce_request_id": str(pr.id),
+            "crop_name": pr.crop_type or "—",
+            "weight_kg": float(pr.weight_kg or 0),
+            "dropoff_mandi": (
+                pr.dropoff_mandi_name
+                or pr.dropoff_location
+                or "—"
+            ),
+            "dropoff_stall": pr.dropoff_stall_number,
+            "dropoff_address": pr.dropoff_location,
+            "pickup_address": (
+                trip.pickup_address or pr.pickup_address
+            ),
+            "pickup_landmark": (
+                trip.pickup_landmark or pr.pickup_landmark
+            ),
+            "pickup_latitude": pickup_lat,
+            "pickup_longitude": pickup_lng,
+            "status": display_status,
+            "raw_status": trip.status,
+            "created_at": (
+                trip.created_at.isoformat()
+                if trip.created_at is not None else None
+            ),
+            "completed_at": (
+                trip.completed_at.isoformat()
+                if trip.completed_at is not None else None
+            ),
+            "farmer_full_name": farmer.full_name if farmer else None,
+            "farmer_phone_number": (
+                farmer.phone_number if farmer else None
+            ),
+            "farm_address": (
+                (farmer.farm_address or farmer.landmark)
+                if farmer else None
+            ),
+        })
+
+    return result
 
 
 @app.get(
@@ -1537,9 +2151,11 @@ def get_rider_trip_detail(
         drive the completion header (delivery timestamp + distance).
       - farmer        — name, phone, farm address.
       - pickup        — pickup address block (lat/lng when available).
-      - mandi         — APMC mandi + stall number (parsed server-side
-                        out of the ProduceRequest's dropoff string).
-      - crop          — crop type, weight, crate count.
+      - mandi         — APMC mandi + stall number (sourced from the
+                        structured dropoff columns on new rows, or
+                        parsed out of the legacy composite string on
+                        older rows).
+      - crop          — crop type and weight.
       - fare          — fare breakdown (gross, commission, net) plus
                         payment mode. None for CANCELLED trips.
 
@@ -1550,6 +2166,203 @@ def get_rider_trip_detail(
     if result is None:
         raise HTTPException(status_code=404, detail="Trip not found")
     return result
+
+
+@app.post(
+    "/rider/trips/{trip_id}/verify-otp",
+    summary="Verify pickup OTP for a rider's ACCEPTED trip",
+)
+def verify_rider_trip_otp(
+    trip_id: UUID,
+    body: schemas.OtpVerifyRequest,
+    current_user: models.User = Depends(auth.require_role("RIDER")),
+    db: Session = Depends(get_db),
+):
+    """
+    Verify the 4-digit pickup OTP for a trip assigned to the authenticated
+    rider, and on a match transition BOTH the linked `Trip` and the
+    underlying `ProduceRequest` to `PICKED_UP`.
+
+    ## Pre-conditions
+
+    - The trip must exist and be assigned to the caller (403 otherwise).
+    - The trip must currently be `ACCEPTED`. A trip already `PICKED_UP`
+      or `COMPLETED` cannot be re-verified — this is the same idempotency
+      guard the farmer-side endpoint enforces.
+
+    ## Failure modes
+
+    - 400 if the OTP doesn't match (`"Invalid OTP"`) or if the
+      ProduceRequest is in a terminal state.
+    - 403 if the caller isn't the assigned rider.
+    - 404 if the trip doesn't exist.
+
+    ## On success
+
+    Both writes happen inside the existing CRUD helpers, which each
+    wrap their row in `with_for_update()` and roll back on error:
+
+      1. `crud.verify_pickup_otp` validates the OTP and flips
+         `ProduceRequest.status` to `PICKED_UP`.
+      2. `crud.update_trip_status` flips `Trip.status` to `PICKED_UP`.
+
+    If step 1 succeeds but step 2 fails, the caller can retry — the
+    ProduceRequest is already `PICKED_UP`, and the same idempotency
+    guard on `update_trip_status` only rejects terminal states, so
+    re-running the transition is safe.
+
+    Returns a small JSON envelope rather than a full trip payload,
+    because the rider's list is refreshed separately by the client.
+    """
+    trip = crud.get_trip_by_id(db, trip_id)
+    if trip is None:
+        raise HTTPException(status_code=404, detail="Trip not found")
+    if trip.rider_id != current_user.id:
+        raise HTTPException(
+            status_code=403,
+            detail="You are not the rider assigned to this trip",
+        )
+    if trip.status != "ACCEPTED":
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Trip must be ACCEPTED before OTP verification "
+                f"(current: {trip.status})"
+            ),
+        )
+
+    # ----- Step 1: validate OTP + flip ProduceRequest to PICKED_UP --------
+    try:
+        pr = crud.verify_pickup_otp(db, trip.produce_request_id, body.otp)
+    except (SQLAlchemyError, ValueError) as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if pr is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Linked produce request not found",
+        )
+
+    # ----- Step 2: flip the Trip to PICKED_UP ----------------------------
+    try:
+        crud.update_trip_status(db, trip_id, "PICKED_UP")
+    except (SQLAlchemyError, ValueError) as e:
+        # ProduceRequest is already PICKED_UP — surface the failure so
+        # the client can retry the status sync.
+        raise HTTPException(status_code=400, detail=str(e))
+
+    return {
+        "success": True,
+        "message": "OTP verified successfully",
+        "trip_id": str(trip_id),
+        "new_status": "PICKED_UP",
+    }
+
+
+@app.post(
+    "/rider/trips/{trip_id}/cancel",
+    summary="Cancel an ACCEPTED rider trip (before OTP verification)",
+)
+def cancel_rider_trip(
+    trip_id: UUID,
+    current_user: models.User = Depends(auth.require_role("RIDER")),
+    db: Session = Depends(get_db),
+):
+    """
+    Cancel a trip the rider has accepted but not yet picked up.
+
+    ## Allowed ONLY when `Trip.status == "ACCEPTED"`
+
+    Once the pickup OTP has been verified (`PICKED_UP`) or the trip has
+    been delivered (`COMPLETED` / `DELIVERED`), cancellation is locked —
+    returning HTTP 400 with `"Cannot cancel trip after OTP verification"`.
+    This protects the farmer: after the rider physically loads the
+    produce, silently backing out would strand their shipment.
+
+    ## What happens on success
+
+    Inside one `try / commit / except rollback` block:
+
+      1. `Trip.status` → `CANCELLED`, `Trip.completed_at` → now.
+      2. `ProduceRequest.status` → `PENDING` so another rider can pick
+         it up from the Available feed.
+
+    The whole operation is transactional — if either the Trip update or
+    the ProduceRequest revert fails, `db.rollback()` is called and the
+    request returns a fixed, user-safe 500 message.
+
+    Returns a small JSON envelope rather than a full trip payload,
+    because the rider's list is refreshed separately by the client.
+    """
+    trip = crud.get_trip_by_id(db, trip_id)
+    if trip is None:
+        raise HTTPException(status_code=404, detail="Trip not found")
+    if trip.rider_id != current_user.id:
+        raise HTTPException(
+            status_code=403,
+            detail="You are not the rider assigned to this trip",
+        )
+    if trip.status != "ACCEPTED":
+        # Any status other than ACCEPTED is a hard 400 — the client
+        # knows it should hide the cancel button in those states, so
+        # reaching this branch indicates either a race or a stale view.
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot cancel trip after OTP verification",
+        )
+
+    try:
+        # Lock the trip row so a concurrent status PATCH can't slip
+        # between the check above and the write below.
+        locked_trip = (
+            db.query(models.Trip)
+            .filter(models.Trip.id == trip_id)
+            .with_for_update()
+            .first()
+        )
+        if locked_trip is None:
+            raise HTTPException(status_code=404, detail="Trip not found")
+        if locked_trip.status != "ACCEPTED":
+            # Lost the race — someone else transitioned the trip.
+            raise HTTPException(
+                status_code=400,
+                detail="Cannot cancel trip after OTP verification",
+            )
+
+        locked_trip.status = "CANCELLED"
+        locked_trip.completed_at = datetime.utcnow()
+
+        # Revert the ProduceRequest to PENDING so another rider can
+        # accept it. If the row is missing (shouldn't happen — FK is
+        # NOT NULL), we still complete the cancel on the Trip side.
+        linked_pr = (
+            db.query(models.ProduceRequest)
+            .filter(
+                models.ProduceRequest.id
+                == locked_trip.produce_request_id
+            )
+            .with_for_update()
+            .first()
+        )
+        if linked_pr is not None:
+            linked_pr.status = "PENDING"
+
+        db.commit()
+        db.refresh(locked_trip)
+    except HTTPException:
+        # Re-raise 400/404 we generated above without double-wrapping.
+        db.rollback()
+        raise
+    except SQLAlchemyError:
+        db.rollback()
+        raise HTTPException(
+            status_code=500, detail="Failed to cancel trip"
+        )
+
+    return {
+        "success": True,
+        "message": "Trip cancelled",
+        "trip_id": str(trip_id),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -1570,10 +2383,26 @@ def create_produce_request(
     Create a produce pickup request tied to the authenticated farmer,
     storing a PostGIS point and generating a 4-digit pickup OTP.
 
+    ## Quantity metric
+
+    The payload now uses `weight_kg` as the sole quantity field —
+    `crate_count` was removed by the Book Transport refactor. Fare,
+    surcharge, and settlement math are keyed off weight.
+
+    ## Pickup
+
     The pickup fields (`pickup_address`, `pickup_landmark`) capture what
     the farmer entered in the 3-way pickup picker (Current GPS / Saved
     Places / Manual Entry). When `save_address_for_future=True`, the
     address is also bookmarked for reuse — see crud.create_produce_request.
+
+    ## Dropoff
+
+    Structured dropoff fields (`dropoff_district`, `dropoff_mandi_id`,
+    `dropoff_mandi_name`, `dropoff_stall_number`) are accepted and
+    persisted directly. The legacy `dropoff_location` string is derived
+    server-side when only the structured fields were supplied, so older
+    display code keeps working.
     """
     try:
         return crud.create_produce_request(db, request, current_user.id)
@@ -1685,6 +2514,10 @@ def create_trip_request(
     PENDING), not a Trip. Same behaviour as POST /produce-requests/ —
     including the pickup-address persistence and the
     `save_address_for_future` side effect.
+
+    Quantity is `weight_kg` (kilograms); structured dropoff fields are
+    persisted as-is, and the legacy `dropoff_location` string is derived
+    server-side when only the structured fields were sent.
     """
     try:
         return crud.create_produce_request(db, request, current_user.id)

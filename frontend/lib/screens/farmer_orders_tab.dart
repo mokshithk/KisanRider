@@ -5,106 +5,39 @@ import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:provider/provider.dart';
-import 'package:url_launcher/url_launcher.dart';
 
 import '../providers/auth_provider.dart';
+import 'order_detail_screen.dart';
 
 /// Base URL of the FastAPI backend.
-///
-/// - Web/Chrome uses `localhost`.
-/// - Physical Android/iOS devices use your laptop's Wi-Fi IP.
 String get _kApiBaseUrl {
   if (kIsWeb) return 'http://localhost:8000';
   return 'http://10.28.1.142:8000';
 }
 
-/// Brand green used across the farmer-side UI. Kept local so this file has
-/// no dependency on farmer_dashboard.dart.
 const Color _kFarmerGreen = Color(0xFF2E7D32);
 
 /// Polling cadence while at least one order is PENDING.
-///
-/// 5 seconds is short enough that the farmer sees a rider's acceptance
-/// almost instantly, long enough that we aren't hammering the backend or
-/// burning mobile data on an idle screen.
 const Duration _kPollingInterval = Duration(seconds: 5);
-
-// ---------------------------------------------------------------------------
-// Phone call helper
-// ---------------------------------------------------------------------------
-
-/// Opens the platform's phone dialer pre-filled with [phone]. Mirrors the
-/// `launchPhoneCall` helper in `rider_common.dart` — kept local rather than
-/// imported so the farmer side doesn't pull in the rider module's other
-/// dependencies (Map launcher, OTP enum, rider models).
-Future<void> _launchPhoneCall(BuildContext context, String phone) async {
-  final cleaned = phone.replaceAll(RegExp(r'[^\d+]'), '');
-  if (cleaned.isEmpty) {
-    if (context.mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('No phone number available')),
-      );
-    }
-    return;
-  }
-
-  final Uri url = Uri(scheme: 'tel', path: cleaned);
-
-  try {
-    final ok = await launchUrl(url);
-    if (!ok && context.mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Could not open dialer for $cleaned')),
-      );
-    }
-  } catch (_) {
-    if (context.mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Could not open the phone dialer')),
-      );
-    }
-  }
-}
 
 // ---------------------------------------------------------------------------
 // Model
 // ---------------------------------------------------------------------------
 
-/// One entry from `GET /produce-requests/farmer/me`.
-///
-/// The backend nests a `trip` object once a rider has accepted. Its `rider`
-/// sub-object carries the assigned rider's identity; the exact fields
-/// returned depend on how `RiderSummary` is shaped on the backend:
-///
-///   - `full_name` and `phone` are always present.
-///   - `phone_number`, `vehicle_number`, and `vehicle_type` are read
-///     defensively — they aren't currently on `RiderSummary`, but the model
-///     picks them up automatically if you extend the backend to include them.
-///     Until then, the assigned-rider card renders "—" for the vehicle
-///     fields and prefers `phone_number` over the legacy `phone` when both
-///     are present.
 class FarmerOrder {
   FarmerOrder({
     required this.id,
     required this.cropType,
-    required this.crateCount,
+    required this.weightKg,
     required this.status,
     required this.createdAt,
     this.dropoffLocation,
-    this.pickupOtp,
-    this.riderName,
-    this.riderPhone,
-    this.vehicleNumber,
-    this.vehicleType,
+    this.dropoffDistrict,
+    this.dropoffMandiName,
+    this.dropoffStallNumber,
   });
 
   factory FarmerOrder.fromJson(Map<String, dynamic> json) {
-    final trip = json['trip'] as Map<String, dynamic>?;
-    final rider = trip?['rider'] as Map<String, dynamic>?;
-
-    // The backend serialises created_at as an ISO-8601 string. A malformed
-    // or missing value shouldn't crash the whole list, so we fall back to
-    // epoch (which just pushes that row to the bottom when sorting).
     DateTime parsedCreatedAt;
     final rawCreated = json['created_at'];
     if (rawCreated is String) {
@@ -114,90 +47,81 @@ class FarmerOrder {
       parsedCreatedAt = DateTime.fromMillisecondsSinceEpoch(0);
     }
 
-    // Prefer the modern `phone_number` (contact field) over the legacy
-    // `phone` (login identifier) when both are present. The legacy field is
-    // only populated for accounts created before the email-OTP signup flow.
-    final rawPhone = (rider?['phone_number'] ?? rider?['phone'])?.toString();
-
     return FarmerOrder(
       id: (json['id'] ?? '').toString(),
       cropType: (json['crop_type'] ?? '') as String,
-      crateCount: ((json['crate_count'] ?? 0) as num).toInt(),
+      weightKg: ((json['weight_kg'] ?? 0) as num).toDouble(),
       status: (json['status'] ?? 'PENDING') as String,
       createdAt: parsedCreatedAt,
       dropoffLocation: json['dropoff_location'] as String?,
-      pickupOtp: json['pickup_otp']?.toString(),
-      riderName: rider?['full_name'] as String?,
-      riderPhone: (rawPhone == null || rawPhone.isEmpty) ? null : rawPhone,
-      vehicleNumber: rider?['vehicle_number'] as String?,
-      vehicleType: rider?['vehicle_type'] as String?,
+      dropoffDistrict: json['dropoff_district']?.toString(),
+      dropoffMandiName: json['dropoff_mandi_name']?.toString(),
+      dropoffStallNumber: json['dropoff_stall_number']?.toString(),
     );
   }
 
   final String id;
   final String cropType;
-  final int crateCount;
+  final double weightKg;
   final String status;
   final DateTime createdAt;
+
+  /// Legacy composite dropoff string ("MandiName - Stall"). Used as the
+  /// last-resort fallback when structured fields are missing.
   final String? dropoffLocation;
-  final String? pickupOtp;
-  final String? riderName;
-  final String? riderPhone;
-  final String? vehicleNumber;
-  final String? vehicleType;
+
+  final String? dropoffDistrict;
+  final String? dropoffMandiName;
+  final String? dropoffStallNumber;
 
   bool get isPending => status == 'PENDING';
 
-  /// True when a rider has been assigned and the handoff hasn't completed
-  /// yet. Matches the backend's active trip statuses (ACCEPTED and the
-  /// variants of "in transit" the system uses). Kept as a getter so the
-  /// status set lives in one place.
-  bool get isActive =>
-      status == 'ACCEPTED' || status == 'PICKED_UP' || status == 'IN_TRANSIT';
+  /// Normalised tag for filter chips:
+  ///   - 'pending'   -> only PENDING
+  ///   - 'accepted'  -> ACCEPTED / PICKED_UP / IN_TRANSIT
+  ///   - 'completed' -> COMPLETED
+  ///   - 'other'     -> CANCELLED etc.
+  String get filterTag {
+    final s = status.toUpperCase();
+    if (s == 'PENDING') return 'pending';
+    if (s == 'ACCEPTED' || s == 'PICKED_UP' || s == 'IN_TRANSIT') {
+      return 'accepted';
+    }
+    if (s == 'COMPLETED' || s == 'DELIVERED') return 'completed';
+    return 'other';
+  }
 
-  bool get hasRider => riderName != null && riderName!.isNotEmpty;
+  /// Human-readable dropoff line for the card. Prefers the structured
+  /// mandi + stall, falls back to the legacy composite string.
+  String get dropoffDisplay {
+    final mandi = (dropoffMandiName ?? '').trim();
+    if (mandi.isNotEmpty) {
+      final stall = (dropoffStallNumber ?? '').trim();
+      return stall.isEmpty ? mandi : '$mandi - $stall';
+    }
+    final legacy = (dropoffLocation ?? '').trim();
+    if (legacy.isNotEmpty) return legacy;
+    return '—';
+  }
 
-  bool get hasRiderPhone => riderPhone != null && riderPhone!.isNotEmpty;
+  /// Short display reference — e.g. `#KR-8021`.
+  String get shortRef {
+    final compact = id.replaceAll('-', '');
+    final take = compact.length >= 6 ? compact.substring(0, 6) : compact;
+    return '#KR-${take.toUpperCase()}';
+  }
 }
 
 // ---------------------------------------------------------------------------
 // Tab
 // ---------------------------------------------------------------------------
 
-/// My Orders tab: fetches the farmer's produce requests and lists them as
-/// cards, newest first. Pull-to-refresh re-fetches. Empty state offers a
-/// shortcut into the Book Transport tab via [onBookTransport].
-///
-/// ## Silent live polling
-///
-/// While ANY order in the list is in status `PENDING`, a [Timer.periodic]
-/// fires every [_kPollingInterval] seconds and re-fetches the list. The
-/// moment a rider accepts, the next tick sees `ACCEPTED` on that order,
-/// the assigned-rider card renders, and the timer is cancelled (no more
-/// PENDING orders means nothing to wait for).
-///
-/// The periodic fetch is completely silent — `isLoading` is not flipped
-/// and no banner/indicator is shown. The list simply updates in place
-/// when new data arrives, so the farmer sees the rider's acceptance
-/// happen without any visible "refreshing" state. Only the initial load
-/// and pull-to-refresh show the loading spinner.
-///
-/// ## Conditional rendering
-///
-/// Each card reflects the order's lifecycle:
-///   - PENDING: renders only the crop/crates header, the status chip, and
-///     the dropoff row. Nothing else — no "searching" strip.
-///   - ACCEPTED / PICKED_UP / IN_TRANSIT: shows the assigned-rider card
-///     with name, vehicle info, and a CALL RIDER button.
-///   - DELIVERED / COMPLETED / CANCELLED: no rider section — the trip is over.
 class FarmerOrdersTab extends StatefulWidget {
   const FarmerOrdersTab({
     super.key,
     required this.onBookTransport,
   });
 
-  /// Invoked from the empty state's "Book Transport" button. The parent
-  /// dashboard uses it to switch the bottom-nav index to tab 1.
   final VoidCallback onBookTransport;
 
   @override
@@ -209,10 +133,18 @@ class _FarmerOrdersTabState extends State<FarmerOrdersTab> {
   bool isLoading = true;
   String? _error;
 
-  /// The periodic timer that drives live polling. Non-null exactly while
-  /// there is at least one PENDING order to wait on. Cancelled in
-  /// [dispose] so no callback fires after the widget is torn down.
+  /// Active filter chip. Index 0 = All (default).
+  int _activeFilterIndex = 0;
+
   Timer? _pollTimer;
+
+  /// Chip definitions. `tag == null` means "all".
+  static const List<({String label, String? tag})> _filters = [
+    (label: 'All', tag: null),
+    (label: 'Pending', tag: 'pending'),
+    (label: 'Accepted', tag: 'accepted'),
+    (label: 'Completed', tag: 'completed'),
+  ];
 
   @override
   void initState() {
@@ -222,8 +154,6 @@ class _FarmerOrdersTabState extends State<FarmerOrdersTab> {
 
   @override
   void dispose() {
-    // Cancel BEFORE the framework tears down the widget — a fired timer
-    // after dispose would call setState on a dead State and throw.
     _pollTimer?.cancel();
     _pollTimer = null;
     super.dispose();
@@ -236,21 +166,11 @@ class _FarmerOrdersTabState extends State<FarmerOrdersTab> {
     };
   }
 
-  // -------------------------------------------------------------------------
-  // Polling control
-  // -------------------------------------------------------------------------
-
-  /// Starts or stops the polling timer based on the current order list.
-  ///
-  /// Idempotent: calling it when the state already matches the desired
-  /// state is a no-op. Called after every successful fetch so the timer's
-  /// lifetime tracks the list's contents.
   void _syncPolling() {
     final hasPending = myRequests.any((o) => o.isPending);
 
     if (hasPending && (_pollTimer == null || !_pollTimer!.isActive)) {
       _pollTimer = Timer.periodic(_kPollingInterval, (_) {
-        // Silent fetch — we never want a spinner or banner flashing.
         _fetchOrders(silent: true);
       });
     } else if (!hasPending && _pollTimer != null) {
@@ -259,20 +179,6 @@ class _FarmerOrdersTabState extends State<FarmerOrdersTab> {
     }
   }
 
-  // -------------------------------------------------------------------------
-  // Networking
-  // -------------------------------------------------------------------------
-
-  /// Fetches the farmer's orders.
-  ///
-  /// [silent] controls whether the loading spinner is shown. Polling ticks
-  /// pass `true` so the UI stays perfectly stable between refreshes;
-  /// manual triggers (init, pull-to-refresh, retry button) pass the
-  /// default `false`.
-  ///
-  /// Network errors on a silent tick are ignored — the user's connection
-  /// flickering shouldn't blank out a list they were just looking at. They
-  /// still see errors on the next manual refresh.
   Future<void> _fetchOrders({bool silent = false}) async {
     final auth = context.read<AuthProvider>();
     if (auth.token == null) {
@@ -309,7 +215,6 @@ class _FarmerOrdersTabState extends State<FarmerOrdersTab> {
             .map(FarmerOrder.fromJson)
             .toList();
 
-        // Newest first.
         parsed.sort((a, b) => b.createdAt.compareTo(a.createdAt));
 
         setState(() {
@@ -318,8 +223,6 @@ class _FarmerOrdersTabState extends State<FarmerOrdersTab> {
           _error = null;
         });
 
-        // Re-evaluate polling: a status may have flipped from PENDING to
-        // ACCEPTED (started) or an order may have just gone DELIVERED (end).
         _syncPolling();
       } else {
         if (!silent) {
@@ -351,12 +254,80 @@ class _FarmerOrdersTabState extends State<FarmerOrdersTab> {
     return null;
   }
 
+  /// Visible list after applying the active filter chip.
+  List<FarmerOrder> get _filteredOrders {
+    final tag = _filters[_activeFilterIndex].tag;
+    if (tag == null) return myRequests;
+    return myRequests.where((o) => o.filterTag == tag).toList();
+  }
+
+  Future<void> _openDetail(FarmerOrder order) async {
+    final changed = await Navigator.of(context).push<bool>(
+      MaterialPageRoute<bool>(
+        builder: (_) => OrderDetailScreen(orderId: order.id),
+      ),
+    );
+    if (changed == true && mounted) {
+      await _fetchOrders(silent: true);
+    }
+  }
+
   // -------------------------------------------------------------------------
   // Build
   // -------------------------------------------------------------------------
 
   @override
   Widget build(BuildContext context) {
+    return Column(
+      children: [
+        _buildFilterBar(),
+        Expanded(child: _buildBody()),
+      ],
+    );
+  }
+
+  Widget _buildFilterBar() {
+    return Container(
+      color: Colors.white,
+      padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
+      child: SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        child: Row(
+          children: List.generate(_filters.length, (i) {
+            final selected = i == _activeFilterIndex;
+            return Padding(
+              padding: EdgeInsets.only(
+                right: i == _filters.length - 1 ? 0 : 8,
+              ),
+              child: ChoiceChip(
+                label: Text(
+                  _filters[i].label,
+                  style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                    color: selected ? Colors.white : _kFarmerGreen,
+                  ),
+                ),
+                selected: selected,
+                onSelected: (_) =>
+                    setState(() => _activeFilterIndex = i),
+                selectedColor: _kFarmerGreen,
+                backgroundColor: Colors.white,
+                side: BorderSide(
+                  color: _kFarmerGreen.withOpacity(
+                    selected ? 0.0 : 0.4,
+                  ),
+                ),
+                showCheckmark: false,
+              ),
+            );
+          }),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildBody() {
     if (isLoading) {
       return const Center(child: CircularProgressIndicator());
     }
@@ -373,27 +344,75 @@ class _FarmerOrdersTabState extends State<FarmerOrdersTab> {
       );
     }
 
+    final visible = _filteredOrders;
+
+    if (visible.isEmpty) {
+      return RefreshIndicator(
+        onRefresh: _fetchOrders,
+        color: _kFarmerGreen,
+        child: ListView(
+          physics: const AlwaysScrollableScrollPhysics(),
+          padding:
+              const EdgeInsets.symmetric(horizontal: 32, vertical: 80),
+          children: [
+            Icon(
+              Icons.filter_alt_off_outlined,
+              size: 56,
+              color: Colors.grey.shade400,
+            ),
+            const SizedBox(height: 12),
+            Center(
+              child: Text(
+                'No orders match this filter.',
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  fontSize: 14,
+                  color: Colors.grey.shade700,
+                ),
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
     return RefreshIndicator(
       onRefresh: _fetchOrders,
       color: _kFarmerGreen,
       child: ListView.builder(
         padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
-        itemCount: myRequests.length,
-        itemBuilder: (context, index) =>
-            _OrderCard(order: myRequests[index]),
+        itemCount: visible.length,
+        itemBuilder: (context, index) {
+          final order = visible[index];
+          return _OrderCard(
+            order: order,
+            onTap: () => _openDetail(order),
+          );
+        },
       ),
     );
   }
 }
 
 // ---------------------------------------------------------------------------
-// Order card
+// Order card — three-line minimal design
 // ---------------------------------------------------------------------------
 
 class _OrderCard extends StatelessWidget {
-  const _OrderCard({required this.order});
+  const _OrderCard({required this.order, required this.onTap});
 
   final FarmerOrder order;
+  final VoidCallback onTap;
+
+  static const List<String> _months = [
+    'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+    'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
+  ];
+
+  String _formatDate(DateTime d) {
+    final local = d.toLocal();
+    return '${_months[local.month - 1]} ${local.day}, ${local.year}';
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -401,249 +420,98 @@ class _OrderCard extends StatelessWidget {
 
     return Card(
       elevation: 1,
-      margin: const EdgeInsets.only(bottom: 14),
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            // ----- Header: crop • crates + status chip ---------------------
-            Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Expanded(
-                  child: Text(
-                    '${order.cropType} • ${order.crateCount} Crates',
-                    style: theme.textTheme.titleMedium?.copyWith(
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 8),
-                _StatusChip(status: order.status),
-              ],
-            ),
-
-            const SizedBox(height: 12),
-
-            // ----- Dropoff location ---------------------------------------
-            _InfoRow(
-              icon: Icons.flag_outlined,
-              label: 'Dropoff: '
-                  '${(order.dropoffLocation ?? '').isEmpty ? "—" : order.dropoffLocation}',
-            ),
-
-            // ----- ACCEPTED / PICKED_UP: assigned-rider card --------------
-            // Shown only once a rider has been assigned and the trip is
-            // still active. Includes the CALL RIDER button (only when a
-            // phone number is on file) and the pickup OTP badge.
-            //
-            // PENDING orders render nothing else — the card is intentionally
-            // minimal until a rider accepts.
-            if (order.isActive) ...[
-              const SizedBox(height: 14),
-              _AssignedRiderCard(order: order),
-            ],
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Assigned rider card
-// ---------------------------------------------------------------------------
-
-/// Card displayed inside an order while a rider is assigned and the trip is
-/// still active. Shows rider identity, vehicle info, the CALL RIDER action,
-/// and the pickup OTP the farmer reads out at handoff.
-class _AssignedRiderCard extends StatelessWidget {
-  const _AssignedRiderCard({required this.order});
-
-  final FarmerOrder order;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-
-    // Vehicle line — combines type and plate into one readable row.
-    // Either piece can be missing; when both are, the row renders an em
-    // dash so the layout stays consistent with the rest of the card.
-    final vehicleParts = <String>[];
-    if (order.vehicleType != null && order.vehicleType!.trim().isNotEmpty) {
-      vehicleParts.add(order.vehicleType!.trim());
-    }
-    if (order.vehicleNumber != null && order.vehicleNumber!.trim().isNotEmpty) {
-      vehicleParts.add('(${order.vehicleNumber!.trim()})');
-    }
-    final vehicleLine =
-        vehicleParts.isEmpty ? '—' : vehicleParts.join(' ');
-
-    return Container(
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: _kFarmerGreen.withOpacity(0.06),
+      margin: const EdgeInsets.only(bottom: 12),
+      shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: _kFarmerGreen.withOpacity(0.30)),
       ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          // ----- Header ------------------------------------------------
-          Row(
+      child: InkWell(
+        borderRadius: BorderRadius.circular(14),
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.all(14),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const Icon(Icons.delivery_dining,
-                  color: _kFarmerGreen, size: 20),
-              const SizedBox(width: 8),
-              Text(
-                'Assigned Rider',
-                style: theme.textTheme.titleSmall?.copyWith(
-                  fontWeight: FontWeight.bold,
-                  color: _kFarmerGreen,
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 10),
-
-          // ----- Name --------------------------------------------------
-          Row(
-            children: [
-              const Icon(Icons.person_outline,
-                  size: 18, color: Colors.black54),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Text(
-                  order.hasRider ? order.riderName! : 'Rider assigned',
-                  style: theme.textTheme.bodyLarge?.copyWith(
-                    fontWeight: FontWeight.w600,
-                  ),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 6),
-
-          // ----- Vehicle -----------------------------------------------
-          Row(
-            children: [
-              const Icon(Icons.local_shipping_outlined,
-                  size: 18, color: Colors.black54),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Text(
-                  vehicleLine,
-                  style: theme.textTheme.bodyMedium?.copyWith(
-                    color: theme.colorScheme.onSurfaceVariant,
-                  ),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                ),
-              ),
-            ],
-          ),
-
-          // ----- CALL RIDER button (only when a phone is on file) ------
-          if (order.hasRiderPhone) ...[
-            const SizedBox(height: 12),
-            SizedBox(
-              width: double.infinity,
-              child: FilledButton.icon(
-                onPressed: () =>
-                    _launchPhoneCall(context, order.riderPhone!),
-                style: FilledButton.styleFrom(
-                  backgroundColor: _kFarmerGreen,
-                  foregroundColor: Colors.white,
-                  padding: const EdgeInsets.symmetric(vertical: 12),
-                  textStyle: const TextStyle(
-                    fontSize: 14,
-                    fontWeight: FontWeight.w700,
-                    letterSpacing: 0.6,
-                  ),
-                ),
-                icon: const Icon(Icons.phone, size: 18),
-                label: const Text('CALL RIDER'),
-              ),
-            ),
-          ],
-
-          const SizedBox(height: 12),
-
-          // ----- Pickup OTP badge --------------------------------------
-          // Amber badge the farmer reads out to the rider at handoff.
-          // Shown for any active trip; falls back to "----" if the backend
-          // hasn't populated pickup_otp yet.
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-            decoration: BoxDecoration(
-              color: Colors.amber.shade100,
-              borderRadius: BorderRadius.circular(10),
-            ),
-            child: Row(
-              children: [
-                Icon(Icons.lock_outline,
-                    size: 18, color: Colors.amber.shade900),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: Text(
-                    'Pickup OTP: ${order.pickupOtp ?? '----'}',
-                    style: TextStyle(
-                      fontWeight: FontWeight.bold,
-                      color: Colors.amber.shade900,
-                      letterSpacing: 0.5,
+              // ----- Line 1: crop · weight  |  status badge -----------
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Expanded(
+                    child: Text(
+                      '${order.cropType} · ${order.weightKg.toStringAsFixed(0)} kg',
+                      style: theme.textTheme.titleMedium?.copyWith(
+                        fontWeight: FontWeight.bold,
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
                     ),
                   ),
+                  const SizedBox(width: 8),
+                  _StatusChip(status: order.status),
+                ],
+              ),
+              const SizedBox(height: 8),
+
+              // ----- Line 2: dropoff ---------------------------------
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Icon(
+                    Icons.flag_outlined,
+                    size: 15,
+                    color: Color(0xFF6B7280),
+                  ),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text(
+                      'Dropoff: ${order.dropoffDisplay}',
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: const Color(0xFF1C1B1F),
+                        fontSize: 13,
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 6),
+
+              // ----- Line 3: reference · date -------------------------
+              Text(
+                '${order.shortRef} · ${_formatDate(order.createdAt)}',
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: theme.colorScheme.onSurfaceVariant,
+                  fontSize: 12,
                 ),
-              ],
-            ),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ],
           ),
-        ],
+        ),
       ),
     );
   }
 }
 
-class _InfoRow extends StatelessWidget {
-  const _InfoRow({required this.icon, required this.label});
+// ---------------------------------------------------------------------------
+// Status badge
+// ---------------------------------------------------------------------------
 
-  final IconData icon;
-  final String label;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Icon(icon, size: 18, color: theme.colorScheme.onSurfaceVariant),
-        const SizedBox(width: 8),
-        Expanded(
-          child: Text(label, style: theme.textTheme.bodyMedium),
-        ),
-      ],
-    );
-  }
-}
-
-/// Status -> color mapping. Unknown statuses render grey rather than
-/// crashing.
 class _StatusChip extends StatelessWidget {
   const _StatusChip({required this.status});
 
   final String status;
 
   static const Map<String, (Color, Color)> _colors = {
-    'PENDING': (Color(0xFFB45309), Color(0x26F59E0B)), // amber
-    'ACCEPTED': (Color(0xFF1D4ED8), Color(0x261D4ED8)), // blue
-    'PICKED_UP': (Color(0xFF6D28D9), Color(0x266D28D9)), // purple
-    'IN_TRANSIT': (Color(0xFF6D28D9), Color(0x266D28D9)), // purple
-    'DELIVERED': (Color(0xFF166534), Color(0x2616A34A)), // green
-    'COMPLETED': (Color(0xFF166534), Color(0x2616A34A)), // green
-    'CANCELLED': (Color(0xFF991B1B), Color(0x26DC2626)), // red
+    'PENDING': (Color(0xFFB45309), Color(0x26F59E0B)),
+    'ACCEPTED': (Color(0xFF1D4ED8), Color(0x261D4ED8)),
+    'PICKED_UP': (Color(0xFF6D28D9), Color(0x266D28D9)),
+    'IN_TRANSIT': (Color(0xFF6D28D9), Color(0x266D28D9)),
+    'DELIVERED': (Color(0xFF166534), Color(0x2616A34A)),
+    'COMPLETED': (Color(0xFF166534), Color(0x2616A34A)),
+    'CANCELLED': (Color(0xFF991B1B), Color(0x26DC2626)),
   };
 
   @override
@@ -652,18 +520,18 @@ class _StatusChip extends StatelessWidget {
         _colors[status.toUpperCase()] ?? (Colors.black54, Colors.black12);
 
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+      padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 3),
       decoration: BoxDecoration(
         color: bg,
         borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: fg, width: 1),
+        border: Border.all(color: fg),
       ),
       child: Text(
         status.toUpperCase(),
         style: TextStyle(
           color: fg,
           fontWeight: FontWeight.bold,
-          fontSize: 11,
+          fontSize: 10.5,
           letterSpacing: 0.5,
         ),
       ),
@@ -684,8 +552,6 @@ class _OrdersEmptyState extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
 
-    // ListView so RefreshIndicator has something scrollable to wrap even
-    // when the content is short.
     return ListView(
       physics: const AlwaysScrollableScrollPhysics(),
       padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 80),
