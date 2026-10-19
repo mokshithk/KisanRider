@@ -20,9 +20,6 @@ String get _kApiBaseUrl {
   return 'http://10.28.1.142:8000';
 }
 
-const double _kFallbackPickupLat = 13.1362;
-const double _kFallbackPickupLng = 78.1291;
-
 const List<String> _kDistricts = [
   'Bagalkot', 'Ballari', 'Belagavi', 'Bengaluru Rural', 'Bengaluru Urban',
   'Bidar', 'Chamarajanagar', 'Chikkaballapura', 'Chikkamagaluru',
@@ -447,14 +444,24 @@ class _FarmerBookTransportTabState extends State<FarmerBookTransportTab> {
     }
   }
 
+  void _showRedSnack(String msg) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(msg), backgroundColor: Colors.red.shade700),
+    );
+  }
+
   ({String address, String landmark, double lat, double lng})? _resolvePickup() {
     switch (_pickupMode) {
       case PickupMode.gps:
+        if (_gpsLat == null || _gpsLng == null) {
+          _showRedSnack('Cannot submit without GPS location. Please tap Refresh to detect your location.');
+          return null;
+        }
         return (
           address: _gpsAddress ?? '',
           landmark: _pickupLandmarkController.text.trim(),
-          lat: _gpsLat ?? _kFallbackPickupLat,
-          lng: _gpsLng ?? _kFallbackPickupLng,
+          lat: _gpsLat!,
+          lng: _gpsLng!,
         );
 
       case PickupMode.saved:
@@ -465,11 +472,17 @@ class _FarmerBookTransportTabState extends State<FarmerBookTransportTab> {
           return null;
         }
         final a = _savedAddresses[_selectedSavedIndex!];
+        final lat = (a['latitude'] as num?)?.toDouble();
+        final lng = (a['longitude'] as num?)?.toDouble();
+        if (lat == null || lng == null) {
+          _showRedSnack('Selected saved address has no coordinates. Please update it or choose another option.');
+          return null;
+        }
         return (
           address: (a['address_text'] ?? '').toString(),
           landmark: _pickupLandmarkController.text.trim(),
-          lat: (a['latitude'] as num?)?.toDouble() ?? _kFallbackPickupLat,
-          lng: (a['longitude'] as num?)?.toDouble() ?? _kFallbackPickupLng,
+          lat: lat,
+          lng: lng,
         );
 
       case PickupMode.manual:
@@ -479,11 +492,16 @@ class _FarmerBookTransportTabState extends State<FarmerBookTransportTab> {
               _submitError = 'Please enter the village or area name.');
           return null;
         }
+        if (_gpsLat == null || _gpsLng == null) {
+          _fetchCurrentLocation();
+          _showRedSnack('Please wait for location detection before submitting.');
+          return null;
+        }
         return (
           address: address,
           landmark: _pickupLandmarkController.text.trim(),
-          lat: _kFallbackPickupLat,
-          lng: _kFallbackPickupLng,
+          lat: _gpsLat!,
+          lng: _gpsLng!,
         );
     }
   }

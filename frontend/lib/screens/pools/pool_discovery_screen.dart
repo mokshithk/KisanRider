@@ -13,7 +13,6 @@ const Color _kBackground = Color(0xFFF8F9FA);
 const Color _kTextPrimary = Color(0xFF1C1B1F);
 const Color _kTextSecondary = Color(0xFF6B7280);
 
-// Fallback: Kolar coordinates
 const double _kFallbackLat = 13.1362;
 const double _kFallbackLng = 78.1291;
 
@@ -60,9 +59,7 @@ class _PoolDiscoveryScreenState extends State<PoolDiscoveryScreen> {
           });
         }
       }
-    } catch (_) {
-      // Ignore location errors, use fallback
-    }
+    } catch (_) {}
   }
 
   Future<void> _loadPools() async {
