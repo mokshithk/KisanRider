@@ -9,6 +9,7 @@ import 'package:url_launcher/url_launcher.dart';
 import '../providers/auth_provider.dart';
 import 'mandi_prices_screen.dart';
 import 'order_history_screen.dart';
+import 'pools/pool_discovery_screen.dart'; // PHASE 4
 
 /// Base URL of the FastAPI backend.
 String get _kApiBaseUrl {
@@ -30,28 +31,9 @@ const String _kSupportPhone = '1800000000';
 // Farmer Home Tab
 // ============================================================================
 
-/// Home / dashboard tab for the farmer. Renders, top to bottom:
-///
-///   1. Greeting header (avatar + "Namaste, <name>") with a read-only
-///      district chip beneath it.
-///   2. Three equal summary metric cards (Active / In Transit / Completed).
-///   3. Conditional active-shipment card (only when a rider has accepted).
-///   4. 2×2 quick-action grid (New Request, Find Pool, Mandi Prices,
-///      Order History).
-///   5. "TODAY'S TRIPS" section with up to 3 recent orders.
-///   6. Full-width support banner with a phone dialer action.
-///
-/// The whole page is a single `SingleChildScrollView` so it scrolls
-/// naturally on any screen height.
 class FarmerHomeTab extends StatefulWidget {
   const FarmerHomeTab({super.key, required this.onTabSwitch});
 
-  /// Called with a logical action index:
-  ///   1 = open Book Transport (Create Order) flow
-  ///   2 = navigate to the My Orders tab
-  ///
-  /// The parent dashboard intercepts these and performs the actual
-  /// routing (Book Transport as a modal route, My Orders as a tab switch).
   final void Function(int) onTabSwitch;
 
   @override
@@ -68,10 +50,6 @@ class _FarmerHomeTabState extends State<FarmerHomeTab> {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) => _loadDashboard());
   }
-
-  // -------------------------------------------------------------------------
-  // Networking
-  // -------------------------------------------------------------------------
 
   Map<String, String> _headers(AuthProvider auth) => {
         'Authorization': 'Bearer ${auth.token}',
@@ -106,9 +84,6 @@ class _FarmerHomeTabState extends State<FarmerHomeTab> {
             .whereType<Map<String, dynamic>>()
             .toList();
 
-        // Newest-first. The backend already sorts this way, but re-sorting
-        // here is defensive and lets the section header ("TODAY'S TRIPS")
-        // always render the most recent items first.
         list.sort((a, b) {
           final ad = DateTime.tryParse((a['created_at'] ?? '').toString()) ??
               DateTime.fromMillisecondsSinceEpoch(0);
@@ -123,8 +98,7 @@ class _FarmerHomeTabState extends State<FarmerHomeTab> {
         });
       } else {
         setState(() {
-          _error = 'Could not load dashboard '
-              '(HTTP ${resp.statusCode}).';
+          _error = 'Could not load dashboard (HTTP ${resp.statusCode}).';
           _isLoading = false;
         });
       }
@@ -136,10 +110,6 @@ class _FarmerHomeTabState extends State<FarmerHomeTab> {
       });
     }
   }
-
-  // -------------------------------------------------------------------------
-  // Derived state
-  // -------------------------------------------------------------------------
 
   String get _firstName {
     final name = context.read<AuthProvider>().fullName ?? '';
@@ -175,8 +145,6 @@ class _FarmerHomeTabState extends State<FarmerHomeTab> {
         return s == 'COMPLETED' || s == 'DELIVERED';
       }).length;
 
-  /// The first order currently being fulfilled (rider assigned, not yet
-  /// delivered/cancelled). Drives the conditional Active Shipment card.
   Map<String, dynamic>? get _activeShipment {
     for (final r in _requests) {
       final s = (r['status'] ?? '').toString().toUpperCase();
@@ -187,24 +155,15 @@ class _FarmerHomeTabState extends State<FarmerHomeTab> {
     return null;
   }
 
-  /// Up to 3 most recent orders for the "TODAY'S TRIPS" section.
   List<Map<String, dynamic>> get _recentTrips =>
       _requests.take(3).toList(growable: false);
 
-  // -------------------------------------------------------------------------
-  // Helpers
-  // -------------------------------------------------------------------------
-
-  /// Short, uppercase, human-friendly reference derived from the UUID's
-  /// first 6 hex characters. Matches the convention used elsewhere in the
-  /// app (e.g. Order History, Order Detail).
   String _shortTripId(String id) {
     final compact = id.replaceAll('-', '');
     final take = compact.length >= 6 ? compact.substring(0, 6) : compact;
     return 'TR-${take.toUpperCase()}';
   }
 
-  /// Category label for the small status tag on each recent-trip row.
   String _categoryStatus(String rawStatus) {
     final s = rawStatus.toUpperCase();
     if (s == 'DELIVERED' || s == 'COMPLETED') return 'delivered';
@@ -214,7 +173,6 @@ class _FarmerHomeTabState extends State<FarmerHomeTab> {
     return 'pending';
   }
 
-  /// Foreground / background colour pair for the status tag.
   ({Color fg, Color bg}) _categoryColors(String rawStatus) {
     final s = rawStatus.toUpperCase();
     if (s == 'DELIVERED' || s == 'COMPLETED') {
@@ -229,8 +187,6 @@ class _FarmerHomeTabState extends State<FarmerHomeTab> {
     return (fg: const Color(0xFFB45309), bg: const Color(0x1FF59E0B));
   }
 
-  /// One-line subtitle shown under the trip ID — driver name when known,
-  /// otherwise a short status description.
   String _tripSubtitle(Map<String, dynamic> r) {
     final status = (r['status'] ?? '').toString().toUpperCase();
     final trip = r['trip'] as Map<String, dynamic>?;
@@ -252,22 +208,17 @@ class _FarmerHomeTabState extends State<FarmerHomeTab> {
     return status.replaceAll('_', ' ').toLowerCase();
   }
 
-  // -------------------------------------------------------------------------
-  // Actions
-  // -------------------------------------------------------------------------
-
   void _openNewRequest() => widget.onTabSwitch(1);
 
   void _openTrackOrder() => widget.onTabSwitch(2);
 
   void _openFindPool() {
-    ScaffoldMessenger.of(context)
-      ..hideCurrentSnackBar()
-      ..showSnackBar(
-        const SnackBar(
-          content: Text('Farmer pool matching is coming soon.'),
-        ),
-      );
+    // PHASE 4: Replaced SnackBar with actual navigation
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => const PoolDiscoveryScreen(),
+      ),
+    );
   }
 
   void _openOrderHistory() {
@@ -303,10 +254,6 @@ class _FarmerHomeTabState extends State<FarmerHomeTab> {
       }
     }
   }
-
-  // -------------------------------------------------------------------------
-  // Build
-  // -------------------------------------------------------------------------
 
   @override
   Widget build(BuildContext context) {
@@ -573,10 +520,6 @@ class _FarmerHomeTabState extends State<FarmerHomeTab> {
   }
 }
 
-// ============================================================================
-// Metric card
-// ============================================================================
-
 class _MetricCard extends StatelessWidget {
   const _MetricCard({required this.value, required this.label});
 
@@ -621,10 +564,6 @@ class _MetricCard extends StatelessWidget {
     );
   }
 }
-
-// ============================================================================
-// Quick action card
-// ============================================================================
 
 class _QuickActionCard extends StatelessWidget {
   const _QuickActionCard({
@@ -694,10 +633,6 @@ class _QuickActionCard extends StatelessWidget {
     );
   }
 }
-
-// ============================================================================
-// Active shipment card
-// ============================================================================
 
 class _ActiveShipmentCard extends StatelessWidget {
   const _ActiveShipmentCard({
@@ -791,7 +726,6 @@ class _ActiveShipmentCard extends StatelessWidget {
             ),
           ],
           const SizedBox(height: 12),
-          // Pickup OTP highlight banner
           Container(
             padding: const EdgeInsets.symmetric(
               horizontal: 12,
@@ -852,9 +786,6 @@ class _ActiveShipmentCard extends StatelessWidget {
   }
 }
 
-/// Small pill that shows the *raw* status verbatim (e.g. "ACCEPTED",
-/// "PICKED_UP"). Used only on the Active Shipment card, where the exact
-/// backend status is the most useful label.
 class _RawStatusBadge extends StatelessWidget {
   const _RawStatusBadge({required this.status});
 
@@ -901,10 +832,6 @@ class _RawStatusBadge extends StatelessWidget {
     );
   }
 }
-
-// ============================================================================
-// Recent trip tile
-// ============================================================================
 
 class _RecentTripTile extends StatelessWidget {
   const _RecentTripTile({
@@ -1046,10 +973,6 @@ class _EmptyTripsPlaceholder extends StatelessWidget {
     );
   }
 }
-
-// ============================================================================
-// Error block
-// ============================================================================
 
 class _ErrorBlock extends StatelessWidget {
   const _ErrorBlock({required this.message, required this.onRetry});
