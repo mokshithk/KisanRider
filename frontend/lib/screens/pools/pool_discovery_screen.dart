@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:provider/provider.dart';
@@ -28,15 +29,28 @@ class _PoolDiscoveryScreenState extends State<PoolDiscoveryScreen> {
   double _lng = 0.0;
   bool _locationFetched = false;
 
+  Timer? _refreshTimer;
+
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) => _init());
   }
 
+  @override
+  void dispose() {
+    _refreshTimer?.cancel();
+    super.dispose();
+  }
+
   Future<void> _init() async {
     await _fetchLocation();
     await _loadPools();
+    
+    // Auto-refresh every 5 seconds
+    _refreshTimer = Timer.periodic(const Duration(seconds: 5), (_) {
+      _loadPools(silent: true);
+    });
   }
 
   Future<void> _fetchLocation() async {
@@ -46,7 +60,8 @@ class _PoolDiscoveryScreenState extends State<PoolDiscoveryScreen> {
         permission = await Geolocator.requestPermission();
       }
       if (permission == LocationPermission.whileInUse || permission == LocationPermission.always) {
-        final pos = await Geolocator.getCurrentPosition(desiredAccuracy: LocationAccuracy.medium);
+        final pos = await Geolocator.getCurrentPosition(desiredAccuracy: LocationAccuracy.medium)
+            .timeout(const Duration(seconds: 5));
         if (mounted) {
           setState(() {
             _lat = pos.latitude;
@@ -54,23 +69,41 @@ class _PoolDiscoveryScreenState extends State<PoolDiscoveryScreen> {
             _locationFetched = true;
           });
         }
+      } else {
+        throw Exception("Permission denied");
       }
-    } catch (_) {}
+    } catch (_) {
+      // Fallback if timeout or error (e.g. Kolar)
+      if (mounted) {
+        setState(() {
+          _lat = 13.1362;
+          _lng = 78.1291;
+          _locationFetched = true;
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Using approximate location.'), backgroundColor: Colors.orange),
+        );
+      }
+    }
   }
 
-  Future<void> _loadPools() async {
+  Future<void> _loadPools({bool silent = false}) async {
     if (!_locationFetched) {
-      setState(() {
-        _isLoading = false;
-        _error = 'Location is required to find nearby pools.';
-      });
+      if (!silent) {
+        setState(() {
+          _isLoading = false;
+          _error = 'Location is required to find nearby pools.';
+        });
+      }
       return;
     }
 
-    setState(() {
-      _isLoading = true;
-      _error = null;
-    });
+    if (!silent) {
+      setState(() {
+        _isLoading = true;
+        _error = null;
+      });
+    }
 
     final auth = context.read<AuthProvider>();
     try {
@@ -83,14 +116,17 @@ class _PoolDiscoveryScreenState extends State<PoolDiscoveryScreen> {
       if (!mounted) return;
       setState(() {
         _pools = pools;
-        _isLoading = false;
+        if (!silent) _isLoading = false;
+        _error = null;
       });
     } catch (e) {
       if (!mounted) return;
-      setState(() {
-        _error = e.toString().replaceAll('Exception: ', '');
-        _isLoading = false;
-      });
+      if (!silent) {
+        setState(() {
+          _error = e.toString().replaceAll('Exception: ', '');
+          _isLoading = false;
+        });
+      }
     }
   }
 
@@ -116,6 +152,12 @@ class _PoolDiscoveryScreenState extends State<PoolDiscoveryScreen> {
         title: const Text('Find Pools'),
         backgroundColor: _kFarmerGreen,
         foregroundColor: Colors.white,
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.refresh),
+            onPressed: () => _loadPools(silent: false),
+          ),
+        ],
       ),
       body: _buildBody(),
       floatingActionButton: FloatingActionButton.extended(
@@ -156,26 +198,36 @@ class _PoolDiscoveryScreenState extends State<PoolDiscoveryScreen> {
     }
 
     if (_pools.isEmpty) {
-      return Center(
-        child: Padding(
-          padding: const EdgeInsets.all(32),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Container(
-                padding: const EdgeInsets.all(24),
-                decoration: BoxDecoration(
-                  color: _kFarmerGreen.withOpacity(0.1),
-                  shape: BoxShape.circle,
+      return RefreshIndicator(
+        onRefresh: () => _loadPools(silent: false),
+        color: _kFarmerGreen,
+        child: ListView(
+          physics: const AlwaysScrollableScrollPhysics(),
+          children: [
+            SizedBox(height: MediaQuery.of(context).size.height * 0.25),
+            Center(
+              child: Padding(
+                padding: const EdgeInsets.all(32),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.all(24),
+                      decoration: BoxDecoration(
+                        color: _kFarmerGreen.withOpacity(0.1),
+                        shape: BoxShape.circle,
+                      ),
+                      child: const Icon(Icons.local_shipping_outlined, size: 64, color: _kFarmerGreen),
+                    ),
+                    const SizedBox(height: 24),
+                    const Text('No pools found nearby.', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600, color: _kTextPrimary)),
+                    const SizedBox(height: 8),
+                    const Text('Start a new pool and invite nearby farmers to share transport!', textAlign: TextAlign.center, style: TextStyle(fontSize: 13, color: _kTextSecondary)),
+                  ],
                 ),
-                child: const Icon(Icons.local_shipping_outlined, size: 64, color: _kFarmerGreen),
               ),
-              const SizedBox(height: 24),
-              const Text('No pools found nearby.', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600, color: _kTextPrimary)),
-              const SizedBox(height: 8),
-              const Text('Start a new pool and invite nearby farmers to share transport!', textAlign: TextAlign.center, style: TextStyle(fontSize: 13, color: _kTextSecondary)),
-            ],
-          ),
+            ),
+          ],
         ),
       );
     }
@@ -219,7 +271,7 @@ class _PoolDiscoveryScreenState extends State<PoolDiscoveryScreen> {
         // Pool List
         Expanded(
           child: RefreshIndicator(
-            onRefresh: _loadPools,
+            onRefresh: () => _loadPools(silent: false),
             color: _kFarmerGreen,
             child: ListView.builder(
               padding: const EdgeInsets.symmetric(horizontal: 16),
@@ -259,7 +311,6 @@ class _PoolDiscoveryScreenState extends State<PoolDiscoveryScreen> {
 
   double _calculateAverageCost() {
     if (_pools.isEmpty) return 0.0;
-    // Dummy calculation for mockup: base 500 + 10 per kg of the first pool, divided by members
     final firstPool = _pools.first;
     final totalFare = 50.0 + (firstPool.currentQty * 2.0);
     final members = firstPool.memberCount > 0 ? firstPool.memberCount : 1;

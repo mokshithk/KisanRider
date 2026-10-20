@@ -150,6 +150,21 @@ def to_pool_out(
         .scalar()
     ) or 0
 
+    # Fetch creator's ProduceRequest for pickup address
+    creator_member = (
+        db.query(pool_models.PoolMember)
+        .filter(
+            pool_models.PoolMember.pool_id == pool.id,
+            pool_models.PoolMember.farmer_id == pool.creator_id,
+        )
+        .first()
+    )
+    pickup_address = None
+    if creator_member:
+        pr = db.query(models.ProduceRequest).filter(models.ProduceRequest.id == creator_member.produce_request_id).first()
+        if pr:
+            pickup_address = pr.pickup_address
+
     return pool_schemas.PoolOut(
         id=pool.id,
         creator_id=pool.creator_id,
@@ -171,6 +186,7 @@ def to_pool_out(
         created_at=pool.created_at,
         locked_at=pool.locked_at,
         distance_km=distance_km,
+        pickup_address=pickup_address,
     )
 
 
@@ -195,9 +211,17 @@ def to_pool_detail_out(
         .all()
     )
 
+    # Fetch member names
+    member_outs = []
+    for m in members:
+        farmer = db.query(models.User).filter(models.User.id == m.farmer_id).first()
+        m_out = pool_schemas.PoolMemberOut.model_validate(m)
+        m_out.farmer_full_name = farmer.full_name if farmer else None
+        member_outs.append(m_out)
+
     return pool_schemas.PoolDetailOut(
         **base.model_dump(),
-        members=[pool_schemas.PoolMemberOut.model_validate(m) for m in members],
+        members=member_outs,
         stops=[pool_schemas.PoolStopOut.model_validate(s) for s in stops],
     )
 

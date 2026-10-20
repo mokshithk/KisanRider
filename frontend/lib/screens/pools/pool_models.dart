@@ -15,6 +15,7 @@ class Pool {
   final int memberCount;
   final DateTime createdAt;
   final double? distanceKm;
+  final String? pickupAddress;
 
   Pool({
     required this.id,
@@ -33,6 +34,7 @@ class Pool {
     required this.memberCount,
     required this.createdAt,
     this.distanceKm,
+    this.pickupAddress,
   });
 
   factory Pool.fromJson(Map<String, dynamic> json) {
@@ -53,6 +55,7 @@ class Pool {
       memberCount: (json['member_count'] as num?)?.toInt() ?? 0,
       createdAt: DateTime.tryParse(json['created_at']?.toString() ?? '') ?? DateTime.now(),
       distanceKm: (json['distance_km'] as num?)?.toDouble(),
+      pickupAddress: json['pickup_address']?.toString(),
     );
   }
 }
@@ -64,6 +67,7 @@ class PoolMember {
   final double weightKg;
   final String status;
   final DateTime requestedAt;
+  final String? farmerFullName;
 
   PoolMember({
     required this.id,
@@ -72,6 +76,7 @@ class PoolMember {
     required this.weightKg,
     required this.status,
     required this.requestedAt,
+    this.farmerFullName,
   });
 
   factory PoolMember.fromJson(Map<String, dynamic> json) {
@@ -82,6 +87,7 @@ class PoolMember {
       weightKg: (json['weight_kg'] as num?)?.toDouble() ?? 0.0,
       status: json['status']?.toString() ?? 'REQUESTED',
       requestedAt: DateTime.tryParse(json['requested_at']?.toString() ?? '') ?? DateTime.now(),
+      farmerFullName: json['farmer_full_name']?.toString(),
     );
   }
 }
@@ -127,6 +133,7 @@ class PoolDetail extends Pool {
     required super.memberCount,
     required super.createdAt,
     super.distanceKm,
+    super.pickupAddress,
     required this.members,
     required this.stops,
   });
@@ -159,6 +166,7 @@ class PoolDetail extends Pool {
       memberCount: pool.memberCount,
       createdAt: pool.createdAt,
       distanceKm: pool.distanceKm,
+      pickupAddress: pool.pickupAddress,
       members: membersList,
       stops: stopsList,
     );

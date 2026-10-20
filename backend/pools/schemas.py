@@ -78,6 +78,9 @@ class PoolOut(BaseModel):
     
     # Phase 6: Distance from the querying farmer's location
     distance_km: Optional[float] = None
+    
+    # Phase 7: Creator's pickup address
+    pickup_address: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -107,6 +110,9 @@ class PoolMemberOut(BaseModel):
     requested_at: datetime
     decided_at: Optional[datetime] = None
     cancellation_reason: Optional[str] = None
+    
+    # Phase 7: Name of the farmer
+    farmer_full_name: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------

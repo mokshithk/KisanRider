@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/foundation.dart' show kIsWeb;
@@ -36,18 +37,32 @@ class _PoolDetailScreenState extends State<PoolDetailScreen> {
   PoolDetail? _pool;
   bool _isLoading = true;
   String? _error;
+  Timer? _refreshTimer;
 
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addPostFrameCallback((_) => _loadDetail());
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _loadDetail();
+      _refreshTimer = Timer.periodic(const Duration(seconds: 5), (_) {
+        _loadDetail(silent: true);
+      });
+    });
   }
 
-  Future<void> _loadDetail() async {
-    setState(() {
-      _isLoading = true;
-      _error = null;
-    });
+  @override
+  void dispose() {
+    _refreshTimer?.cancel();
+    super.dispose();
+  }
+
+  Future<void> _loadDetail({bool silent = false}) async {
+    if (!silent) {
+      setState(() {
+        _isLoading = true;
+        _error = null;
+      });
+    }
 
     final auth = context.read<AuthProvider>();
     try {
@@ -58,14 +73,17 @@ class _PoolDetailScreenState extends State<PoolDetailScreen> {
       if (!mounted) return;
       setState(() {
         _pool = detail;
-        _isLoading = false;
+        if (!silent) _isLoading = false;
+        _error = null;
       });
     } catch (e) {
       if (!mounted) return;
-      setState(() {
-        _error = e.toString().replaceAll('Exception: ', '');
-        _isLoading = false;
-      });
+      if (!silent) {
+        setState(() {
+          _error = e.toString().replaceAll('Exception: ', '');
+          _isLoading = false;
+        });
+      }
     }
   }
 
@@ -101,6 +119,12 @@ class _PoolDetailScreenState extends State<PoolDetailScreen> {
         title: const Text('Pool Details'),
         backgroundColor: _kFarmerGreen,
         foregroundColor: Colors.white,
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.refresh),
+            onPressed: () => _loadDetail(silent: false),
+          ),
+        ],
       ),
       body: _buildBody(),
     );
@@ -117,66 +141,84 @@ class _PoolDetailScreenState extends State<PoolDetailScreen> {
           children: [
             Text(_error!),
             const SizedBox(height: 16),
-            OutlinedButton(onPressed: _loadDetail, child: const Text('Retry')),
+            OutlinedButton(onPressed: () => _loadDetail(silent: false), child: const Text('Retry')),
           ],
         ),
       );
     }
     if (_pool == null) return const SizedBox();
 
+    final auth = context.read<AuthProvider>();
     final pool = _pool!;
-    final isCreator = context.read<AuthProvider>().userId == pool.creatorId;
-    final isMember = pool.members.any((m) => m.farmerId == context.read<AuthProvider>().userId);
+    final isCreator = auth.userId == pool.creatorId;
+    final isMember = pool.members.any((m) => m.farmerId == auth.userId);
     final canJoin = pool.status == 'OPEN' && !isMember;
 
-    return Column(
-      children: [
-        Expanded(
-          child: SingleChildScrollView(
-            padding: const EdgeInsets.all(16),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                _buildHeaderCard(pool),
-                const SizedBox(height: 16),
-                _buildInfoCard('Members (${pool.members.length})', [
-                  ...pool.members.map((m) => ListTile(
+    return RefreshIndicator(
+      onRefresh: () => _loadDetail(silent: false),
+      color: _kFarmerGreen,
+      child: Column(
+        children: [
+          Expanded(
+            child: SingleChildScrollView(
+              physics: const AlwaysScrollableScrollPhysics(),
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  _buildHeaderCard(pool),
+                  const SizedBox(height: 16),
+                  _buildInfoCard('Members (${pool.members.length})', [
+                    ...pool.members.map((m) {
+                      final memberIsMe = m.farmerId == auth.userId;
+                      final memberIsCreator = m.farmerId == pool.creatorId;
+                      
+                      String displayName = m.farmerFullName ?? 'Farmer';
+                      if (memberIsMe) {
+                        displayName = 'You ($displayName)';
+                      } else if (memberIsCreator) {
+                        displayName = '$displayName (Creator)';
+                      }
+
+                      return ListTile(
                         leading: const CircleAvatar(
                           backgroundColor: Color(0x1F2E7D32),
                           child: Icon(Icons.person, color: _kFarmerGreen, size: 20),
                         ),
                         title: Text(
-                          m.farmerId == pool.creatorId ? 'You (Creator)' : 'Farmer ${m.farmerId.substring(0, 4)}',
+                          displayName,
                           style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
                         ),
                         subtitle: Text('${m.weightKg.toStringAsFixed(0)} kg · ${m.status}', style: const TextStyle(fontSize: 12)),
                         dense: true,
-                      )),
-                ]),
-              ],
-            ),
-          ),
-        ),
-        if (pool.status == 'OPEN')
-          Container(
-            padding: const EdgeInsets.all(16),
-            decoration: const BoxDecoration(
-              color: Colors.white,
-              border: Border(top: BorderSide(color: Colors.black12)),
-            ),
-            child: SafeArea(
-              child: ElevatedButton(
-                onPressed: canJoin ? _showJoinSheet : null,
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: _kFarmerGreen,
-                  foregroundColor: Colors.white,
-                  padding: const EdgeInsets.symmetric(vertical: 16),
-                ),
-                child: Text(isCreator ? 'You created this pool' : isMember ? 'You have joined this pool' : 'Join Pool'),
+                      );
+                    }),
+                  ]),
+                ],
               ),
             ),
           ),
-      ],
+          if (pool.status == 'OPEN')
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: const BoxDecoration(
+                color: Colors.white,
+                border: Border(top: BorderSide(color: Colors.black12)),
+              ),
+              child: SafeArea(
+                child: ElevatedButton(
+                  onPressed: canJoin ? _showJoinSheet : null,
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: _kFarmerGreen,
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(vertical: 16),
+                  ),
+                  child: Text(isCreator ? 'You created this pool' : isMember ? 'You have joined this pool' : 'Join Pool'),
+                ),
+              ),
+            ),
+        ],
+      ),
     );
   }
 
@@ -211,6 +253,10 @@ class _PoolDetailScreenState extends State<PoolDetailScreen> {
             ],
           ),
           const SizedBox(height: 16),
+          _buildRow(Icons.eco, 'Crop Type', pool.cropType),
+          const SizedBox(height: 12),
+          _buildRow(Icons.location_on, 'Pickup Area', pool.pickupAddress ?? 'Unknown Location'),
+          const SizedBox(height: 12),
           _buildRow(Icons.storefront, 'Destination', pool.dropoffMandiName ?? 'Unknown'),
           const SizedBox(height: 12),
           _buildRow(Icons.scale, 'Capacity', '${pool.currentQty.toStringAsFixed(0)} kg'),
@@ -262,6 +308,10 @@ class _PoolDetailScreenState extends State<PoolDetailScreen> {
     return '${local.day}/${local.month} ${local.hour.toString().padLeft(2, '0')}:${local.minute.toString().padLeft(2, '0')}';
   }
 }
+
+// ---------------------------------------------------------
+// Bottom Sheet for Joining the Pool (Unchanged)
+// ---------------------------------------------------------
 
 class _JoinPoolSheet extends StatefulWidget {
   final String poolId;
