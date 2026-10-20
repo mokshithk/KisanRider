@@ -9,7 +9,7 @@ import 'package:http/http.dart' as http;
 import 'package:provider/provider.dart';
 
 import '../../providers/auth_provider.dart';
-import 'pool_detail_screen.dart';
+import 'pool_discovery_screen.dart';
 
 String get _kApiBaseUrl {
   if (kIsWeb) return 'http://localhost:8000';
@@ -41,7 +41,6 @@ class _CreatePoolScreenState extends State<CreatePoolScreen> {
 
   final _cropController = TextEditingController();
   final _weightController = TextEditingController();
-  final _maxQtyController = TextEditingController();
   final _pickupLandmarkController = TextEditingController();
   final _manualAddressController = TextEditingController();
   final _shopController = TextEditingController();
@@ -83,7 +82,6 @@ class _CreatePoolScreenState extends State<CreatePoolScreen> {
   void dispose() {
     _cropController.dispose();
     _weightController.dispose();
-    _maxQtyController.dispose();
     _pickupLandmarkController.dispose();
     _manualAddressController.dispose();
     _shopController.dispose();
@@ -110,8 +108,7 @@ class _CreatePoolScreenState extends State<CreatePoolScreen> {
       if (permission == LocationPermission.denied) {
         permission = await Geolocator.requestPermission();
       }
-      if (permission == LocationPermission.denied ||
-          permission == LocationPermission.deniedForever) {
+      if (permission == LocationPermission.denied || permission == LocationPermission.deniedForever) {
         if (!mounted) return;
         setState(() {
           _isFetchingLocation = false;
@@ -120,16 +117,11 @@ class _CreatePoolScreenState extends State<CreatePoolScreen> {
         return;
       }
 
-      final Position pos = await Geolocator.getCurrentPosition(
-        desiredAccuracy: LocationAccuracy.medium,
-      );
+      final Position pos = await Geolocator.getCurrentPosition(desiredAccuracy: LocationAccuracy.medium);
 
       String? readable;
       try {
-        final placemarks = await placemarkFromCoordinates(
-          pos.latitude,
-          pos.longitude,
-        );
+        final placemarks = await placemarkFromCoordinates(pos.latitude, pos.longitude);
         if (placemarks.isNotEmpty) {
           final p = placemarks.first;
           final parts = <String>[
@@ -210,9 +202,7 @@ class _CreatePoolScreenState extends State<CreatePoolScreen> {
     });
 
     try {
-      final uri = Uri.parse('$_kApiBaseUrl/mandi/markets')
-          .replace(queryParameters: {'district': district});
-
+      final uri = Uri.parse('$_kApiBaseUrl/mandi/markets').replace(queryParameters: {'district': district});
       final response = await http.get(uri, headers: const {'Accept': 'application/json'});
       if (!mounted) return;
 
@@ -307,12 +297,7 @@ class _CreatePoolScreenState extends State<CreatePoolScreen> {
           _showError('Cannot submit without GPS location. Please tap Refresh to detect your location.');
           return null;
         }
-        return (
-          address: _gpsAddress ?? '',
-          landmark: _pickupLandmarkController.text.trim(),
-          lat: _gpsLat!,
-          lng: _gpsLng!,
-        );
+        return (address: _gpsAddress ?? '', landmark: _pickupLandmarkController.text.trim(), lat: _gpsLat!, lng: _gpsLng!);
       case PickupMode.saved:
         if (_selectedSavedIndex == null) {
           _showError('Please pick one of your saved places, or switch to another pickup option.');
@@ -325,12 +310,7 @@ class _CreatePoolScreenState extends State<CreatePoolScreen> {
           _showError('Selected saved address has no coordinates. Please update it or choose another option.');
           return null;
         }
-        return (
-          address: (a['address_text'] ?? '').toString(),
-          landmark: _pickupLandmarkController.text.trim(),
-          lat: lat,
-          lng: lng,
-        );
+        return (address: (a['address_text'] ?? '').toString(), landmark: _pickupLandmarkController.text.trim(), lat: lat, lng: lng);
       case PickupMode.manual:
         final address = _manualAddressController.text.trim();
         if (address.isEmpty) {
@@ -342,12 +322,7 @@ class _CreatePoolScreenState extends State<CreatePoolScreen> {
           _showError('Please wait for location detection before submitting.');
           return null;
         }
-        return (
-          address: address,
-          landmark: _pickupLandmarkController.text.trim(),
-          lat: _gpsLat!,
-          lng: _gpsLng!,
-        );
+        return (address: address, landmark: _pickupLandmarkController.text.trim(), lat: _gpsLat!, lng: _gpsLng!);
     }
   }
 
@@ -379,7 +354,6 @@ class _CreatePoolScreenState extends State<CreatePoolScreen> {
     final shop = _shopController.text.trim();
     final dropoff = shop.isEmpty ? mandiName : '$mandiName - $shop';
     final weightKg = double.parse(_weightController.text);
-    final maxQty = double.parse(_maxQtyController.text);
 
     try {
       // 1. Silently create Produce Request
@@ -421,7 +395,7 @@ class _CreatePoolScreenState extends State<CreatePoolScreen> {
           'pickup_window_start': _windowStart!.toUtc().toIso8601String(),
           'pickup_window_end': _windowEnd!.toUtc().toIso8601String(),
           'min_qty': 50.0,
-          'max_qty': maxQty,
+          // max_qty omitted (backend defaults to 1000)
           'dropoff_district': _selectedDistrict,
           'dropoff_mandi_name': mandiName,
           'auto_approve': true,
@@ -431,9 +405,9 @@ class _CreatePoolScreenState extends State<CreatePoolScreen> {
       if (!mounted) return;
 
       if (poolResp.statusCode == 201) {
-        final poolId = jsonDecode(poolResp.body)['id'];
+        // Navigate directly to DiscoveryScreen as requested
         Navigator.of(context).pushReplacement(
-          MaterialPageRoute(builder: (_) => PoolDetailScreen(poolId: poolId)),
+          MaterialPageRoute(builder: (_) => const PoolDiscoveryScreen()),
         );
       } else {
         final body = jsonDecode(poolResp.body);
@@ -464,10 +438,7 @@ class _CreatePoolScreenState extends State<CreatePoolScreen> {
   }
 
   Widget _buildForm(ThemeData theme) {
-    final mandiDropdownEnabled = !_isSubmitting &&
-        !_isLoadingMandis &&
-        _selectedDistrict != null &&
-        _mandis.isNotEmpty;
+    final mandiDropdownEnabled = !_isSubmitting && !_isLoadingMandis && _selectedDistrict != null && _mandis.isNotEmpty;
 
     return SafeArea(
       child: SingleChildScrollView(
@@ -477,87 +448,36 @@ class _CreatePoolScreenState extends State<CreatePoolScreen> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              Text(
-                'Pool Details',
-                style: theme.textTheme.titleLarge?.copyWith(fontWeight: FontWeight.bold),
-              ),
+              Text('Pool Details', style: theme.textTheme.titleLarge?.copyWith(fontWeight: FontWeight.bold)),
               const SizedBox(height: 4),
-              Text(
-                'Combine your harvest with nearby farmers to share transport costs.',
-                style: theme.textTheme.bodySmall?.copyWith(color: Colors.grey.shade600),
-              ),
+              Text('Combine your harvest with nearby farmers to share transport costs.', style: theme.textTheme.bodySmall?.copyWith(color: Colors.grey.shade600)),
               const SizedBox(height: 24),
 
               TextFormField(
                 controller: _cropController,
                 enabled: !_isSubmitting,
                 textCapitalization: TextCapitalization.words,
-                decoration: const InputDecoration(
-                  labelText: 'Crop Name',
-                  hintText: 'e.g. Tomatoes',
-                  border: OutlineInputBorder(),
-                  prefixIcon: Icon(Icons.eco_outlined),
-                ),
+                decoration: const InputDecoration(labelText: 'Crop Name', hintText: 'e.g. Tomatoes', border: OutlineInputBorder(), prefixIcon: Icon(Icons.eco_outlined)),
                 validator: (v) => (v == null || v.trim().isEmpty) ? 'Required' : null,
               ),
               const SizedBox(height: 16),
 
-              Row(
-                children: [
-                  Expanded(
-                    child: TextFormField(
-                      controller: _weightController,
-                      enabled: !_isSubmitting,
-                      keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                      inputFormatters: [FilteringTextInputFormatter.allow(RegExp(r'[0-9.]'))],
-                      decoration: const InputDecoration(
-                        labelText: 'Weight (kg)',
-                        hintText: 'e.g. 250',
-                        border: OutlineInputBorder(),
-                        prefixIcon: Icon(Icons.scale_outlined),
-                        suffixText: 'kg',
-                      ),
-                      validator: (v) {
-                        if (v == null || v.trim().isEmpty) return 'Required';
-                        final d = double.tryParse(v.trim());
-                        if (d == null || d <= 0) return 'Invalid';
-                        return null;
-                      },
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: TextFormField(
-                      controller: _maxQtyController,
-                      enabled: !_isSubmitting,
-                      keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                      inputFormatters: [FilteringTextInputFormatter.allow(RegExp(r'[0-9.]'))],
-                      decoration: const InputDecoration(
-                        labelText: 'Max Pool (kg)',
-                        hintText: 'e.g. 1000',
-                        border: OutlineInputBorder(),
-                        prefixIcon: Icon(Icons.fitness_center),
-                        suffixText: 'kg',
-                      ),
-                      validator: (v) {
-                        if (v == null || v.trim().isEmpty) return 'Required';
-                        final d = double.tryParse(v.trim());
-                        if (d == null || d <= 0) return 'Invalid';
-                        return null;
-                      },
-                    ),
-                  ),
-                ],
+              TextFormField(
+                controller: _weightController,
+                enabled: !_isSubmitting,
+                keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                inputFormatters: [FilteringTextInputFormatter.allow(RegExp(r'[0-9.]'))],
+                decoration: const InputDecoration(labelText: 'Weight (kg)', hintText: 'e.g. 250', border: OutlineInputBorder(), prefixIcon: Icon(Icons.scale_outlined), suffixText: 'kg'),
+                validator: (v) {
+                  if (v == null || v.trim().isEmpty) return 'Required';
+                  final d = double.tryParse(v.trim());
+                  if (d == null || d <= 0) return 'Invalid';
+                  return null;
+                },
               ),
               const SizedBox(height: 24),
 
-              Text(
-                'Pickup Location',
-                style: theme.textTheme.titleMedium?.copyWith(
-                  fontWeight: FontWeight.bold,
-                  color: _kFarmerGreen,
-                ),
-              ),
+              Text('Pickup Location', style: theme.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold, color: _kFarmerGreen)),
               const SizedBox(height: 12),
               _buildPickupSection(theme),
               const SizedBox(height: 24),
@@ -565,17 +485,8 @@ class _CreatePoolScreenState extends State<CreatePoolScreen> {
               DropdownButtonFormField<String>(
                 value: _selectedDistrict,
                 isExpanded: true,
-                decoration: const InputDecoration(
-                  labelText: 'Dropoff District',
-                  border: OutlineInputBorder(),
-                  prefixIcon: Icon(Icons.map_outlined),
-                ),
-                items: _kDistricts
-                    .map((d) => DropdownMenuItem<String>(
-                          value: d,
-                          child: Text(d, overflow: TextOverflow.ellipsis),
-                        ))
-                    .toList(),
+                decoration: const InputDecoration(labelText: 'Dropoff District', border: OutlineInputBorder(), prefixIcon: Icon(Icons.map_outlined)),
+                items: _kDistricts.map((d) => DropdownMenuItem<String>(value: d, child: Text(d, overflow: TextOverflow.ellipsis))).toList(),
                 onChanged: _isSubmitting ? null : _onDistrictChanged,
                 validator: (v) => v == null ? 'Select a district' : null,
               ),
@@ -588,56 +499,33 @@ class _CreatePoolScreenState extends State<CreatePoolScreen> {
                   labelText: 'Dropoff Market / APMC Yard',
                   border: const OutlineInputBorder(),
                   prefixIcon: const Icon(Icons.storefront_outlined),
-                  hintText: _selectedDistrict == null
-                      ? 'Select a district first'
-                      : (_isLoadingMandis ? 'Loading markets…' : 'Select a market'),
-                  suffixIcon: _isLoadingMandis
-                      ? const Padding(
-                          padding: EdgeInsets.all(12),
-                          child: SizedBox(
-                            width: 18,
-                            height: 18,
-                            child: CircularProgressIndicator(strokeWidth: 2),
-                          ),
-                        )
-                      : null,
+                  hintText: _selectedDistrict == null ? 'Select a district first' : (_isLoadingMandis ? 'Loading markets…' : 'Select a market'),
+                  suffixIcon: _isLoadingMandis ? const Padding(padding: EdgeInsets.all(12), child: SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))) : null,
                 ),
-                items: List<DropdownMenuItem<int>>.generate(
-                  _mandis.length,
-                  (i) {
-                    final m = _mandis[i];
-                    final name = (m['name'] ?? '').toString();
-                    final type = (m['type'] ?? '').toString();
-                    final isApmc = type == 'APMC_YARD';
-                    return DropdownMenuItem<int>(
-                      value: i,
-                      child: Row(
-                        children: [
-                          Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
-                            decoration: BoxDecoration(
-                              color: isApmc ? Colors.blue.shade50 : Colors.orange.shade50,
-                              borderRadius: BorderRadius.circular(4),
-                              border: Border.all(
-                                color: isApmc ? Colors.blue.shade200 : Colors.orange.shade200,
-                              ),
-                            ),
-                            child: Text(
-                              isApmc ? 'APMC' : 'Local',
-                              style: TextStyle(
-                                fontSize: 10,
-                                fontWeight: FontWeight.w600,
-                                color: isApmc ? Colors.blue.shade800 : Colors.orange.shade800,
-                              ),
-                            ),
+                items: List<DropdownMenuItem<int>>.generate(_mandis.length, (i) {
+                  final m = _mandis[i];
+                  final name = (m['name'] ?? '').toString();
+                  final type = (m['type'] ?? '').toString();
+                  final isApmc = type == 'APMC_YARD';
+                  return DropdownMenuItem<int>(
+                    value: i,
+                    child: Row(
+                      children: [
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+                          decoration: BoxDecoration(
+                            color: isApmc ? Colors.blue.shade50 : Colors.orange.shade50,
+                            borderRadius: BorderRadius.circular(4),
+                            border: Border.all(color: isApmc ? Colors.blue.shade200 : Colors.orange.shade200),
                           ),
-                          const SizedBox(width: 6),
-                          Expanded(child: Text(name, overflow: TextOverflow.ellipsis)),
-                        ],
-                      ),
-                    );
-                  },
-                ),
+                          child: Text(isApmc ? 'APMC' : 'Local', style: TextStyle(fontSize: 10, fontWeight: FontWeight.w600, color: isApmc ? Colors.blue.shade800 : Colors.orange.shade800)),
+                        ),
+                        const SizedBox(width: 6),
+                        Expanded(child: Text(name, overflow: TextOverflow.ellipsis)),
+                      ],
+                    ),
+                  );
+                }),
                 onChanged: mandiDropdownEnabled ? (i) => setState(() => _selectedMandiIndex = i) : null,
                 validator: (v) => v == null ? 'Select a market' : null,
               ),
@@ -650,28 +538,16 @@ class _CreatePoolScreenState extends State<CreatePoolScreen> {
               TextFormField(
                 controller: _shopController,
                 enabled: !_isSubmitting,
-                decoration: const InputDecoration(
-                  labelText: 'Dropoff Shop / Stall Number (optional)',
-                  hintText: 'e.g. Shop #14, Sri Lakshmi Traders',
-                  border: OutlineInputBorder(),
-                  prefixIcon: Icon(Icons.store_outlined),
-                ),
+                decoration: const InputDecoration(labelText: 'Dropoff Shop / Stall Number (optional)', hintText: 'e.g. Shop #14', border: OutlineInputBorder(), prefixIcon: Icon(Icons.store_outlined)),
               ),
               const SizedBox(height: 24),
 
-              Text(
-                'Pickup Window',
-                style: theme.textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w600),
-              ),
+              Text('Pickup Window', style: theme.textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w600)),
               const SizedBox(height: 8),
               InkWell(
                 onTap: _isSubmitting ? null : () => _pickDateTime(isStart: true),
                 child: InputDecorator(
-                  decoration: const InputDecoration(
-                    border: OutlineInputBorder(),
-                    prefixIcon: Icon(Icons.calendar_today),
-                    labelText: 'Starts',
-                  ),
+                  decoration: const InputDecoration(border: OutlineInputBorder(), prefixIcon: Icon(Icons.calendar_today), labelText: 'Starts'),
                   child: Text(_formatDateTime(_windowStart)),
                 ),
               ),
@@ -679,11 +555,7 @@ class _CreatePoolScreenState extends State<CreatePoolScreen> {
               InkWell(
                 onTap: _isSubmitting ? null : () => _pickDateTime(isStart: false),
                 child: InputDecorator(
-                  decoration: const InputDecoration(
-                    border: OutlineInputBorder(),
-                    prefixIcon: Icon(Icons.calendar_today),
-                    labelText: 'Ends',
-                  ),
+                  decoration: const InputDecoration(border: OutlineInputBorder(), prefixIcon: Icon(Icons.calendar_today), labelText: 'Ends'),
                   child: Text(_formatDateTime(_windowEnd)),
                 ),
               ),
@@ -696,16 +568,9 @@ class _CreatePoolScreenState extends State<CreatePoolScreen> {
 
               FilledButton(
                 onPressed: _isSubmitting ? null : _submit,
-                style: FilledButton.styleFrom(
-                  backgroundColor: _kFarmerGreen,
-                  padding: const EdgeInsets.symmetric(vertical: 16),
-                ),
+                style: FilledButton.styleFrom(backgroundColor: _kFarmerGreen, padding: const EdgeInsets.symmetric(vertical: 16)),
                 child: _isSubmitting
-                    ? const SizedBox(
-                        width: 20,
-                        height: 20,
-                        child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2),
-                      )
+                    ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
                     : const Text('Create Pool'),
               ),
             ],
@@ -728,21 +593,9 @@ class _CreatePoolScreenState extends State<CreatePoolScreen> {
         children: [
           SegmentedButton<PickupMode>(
             segments: const [
-              ButtonSegment<PickupMode>(
-                value: PickupMode.gps,
-                icon: Icon(Icons.my_location, size: 16),
-                label: Text('Current GPS', style: TextStyle(fontSize: 12.5)),
-              ),
-              ButtonSegment<PickupMode>(
-                value: PickupMode.saved,
-                icon: Icon(Icons.bookmark_outline, size: 16),
-                label: Text('Saved', style: TextStyle(fontSize: 12.5)),
-              ),
-              ButtonSegment<PickupMode>(
-                value: PickupMode.manual,
-                icon: Icon(Icons.edit_location_alt_outlined, size: 16),
-                label: Text('Manual', style: TextStyle(fontSize: 12.5)),
-              ),
+              ButtonSegment<PickupMode>(value: PickupMode.gps, icon: Icon(Icons.my_location, size: 16), label: Text('Current GPS', style: TextStyle(fontSize: 12.5))),
+              ButtonSegment<PickupMode>(value: PickupMode.saved, icon: Icon(Icons.bookmark_outline, size: 16), label: Text('Saved', style: TextStyle(fontSize: 12.5))),
+              ButtonSegment<PickupMode>(value: PickupMode.manual, icon: Icon(Icons.edit_location_alt_outlined, size: 16), label: Text('Manual', style: TextStyle(fontSize: 12.5))),
             ],
             selected: {_pickupMode},
             onSelectionChanged: _isSubmitting
@@ -790,41 +643,15 @@ class _CreatePoolScreenState extends State<CreatePoolScreen> {
         children: [
           Container(
             padding: const EdgeInsets.all(12),
-            decoration: BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.circular(10),
-              border: Border.all(color: Colors.grey.shade300),
-            ),
+            decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(10), border: Border.all(color: Colors.grey.shade300)),
             child: Row(
               children: [
                 _isFetchingLocation
-                    ? const SizedBox(
-                        width: 18,
-                        height: 18,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
-                    : Icon(
-                        _gpsError != null
-                            ? Icons.error_outline
-                            : (_gpsAddress != null ? Icons.check_circle_outline : Icons.my_location),
-                        color: _gpsError != null ? theme.colorScheme.error : _kFarmerGreen,
-                        size: 20,
-                      ),
+                    ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
+                    : Icon(_gpsError != null ? Icons.error_outline : (_gpsAddress != null ? Icons.check_circle_outline : Icons.my_location), color: _gpsError != null ? theme.colorScheme.error : _kFarmerGreen, size: 20),
                 const SizedBox(width: 12),
-                Expanded(
-                  child: Text(
-                    _isFetchingLocation
-                        ? 'Detecting your location…'
-                        : (_gpsError ?? (_gpsAddress ?? 'Tap refresh to detect location.')),
-                    style: theme.textTheme.bodySmall,
-                  ),
-                ),
-                if (!_isFetchingLocation)
-                  IconButton(
-                    icon: const Icon(Icons.refresh, size: 20),
-                    color: _kFarmerGreen,
-                    onPressed: _isSubmitting ? null : _fetchCurrentLocation,
-                  ),
+                Expanded(child: Text(_isFetchingLocation ? 'Detecting your location…' : (_gpsError ?? (_gpsAddress ?? 'Tap refresh to detect location.')), style: theme.textTheme.bodySmall)),
+                if (!_isFetchingLocation) IconButton(icon: const Icon(Icons.refresh, size: 20), color: _kFarmerGreen, onPressed: _isSubmitting ? null : _fetchCurrentLocation),
               ],
             ),
           ),
@@ -832,14 +659,7 @@ class _CreatePoolScreenState extends State<CreatePoolScreen> {
           TextFormField(
             controller: _pickupLandmarkController,
             enabled: !_isSubmitting,
-            textCapitalization: TextCapitalization.sentences,
-            decoration: const InputDecoration(
-              labelText: 'Landmark / Pickup Notes',
-              hintText: 'e.g. Behind the canal',
-              border: OutlineInputBorder(),
-              prefixIcon: Icon(Icons.signpost_outlined),
-              isDense: true,
-            ),
+            decoration: const InputDecoration(labelText: 'Landmark / Pickup Notes', border: OutlineInputBorder(), prefixIcon: Icon(Icons.signpost_outlined), isDense: true),
           ),
         ],
       ),
@@ -853,24 +673,14 @@ class _CreatePoolScreenState extends State<CreatePoolScreen> {
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           if (_isLoadingAddresses)
-            const Padding(
-              padding: EdgeInsets.symmetric(vertical: 12),
-              child: Center(child: CircularProgressIndicator(strokeWidth: 2)),
-            )
+            const Padding(padding: EdgeInsets.symmetric(vertical: 12), child: Center(child: CircularProgressIndicator(strokeWidth: 2)))
           else if (_savedAddressesError != null)
             Text(_savedAddressesError!, style: TextStyle(color: theme.colorScheme.error, fontSize: 12))
           else if (_savedAddresses.isEmpty)
             Container(
               padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.circular(10),
-                border: Border.all(color: Colors.grey.shade300),
-              ),
-              child: Text(
-                'No saved places yet. Use Manual Entry to bookmark one.',
-                style: theme.textTheme.bodySmall,
-              ),
+              decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(10), border: Border.all(color: Colors.grey.shade300)),
+              child: Text('No saved places yet. Use Manual Entry to bookmark one.', style: theme.textTheme.bodySmall),
             )
           else
             Wrap(
@@ -881,14 +691,7 @@ class _CreatePoolScreenState extends State<CreatePoolScreen> {
                 final title = (a['title'] ?? '').toString();
                 final selected = _selectedSavedIndex == i;
                 return ChoiceChip(
-                  label: Text(
-                    title.isEmpty ? 'Saved place' : title,
-                    style: TextStyle(
-                      fontSize: 12.5,
-                      color: selected ? Colors.white : _kFarmerGreen,
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
+                  label: Text(title.isEmpty ? 'Saved place' : title, style: TextStyle(fontSize: 12.5, color: selected ? Colors.white : _kFarmerGreen, fontWeight: FontWeight.w600)),
                   selected: selected,
                   onSelected: _isSubmitting ? null : (_) => setState(() => _selectedSavedIndex = i),
                   selectedColor: _kFarmerGreen,
@@ -901,27 +704,15 @@ class _CreatePoolScreenState extends State<CreatePoolScreen> {
             const SizedBox(height: 12),
             Container(
               padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.circular(10),
-                border: Border.all(color: Colors.grey.shade300),
-              ),
-              child: Text(
-                (_savedAddresses[_selectedSavedIndex!]['address_text'] ?? '').toString(),
-                style: theme.textTheme.bodyMedium,
-              ),
+              decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(10), border: Border.all(color: Colors.grey.shade300)),
+              child: Text((_savedAddresses[_selectedSavedIndex!]['address_text'] ?? '').toString(), style: theme.textTheme.bodyMedium),
             ),
           ],
           const SizedBox(height: 12),
           TextFormField(
             controller: _pickupLandmarkController,
             enabled: !_isSubmitting,
-            decoration: const InputDecoration(
-              labelText: 'Landmark / Pickup Notes (optional)',
-              border: OutlineInputBorder(),
-              prefixIcon: Icon(Icons.signpost_outlined),
-              isDense: true,
-            ),
+            decoration: const InputDecoration(labelText: 'Landmark / Pickup Notes (optional)', border: OutlineInputBorder(), prefixIcon: Icon(Icons.signpost_outlined), isDense: true),
           ),
         ],
       ),
@@ -937,25 +728,13 @@ class _CreatePoolScreenState extends State<CreatePoolScreen> {
           TextFormField(
             controller: _manualAddressController,
             enabled: !_isSubmitting,
-            textCapitalization: TextCapitalization.words,
-            decoration: const InputDecoration(
-              labelText: 'Village / Area Name',
-              hintText: 'e.g. Bangarpet, Kolar',
-              border: OutlineInputBorder(),
-              prefixIcon: Icon(Icons.holiday_village_outlined),
-              isDense: true,
-            ),
+            decoration: const InputDecoration(labelText: 'Village / Area Name', hintText: 'e.g. Bangarpet, Kolar', border: OutlineInputBorder(), prefixIcon: Icon(Icons.holiday_village_outlined), isDense: true),
           ),
           const SizedBox(height: 12),
           TextFormField(
             controller: _pickupLandmarkController,
             enabled: !_isSubmitting,
-            decoration: const InputDecoration(
-              labelText: 'Landmark / Pickup Notes',
-              border: OutlineInputBorder(),
-              prefixIcon: Icon(Icons.signpost_outlined),
-              isDense: true,
-            ),
+            decoration: const InputDecoration(labelText: 'Landmark / Pickup Notes', border: OutlineInputBorder(), prefixIcon: Icon(Icons.signpost_outlined), isDense: true),
           ),
         ],
       ),

@@ -1,18 +1,8 @@
 """
 FastAPI router for the KisanRider farmer-pooling feature.
-
-Auth:
-  * All farm-side endpoints (create, join, approve, reject, leave, cancel,
-    read-one) require ``auth.require_role("FARMER")``.
-  * ``GET /pools/nearby`` allows any authenticated user
-    (``auth.get_current_user``) so a rider can preview pools.
-  * ``POST /pools/{id}/accept`` (Phase 3) requires
-    ``auth.require_role("RIDER")``.
-
-Route ordering: ``/nearby`` is registered **before** ``/{pool_id}``. The
-UUID path converter would otherwise 422 on the string literal "nearby".
 """
 
+from typing import Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -47,15 +37,6 @@ def create_pool(
 ):
     """
     Create a pool from one of the caller's PENDING ProduceRequests.
-
-    The creator is automatically added as the first PoolMember with
-    status ACCEPTED, their weight initialises ``current_qty``, and a
-    first PoolStop is generated so the route has an anchor.
-
-    ``auto_approve`` selects the join mode (D3 = 3B):
-
-      * ``True``  — auto-match pool; joins land as ACCEPTED.
-      * ``False`` — manual pool; joins land as REQUESTED until approved.
     """
     try:
         pool = pool_crud.create_pool(db, payload, current_user.id)
@@ -82,25 +63,82 @@ def get_nearby_pools(
     radius_km: float = Query(
         10, gt=0, le=200, description="Search radius in kilometers"
     ),
+    mandi_id: Optional[str] = Query(
+        None, description="Filter by dropoff mandi ID"
+    ),
     current_user: models.User = Depends(auth.get_current_user),
     db: Session = Depends(get_db),
 ):
     """
     Return OPEN pools whose creator's ProduceRequest pickup location is
     within ``radius_km`` of ``(lat, lng)``.
-
-    Distance is computed from the creator's ProduceRequest geometry —
-    pools themselves don't carry a geometry column, so the pool's first
-    member (the creator) acts as the anchor.
-
-    Results are ordered closest-first and capped at 50 pools.
     """
     try:
         return pool_crud.get_nearby_pools(
-            db, lat=lat, lng=lng, radius_km=radius_km
+            db, 
+            lat=lat, 
+            lng=lng, 
+            radius_km=radius_km, 
+            current_user_id=current_user.id, 
+            mandi_id=mandi_id
         )
     except SQLAlchemyError as e:
         raise HTTPException(status_code=500, detail=f"Database error: {e}")
+
+
+@router.get(
+    "/nearby-farmers",
+    response_model=list[pool_schemas.NearbyFarmerOut],
+    summary="Browse unpooled farmers near the location",
+)
+def get_nearby_farmers(
+    lat: float = Query(..., ge=-90, le=90),
+    lng: float = Query(..., ge=-180, le=180),
+    radius_km: float = Query(10, gt=0, le=200),
+    current_user: models.User = Depends(auth.require_role("FARMER")),
+    db: Session = Depends(get_db),
+):
+    """
+    Return PENDING ProduceRequests near ``(lat, lng)`` that are NOT
+    currently part of an active Pool, excluding the current farmer's
+    own requests.
+    """
+    try:
+        return pool_crud.get_nearby_farmers(
+            db, lat=lat, lng=lng, radius_km=radius_km, current_farmer_id=current_user.id
+        )
+    except SQLAlchemyError as e:
+        raise HTTPException(status_code=500, detail=f"Database error: {e}")
+
+
+# ---------------------------------------------------------------------------
+# Group (Auto-match)
+# ---------------------------------------------------------------------------
+
+@router.post(
+    "/group",
+    response_model=pool_schemas.PoolDetailOut,
+    status_code=201,
+    summary="Instantly group selected farmers into a new pool",
+)
+def group_pool(
+    payload: pool_schemas.PoolGroupCreate,
+    current_user: models.User = Depends(auth.require_role("FARMER")),
+    db: Session = Depends(get_db),
+):
+    """
+    Instantly groups the creator and selected farmers into a new pool.
+    All members are set to ACCEPTED. The creator must have a PENDING
+    produce request to anchor the pool.
+    """
+    try:
+        pool = pool_crud.group_pool(db, payload, current_user.id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except SQLAlchemyError as e:
+        raise HTTPException(status_code=500, detail=f"Database error: {e}")
+
+    return pool_crud.to_pool_detail_out(db, pool)
 
 
 # ---------------------------------------------------------------------------
@@ -119,10 +157,6 @@ def get_pool_detail(
 ):
     """
     Return the full ``PoolDetailOut`` for one pool.
-
-    Access rule: the caller must be the creator, an active member
-    (REQUESTED or ACCEPTED), **or** the pool must be OPEN (public
-    discovery). Otherwise → 404 (existence not leaked).
     """
     pool = pool_crud.get_pool_by_id(db, pool_id)
     if pool is None:
@@ -159,16 +193,6 @@ def join_pool(
 ):
     """
     Join a pool with one of the caller's PENDING ProduceRequests.
-
-    Behaviour depends on ``Pool.auto_approve``:
-
-      * **auto** — member is created ACCEPTED, ``current_qty`` increases
-        immediately, and a PoolStop is generated.
-      * **manual** — member is created REQUESTED. The creator must
-        approve it for the weight to count.
-
-    Capacity is checked at join time in both modes; approval re-checks
-    against the then-current state.
     """
     try:
         pool = pool_crud.join_pool(
@@ -199,10 +223,6 @@ def approve_member(
 ):
     """
     Approve a member whose request is in REQUESTED status.
-
-    Capacity is re-checked against the pool's current ``current_qty``.
-    On success the member moves to ACCEPTED, ``current_qty`` increases,
-    and a PoolStop is created.
     """
     try:
         pool = pool_crud.approve_member(
@@ -228,8 +248,7 @@ def reject_member(
     db: Session = Depends(get_db),
 ):
     """
-    Reject a member whose request is in REQUESTED status. Pure state
-    flip — a REQUESTED member never incremented ``current_qty``.
+    Reject a member whose request is in REQUESTED status.
     """
     try:
         pool = pool_crud.reject_member(
@@ -258,13 +277,6 @@ def leave_pool(
 ):
     """
     Remove the caller's active membership from a pool.
-
-    Only allowed while the pool is OPEN. If the caller was an ACCEPTED
-    member, their weight is deducted from ``current_qty`` and their
-    PoolStop is marked SKIPPED.
-
-    **Creator-leaves policy**: the pool is automatically CANCELLED and
-    every other active member is moved to WITHDRAWN.
     """
     try:
         pool = pool_crud.leave_pool(db, pool_id, current_user.id)
@@ -296,10 +308,6 @@ def cancel_pool(
 ):
     """
     Cancel a pool the caller created.
-
-    Flips the pool to CANCELLED, zeroes ``current_qty``, and moves every
-    active member (REQUESTED or ACCEPTED) to WITHDRAWN. Cancelling an
-    already-CANCELLED or COMPLETED pool is a 400.
     """
     try:
         pool_crud.cancel_pool(db, pool_id, current_user.id)
@@ -332,25 +340,6 @@ def accept_pool(
 ):
     """
     Accept an OPEN pool as the authenticated rider.
-
-    Per D1 = Option A, this creates **one Trip per ACCEPTED PoolMember**.
-    Every linked ProduceRequest is flipped from PENDING → ACCEPTED so it
-    drops out of ``GET /trips/available`` and can no longer be accepted
-    individually.
-
-    The response carries the resulting pool status and the IDs of the
-    new trips, so the rider's client can immediately navigate to any of
-    them without a second lookup.
-
-    ## Error cases (400)
-    - Pool not found / not OPEN
-    - Pool has no committed weight
-    - Pool has no accepted members
-    - Any linked ProduceRequest isn't PENDING (defensive — should never
-      happen if Phase 2's commitment guards did their job)
-
-    ## Auth
-    ``require_role("RIDER")`` — a farmer cannot accept their own pool.
     """
     try:
         pool, trip_ids = pool_crud.accept_pool(

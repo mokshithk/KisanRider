@@ -9,7 +9,7 @@ import 'package:url_launcher/url_launcher.dart';
 import '../providers/auth_provider.dart';
 import 'mandi_prices_screen.dart';
 import 'order_history_screen.dart';
-import 'pools/pool_discovery_screen.dart'; // PHASE 4
+import 'pools/pool_discovery_screen.dart'; // Correct Screen
 
 /// Base URL of the FastAPI backend.
 String get _kApiBaseUrl {
@@ -213,7 +213,6 @@ class _FarmerHomeTabState extends State<FarmerHomeTab> {
   void _openTrackOrder() => widget.onTabSwitch(2);
 
   void _openFindPool() {
-    // PHASE 4: Replaced SnackBar with actual navigation
     Navigator.of(context).push(
       MaterialPageRoute<void>(
         builder: (_) => const PoolDiscoveryScreen(),

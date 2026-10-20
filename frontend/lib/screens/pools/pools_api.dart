@@ -20,9 +20,37 @@ class PoolsApi {
     required String token,
     required double lat,
     required double lng,
-    double radiusKm = 50.0,
+    double radiusKm = 10.0,
+    String? mandiId,
   }) async {
+    final queryParams = <String, String>{
+      'lat': lat.toString(),
+      'lng': lng.toString(),
+      'radius_km': radiusKm.toString(),
+    };
+    if (mandiId != null) {
+      queryParams['mandi_id'] = mandiId;
+    }
+
     final uri = Uri.parse('$_kApiBaseUrl/pools/nearby').replace(
+      queryParameters: queryParams,
+    );
+
+    final resp = await http.get(uri, headers: _headers(token));
+    if (resp.statusCode == 200) {
+      final list = jsonDecode(resp.body) as List<dynamic>;
+      return list.map((e) => Pool.fromJson(e)).toList();
+    }
+    throw Exception(_extractError(resp) ?? 'Failed to load pools');
+  }
+
+  static Future<List<NearbyFarmer>> fetchNearbyFarmers({
+    required String token,
+    required double lat,
+    required double lng,
+    double radiusKm = 10.0,
+  }) async {
+    final uri = Uri.parse('$_kApiBaseUrl/pools/nearby-farmers').replace(
       queryParameters: {
         'lat': lat.toString(),
         'lng': lng.toString(),
@@ -33,9 +61,9 @@ class PoolsApi {
     final resp = await http.get(uri, headers: _headers(token));
     if (resp.statusCode == 200) {
       final list = jsonDecode(resp.body) as List<dynamic>;
-      return list.map((e) => Pool.fromJson(e)).toList();
+      return list.map((e) => NearbyFarmer.fromJson(e)).toList();
     }
-    throw Exception(_extractError(resp) ?? 'Failed to load pools');
+    throw Exception(_extractError(resp) ?? 'Failed to load nearby farmers');
   }
 
   static Future<PoolDetail> fetchPoolDetail({
@@ -64,6 +92,30 @@ class PoolsApi {
       return PoolDetail.fromJson(jsonDecode(resp.body));
     }
     throw Exception(_extractError(resp) ?? 'Failed to create pool');
+  }
+
+  static Future<PoolDetail> groupPool({
+    required String token,
+    required String creatorProduceRequestId,
+    required List<String> otherProduceRequestIds,
+    required DateTime pickupWindowStart,
+    required DateTime pickupWindowEnd,
+  }) async {
+    final uri = Uri.parse('$_kApiBaseUrl/pools/group');
+    final resp = await http.post(
+      uri,
+      headers: _headers(token),
+      body: jsonEncode({
+        'creator_produce_request_id': creatorProduceRequestId,
+        'other_produce_request_ids': otherProduceRequestIds,
+        'pickup_window_start': pickupWindowStart.toUtc().toIso8601String(),
+        'pickup_window_end': pickupWindowEnd.toUtc().toIso8601String(),
+      }),
+    );
+    if (resp.statusCode == 201) {
+      return PoolDetail.fromJson(jsonDecode(resp.body));
+    }
+    throw Exception(_extractError(resp) ?? 'Failed to group pool');
   }
 
   static Future<PoolDetail> joinPool({

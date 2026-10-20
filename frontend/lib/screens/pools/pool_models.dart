@@ -14,6 +14,7 @@ class Pool {
   final String? dropoffMandiName;
   final int memberCount;
   final DateTime createdAt;
+  final double? distanceKm;
 
   Pool({
     required this.id,
@@ -31,6 +32,7 @@ class Pool {
     this.dropoffMandiName,
     required this.memberCount,
     required this.createdAt,
+    this.distanceKm,
   });
 
   factory Pool.fromJson(Map<String, dynamic> json) {
@@ -50,6 +52,7 @@ class Pool {
       dropoffMandiName: json['dropoff_mandi_name']?.toString(),
       memberCount: (json['member_count'] as num?)?.toInt() ?? 0,
       createdAt: DateTime.tryParse(json['created_at']?.toString() ?? '') ?? DateTime.now(),
+      distanceKm: (json['distance_km'] as num?)?.toDouble(),
     );
   }
 }
@@ -123,6 +126,7 @@ class PoolDetail extends Pool {
     super.dropoffMandiName,
     required super.memberCount,
     required super.createdAt,
+    super.distanceKm,
     required this.members,
     required this.stops,
   });
@@ -154,8 +158,44 @@ class PoolDetail extends Pool {
       dropoffMandiName: pool.dropoffMandiName,
       memberCount: pool.memberCount,
       createdAt: pool.createdAt,
+      distanceKm: pool.distanceKm,
       members: membersList,
       stops: stopsList,
+    );
+  }
+}
+
+class NearbyFarmer {
+  final String produceRequestId;
+  final String farmerId;
+  final String farmerName;
+  final String cropType;
+  final double weightKg;
+  final double distanceKm;
+  final String? dropoffMandiName;
+  final String? dropoffDistrict;
+
+  NearbyFarmer({
+    required this.produceRequestId,
+    required this.farmerId,
+    required this.farmerName,
+    required this.cropType,
+    required this.weightKg,
+    required this.distanceKm,
+    this.dropoffMandiName,
+    this.dropoffDistrict,
+  });
+
+  factory NearbyFarmer.fromJson(Map<String, dynamic> json) {
+    return NearbyFarmer(
+      produceRequestId: json['produce_request_id'].toString(),
+      farmerId: json['farmer_id'].toString(),
+      farmerName: json['farmer_name']?.toString() ?? 'Farmer',
+      cropType: json['crop_type']?.toString() ?? 'Unknown',
+      weightKg: (json['weight_kg'] as num?)?.toDouble() ?? 0.0,
+      distanceKm: (json['distance_km'] as num?)?.toDouble() ?? 0.0,
+      dropoffMandiName: json['dropoff_mandi_name']?.toString(),
+      dropoffDistrict: json['dropoff_district']?.toString(),
     );
   }
 }
