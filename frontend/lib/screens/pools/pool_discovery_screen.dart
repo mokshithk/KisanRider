@@ -28,6 +28,9 @@ class _PoolDiscoveryScreenState extends State<PoolDiscoveryScreen> {
   double _lat = 0.0;
   double _lng = 0.0;
   bool _locationFetched = false;
+  
+  // Toggle state
+  bool _showMyPools = false;
 
   Timer? _refreshTimer;
 
@@ -73,7 +76,7 @@ class _PoolDiscoveryScreenState extends State<PoolDiscoveryScreen> {
         throw Exception("Permission denied");
       }
     } catch (_) {
-      // Fallback if timeout or error (e.g. Kolar)
+      // Fallback if timeout or error
       if (mounted) {
         setState(() {
           _lat = 13.1362;
@@ -107,12 +110,18 @@ class _PoolDiscoveryScreenState extends State<PoolDiscoveryScreen> {
 
     final auth = context.read<AuthProvider>();
     try {
-      final pools = await PoolsApi.fetchNearbyPools(
-        token: auth.token!,
-        lat: _lat,
-        lng: _lng,
-        radiusKm: 10.0, // Hardcoded 10km as per spec
-      );
+      List<Pool> pools;
+      if (_showMyPools) {
+        pools = await PoolsApi.fetchMyPools(token: auth.token!);
+      } else {
+        pools = await PoolsApi.fetchNearbyPools(
+          token: auth.token!,
+          lat: _lat,
+          lng: _lng,
+          radiusKm: 10.0,
+        );
+      }
+      
       if (!mounted) return;
       setState(() {
         _pools = pools;
@@ -134,6 +143,8 @@ class _PoolDiscoveryScreenState extends State<PoolDiscoveryScreen> {
     await Navigator.of(context).push(
       MaterialPageRoute(builder: (_) => const CreatePoolScreen()),
     );
+    // After creating, switch to My Pools and refresh
+    setState(() => _showMyPools = true);
     _loadPools();
   }
 
@@ -159,7 +170,43 @@ class _PoolDiscoveryScreenState extends State<PoolDiscoveryScreen> {
           ),
         ],
       ),
-      body: _buildBody(),
+      body: Column(
+        children: [
+          // Toggle
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+            color: Colors.white,
+            child: SegmentedButton<bool>(
+              segments: const [
+                ButtonSegment<bool>(
+                  value: false, 
+                  icon: Icon(Icons.search, size: 16),
+                  label: Text('Browse Pools'),
+                ),
+                ButtonSegment<bool>(
+                  value: true, 
+                  icon: Icon(Icons.folder_shared_outlined, size: 16),
+                  label: Text('My Pools'),
+                ),
+              ],
+              selected: {_showMyPools},
+              onSelectionChanged: (Set<bool> newSelection) {
+                setState(() {
+                  _showMyPools = newSelection.first;
+                  _loadPools(silent: false);
+                });
+              },
+              style: SegmentedButton.styleFrom(
+                selectedBackgroundColor: _kFarmerGreen,
+                selectedForegroundColor: Colors.white,
+                foregroundColor: _kFarmerGreen,
+                side: BorderSide(color: _kFarmerGreen.withOpacity(0.4)),
+              ),
+            ),
+          ),
+          Expanded(child: _buildBody()),
+        ],
+      ),
       floatingActionButton: FloatingActionButton.extended(
         onPressed: _openCreatePool,
         backgroundColor: _kFarmerGreen,
@@ -204,7 +251,7 @@ class _PoolDiscoveryScreenState extends State<PoolDiscoveryScreen> {
         child: ListView(
           physics: const AlwaysScrollableScrollPhysics(),
           children: [
-            SizedBox(height: MediaQuery.of(context).size.height * 0.25),
+            SizedBox(height: MediaQuery.of(context).size.height * 0.2),
             Center(
               child: Padding(
                 padding: const EdgeInsets.all(32),
@@ -217,12 +264,25 @@ class _PoolDiscoveryScreenState extends State<PoolDiscoveryScreen> {
                         color: _kFarmerGreen.withOpacity(0.1),
                         shape: BoxShape.circle,
                       ),
-                      child: const Icon(Icons.local_shipping_outlined, size: 64, color: _kFarmerGreen),
+                      child: Icon(
+                        _showMyPools ? Icons.folder_open : Icons.local_shipping_outlined, 
+                        size: 64, 
+                        color: _kFarmerGreen
+                      ),
                     ),
                     const SizedBox(height: 24),
-                    const Text('No pools found nearby.', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600, color: _kTextPrimary)),
+                    Text(
+                      _showMyPools ? 'You have no active pools.' : 'No pools found nearby.',
+                      style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600, color: _kTextPrimary),
+                    ),
                     const SizedBox(height: 8),
-                    const Text('Start a new pool and invite nearby farmers to share transport!', textAlign: TextAlign.center, style: TextStyle(fontSize: 13, color: _kTextSecondary)),
+                    Text(
+                      _showMyPools 
+                          ? 'Create a pool to start sharing transport with nearby farmers!'
+                          : 'Start a new pool and invite nearby farmers to share transport!', 
+                      textAlign: TextAlign.center, 
+                      style: const TextStyle(fontSize: 13, color: _kTextSecondary)
+                    ),
                   ],
                 ),
               ),
@@ -234,39 +294,40 @@ class _PoolDiscoveryScreenState extends State<PoolDiscoveryScreen> {
 
     return Column(
       children: [
-        // Map Placeholder
-        Container(
-          height: 180,
-          margin: const EdgeInsets.all(16),
-          decoration: BoxDecoration(
-            color: const Color(0xFFE8F5E9), // Light green map background
-            borderRadius: BorderRadius.circular(16),
-            border: Border.all(color: _kFarmerGreen.withOpacity(0.2)),
-          ),
-          child: Stack(
-            children: [
-              // Mock map dots for pool locations
-              Positioned(top: 30, left: 40, child: _buildMapDot()),
-              Positioned(top: 80, left: 100, child: _buildMapDot()),
-              Positioned(top: 40, right: 60, child: _buildMapDot()),
-              Positioned(top: 120, right: 80, child: _buildMapDot()),
-              Center(
-                child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                  decoration: BoxDecoration(
-                    color: Colors.white,
-                    borderRadius: BorderRadius.circular(20),
-                    boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.1), blurRadius: 8, offset: const Offset(0, 2))],
-                  ),
-                  child: Text(
-                    '${_pools.length} pools within 10 km',
-                    style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: _kTextPrimary),
+        // Map Placeholder (Only show on Browse tab)
+        if (!_showMyPools)
+          Container(
+            height: 180,
+            margin: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: const Color(0xFFE8F5E9), // Light green map background
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(color: _kFarmerGreen.withOpacity(0.2)),
+            ),
+            child: Stack(
+              children: [
+                // Mock map dots for pool locations
+                Positioned(top: 30, left: 40, child: _buildMapDot()),
+                Positioned(top: 80, left: 100, child: _buildMapDot()),
+                Positioned(top: 40, right: 60, child: _buildMapDot()),
+                Positioned(top: 120, right: 80, child: _buildMapDot()),
+                Center(
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(20),
+                      boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.1), blurRadius: 8, offset: const Offset(0, 2))],
+                    ),
+                    child: Text(
+                      '${_pools.length} pools within 10 km',
+                      style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: _kTextPrimary),
+                    ),
                   ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
-        ),
         
         // Pool List
         Expanded(
@@ -274,7 +335,12 @@ class _PoolDiscoveryScreenState extends State<PoolDiscoveryScreen> {
             onRefresh: () => _loadPools(silent: false),
             color: _kFarmerGreen,
             child: ListView.builder(
-              padding: const EdgeInsets.symmetric(horizontal: 16),
+              padding: EdgeInsets.only(
+                left: 16, 
+                right: 16, 
+                top: _showMyPools ? 16 : 0, 
+                bottom: 80 // For FAB
+              ),
               itemCount: _pools.length,
               itemBuilder: (context, index) {
                 final pool = _pools[index];
@@ -284,27 +350,28 @@ class _PoolDiscoveryScreenState extends State<PoolDiscoveryScreen> {
           ),
         ),
 
-        // Sticky Bottom Cost Calculator
-        Container(
-          padding: const EdgeInsets.all(16),
-          decoration: const BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-            boxShadow: [BoxShadow(color: Colors.black12, blurRadius: 10, offset: Offset(0, -4))],
-          ),
-          child: SafeArea(
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                const Text('Est. Shared Freight:', style: TextStyle(color: _kTextSecondary, fontSize: 13, fontWeight: FontWeight.w600)),
-                Text(
-                  '₹${_calculateAverageCost().toStringAsFixed(0)}',
-                  style: const TextStyle(color: _kFarmerGreen, fontSize: 15, fontWeight: FontWeight.bold),
-                ),
-              ],
+        // Sticky Bottom Cost Calculator (Only on Browse tab)
+        if (!_showMyPools)
+          Container(
+            padding: const EdgeInsets.all(16),
+            decoration: const BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+              boxShadow: [BoxShadow(color: Colors.black12, blurRadius: 10, offset: Offset(0, -4))],
+            ),
+            child: SafeArea(
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  const Text('Est. Shared Freight:', style: TextStyle(color: _kTextSecondary, fontSize: 13, fontWeight: FontWeight.w600)),
+                  Text(
+                    '₹${_calculateAverageCost().toStringAsFixed(0)}',
+                    style: const TextStyle(color: _kFarmerGreen, fontSize: 15, fontWeight: FontWeight.bold),
+                  ),
+                ],
+              ),
             ),
           ),
-        ),
       ],
     );
   }
@@ -394,7 +461,8 @@ class _PoolCard extends StatelessWidget {
                 children: [
                   _buildInfoChip(Icons.scale, '${pool.currentQty.toStringAsFixed(0)} kg'),
                   const SizedBox(width: 8),
-                  _buildInfoChip(Icons.directions_car, '${pool.distanceKm?.toStringAsFixed(1) ?? '0.0'} km away'),
+                  if (pool.distanceKm != null)
+                    _buildInfoChip(Icons.directions_car, '${pool.distanceKm!.toStringAsFixed(1)} km away'),
                 ],
               ),
               const SizedBox(height: 10),

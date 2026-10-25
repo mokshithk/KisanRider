@@ -345,6 +345,23 @@ def get_nearby_pools(
     ]
 
 
+def get_my_pools(db: Session, farmer_id: UUID) -> List[pool_schemas.PoolOut]:
+    pm = pool_models.PoolMember
+    pool = pool_models.Pool
+
+    rows = (
+        db.query(pool)
+        .join(pm, pm.pool_id == pool.id)
+        .filter(
+            pm.farmer_id == farmer_id,
+            pm.status.in_(_ACTIVE_MEMBER_STATUSES)
+        )
+        .order_by(pool.created_at.desc())
+        .all()
+    )
+    return [to_pool_out(db, p) for p in rows]
+
+
 def join_pool(
     db: Session,
     pool_id: UUID,

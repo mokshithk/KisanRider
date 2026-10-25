@@ -106,8 +106,82 @@ class _PoolDetailScreenState extends State<PoolDetailScreen> {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('Successfully joined the pool!'), backgroundColor: _kFarmerGreen),
         );
-        Navigator.of(context).pop();
+        _loadDetail();
       }
+    }
+  }
+
+  Future<void> _leavePool() async {
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Leave Pool?'),
+        content: const Text('Are you sure you want to leave this pool? Your produce will not be included in the shared truck.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            style: FilledButton.styleFrom(backgroundColor: Colors.red),
+            child: const Text('Leave'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirm != true) return;
+    
+    setState(() => _isLoading = true);
+    final auth = context.read<AuthProvider>();
+    try {
+      await PoolsApi.leavePool(token: auth.token!, poolId: widget.poolId);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('You have left the pool.'), backgroundColor: _kFarmerGreen),
+      );
+      Navigator.of(context).pop();
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _isLoading = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(e.toString()), backgroundColor: Colors.red),
+      );
+    }
+  }
+
+  Future<void> _cancelPool() async {
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Cancel Pool?'),
+        content: const Text('Are you sure you want to cancel this pool? All joined farmers will be removed and the pool will be closed.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Keep Pool')),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            style: FilledButton.styleFrom(backgroundColor: Colors.red),
+            child: const Text('Cancel Pool'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirm != true) return;
+    
+    setState(() => _isLoading = true);
+    final auth = context.read<AuthProvider>();
+    try {
+      await PoolsApi.cancelPool(token: auth.token!, poolId: widget.poolId);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Pool cancelled successfully.'), backgroundColor: _kFarmerGreen),
+      );
+      Navigator.of(context).pop();
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _isLoading = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(e.toString()), backgroundColor: Colors.red),
+      );
     }
   }
 
@@ -198,6 +272,8 @@ class _PoolDetailScreenState extends State<PoolDetailScreen> {
               ),
             ),
           ),
+          
+          // Bottom Action Bar
           if (pool.status == 'OPEN')
             Container(
               padding: const EdgeInsets.all(16),
@@ -206,15 +282,36 @@ class _PoolDetailScreenState extends State<PoolDetailScreen> {
                 border: Border(top: BorderSide(color: Colors.black12)),
               ),
               child: SafeArea(
-                child: ElevatedButton(
-                  onPressed: canJoin ? _showJoinSheet : null,
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: _kFarmerGreen,
-                    foregroundColor: Colors.white,
-                    padding: const EdgeInsets.symmetric(vertical: 16),
-                  ),
-                  child: Text(isCreator ? 'You created this pool' : isMember ? 'You have joined this pool' : 'Join Pool'),
-                ),
+                child: isCreator
+                  ? ElevatedButton(
+                      onPressed: _cancelPool,
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.red.shade50,
+                        foregroundColor: Colors.red.shade700,
+                        side: BorderSide(color: Colors.red.shade200),
+                        padding: const EdgeInsets.symmetric(vertical: 16),
+                      ),
+                      child: const Text('Cancel My Pool'),
+                    )
+                  : isMember
+                    ? OutlinedButton(
+                        onPressed: _leavePool,
+                        style: OutlinedButton.styleFrom(
+                          foregroundColor: Colors.red.shade700,
+                          side: BorderSide(color: Colors.red.shade300),
+                          padding: const EdgeInsets.symmetric(vertical: 16),
+                        ),
+                        child: const Text('Leave Pool'),
+                      )
+                    : ElevatedButton(
+                        onPressed: canJoin ? _showJoinSheet : null,
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: _kFarmerGreen,
+                          foregroundColor: Colors.white,
+                          padding: const EdgeInsets.symmetric(vertical: 16),
+                        ),
+                        child: const Text('Join Pool'),
+                      ),
               ),
             ),
         ],

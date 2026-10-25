@@ -111,6 +111,21 @@ def get_nearby_farmers(
         raise HTTPException(status_code=500, detail=f"Database error: {e}")
 
 
+@router.get(
+    "/my",
+    response_model=list[pool_schemas.PoolOut],
+    summary="Get pools created by or joined by the current farmer",
+)
+def get_my_pools(
+    current_user: models.User = Depends(auth.require_role("FARMER")),
+    db: Session = Depends(get_db),
+):
+    try:
+        return pool_crud.get_my_pools(db, current_user.id)
+    except SQLAlchemyError as e:
+        raise HTTPException(status_code=500, detail=f"Database error: {e}")
+
+
 # ---------------------------------------------------------------------------
 # Group (Auto-match)
 # ---------------------------------------------------------------------------

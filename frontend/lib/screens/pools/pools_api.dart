@@ -44,6 +44,16 @@ class PoolsApi {
     throw Exception(_extractError(resp) ?? 'Failed to load pools');
   }
 
+  static Future<List<Pool>> fetchMyPools({required String token}) async {
+    final uri = Uri.parse('$_kApiBaseUrl/pools/my');
+    final resp = await http.get(uri, headers: _headers(token));
+    if (resp.statusCode == 200) {
+      final list = jsonDecode(resp.body) as List<dynamic>;
+      return list.map((e) => Pool.fromJson(e)).toList();
+    }
+    throw Exception(_extractError(resp) ?? 'Failed to load my pools');
+  }
+
   static Future<List<NearbyFarmer>> fetchNearbyFarmers({
     required String token,
     required double lat,
@@ -137,6 +147,28 @@ class PoolsApi {
       return PoolDetail.fromJson(jsonDecode(resp.body));
     }
     throw Exception(_extractError(resp) ?? 'Failed to join pool');
+  }
+
+  static Future<void> leavePool({
+    required String token,
+    required String poolId,
+  }) async {
+    final uri = Uri.parse('$_kApiBaseUrl/pools/$poolId/leave');
+    final resp = await http.delete(uri, headers: _headers(token));
+    if (resp.statusCode != 200) {
+      throw Exception(_extractError(resp) ?? 'Failed to leave pool');
+    }
+  }
+
+  static Future<void> cancelPool({
+    required String token,
+    required String poolId,
+  }) async {
+    final uri = Uri.parse('$_kApiBaseUrl/pools/$poolId');
+    final resp = await http.delete(uri, headers: _headers(token));
+    if (resp.statusCode != 200) {
+      throw Exception(_extractError(resp) ?? 'Failed to cancel pool');
+    }
   }
 
   static String? _extractError(http.Response resp) {
