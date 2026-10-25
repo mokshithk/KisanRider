@@ -4,6 +4,7 @@ import 'package:geolocator/geolocator.dart';
 import 'package:provider/provider.dart';
 
 import '../../providers/auth_provider.dart';
+import '../farmer_account_screen.dart'; // Added for Logout
 import 'create_pool_screen.dart';
 import 'pool_detail_screen.dart';
 import 'pool_models.dart';
@@ -13,6 +14,9 @@ const Color _kFarmerGreen = Color(0xFF2E7D32);
 const Color _kBackground = Color(0xFFF8F9FA);
 const Color _kTextPrimary = Color(0xFF1C1B1F);
 const Color _kTextSecondary = Color(0xFF6B7280);
+
+// Enum for the 3 tabs
+enum PoolTab { browse, created, joined }
 
 class PoolDiscoveryScreen extends StatefulWidget {
   const PoolDiscoveryScreen({super.key});
@@ -29,8 +33,8 @@ class _PoolDiscoveryScreenState extends State<PoolDiscoveryScreen> {
   double _lng = 0.0;
   bool _locationFetched = false;
   
-  // Toggle state
-  bool _showMyPools = false;
+  // 3-Way Toggle state
+  PoolTab _currentTab = PoolTab.browse;
 
   Timer? _refreshTimer;
 
@@ -110,21 +114,30 @@ class _PoolDiscoveryScreenState extends State<PoolDiscoveryScreen> {
 
     final auth = context.read<AuthProvider>();
     try {
-      List<Pool> pools;
-      if (_showMyPools) {
-        pools = await PoolsApi.fetchMyPools(token: auth.token!);
-      } else {
-        pools = await PoolsApi.fetchNearbyPools(
+      List<Pool> fetchedPools = [];
+
+      if (_currentTab == PoolTab.browse) {
+        // Fetch nearby pools
+        fetchedPools = await PoolsApi.fetchNearbyPools(
           token: auth.token!,
           lat: _lat,
           lng: _lng,
           radiusKm: 10.0,
         );
+      } else {
+        // Fetch all my pools, then filter by created vs joined
+        final myPools = await PoolsApi.fetchMyPools(token: auth.token!);
+        
+        if (_currentTab == PoolTab.created) {
+          fetchedPools = myPools.where((p) => p.creatorId == auth.userId).toList();
+        } else if (_currentTab == PoolTab.joined) {
+          fetchedPools = myPools.where((p) => p.creatorId != auth.userId).toList();
+        }
       }
       
       if (!mounted) return;
       setState(() {
-        _pools = pools;
+        _pools = fetchedPools;
         if (!silent) _isLoading = false;
         _error = null;
       });
@@ -143,8 +156,8 @@ class _PoolDiscoveryScreenState extends State<PoolDiscoveryScreen> {
     await Navigator.of(context).push(
       MaterialPageRoute(builder: (_) => const CreatePoolScreen()),
     );
-    // After creating, switch to My Pools and refresh
-    setState(() => _showMyPools = true);
+    // After creating, switch to 'Created' tab and refresh
+    setState(() => _currentTab = PoolTab.created);
     _loadPools();
   }
 
@@ -164,35 +177,39 @@ class _PoolDiscoveryScreenState extends State<PoolDiscoveryScreen> {
         backgroundColor: _kFarmerGreen,
         foregroundColor: Colors.white,
         actions: [
+          // Replaced Refresh with Logout
           IconButton(
-            icon: const Icon(Icons.refresh),
-            onPressed: () => _loadPools(silent: false),
+            tooltip: 'Logout',
+            icon: const Icon(Icons.logout),
+            onPressed: () => showLogoutConfirmation(context),
           ),
         ],
       ),
       body: Column(
         children: [
-          // Toggle
+          // 3-Way Toggle
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
             color: Colors.white,
-            child: SegmentedButton<bool>(
+            child: SegmentedButton<PoolTab>(
               segments: const [
-                ButtonSegment<bool>(
-                  value: false, 
-                  icon: Icon(Icons.search, size: 16),
-                  label: Text('Browse Pools'),
+                ButtonSegment<PoolTab>(
+                  value: PoolTab.browse, 
+                  label: Text('Browse'),
                 ),
-                ButtonSegment<bool>(
-                  value: true, 
-                  icon: Icon(Icons.folder_shared_outlined, size: 16),
-                  label: Text('My Pools'),
+                ButtonSegment<PoolTab>(
+                  value: PoolTab.created, 
+                  label: Text('Created'),
+                ),
+                ButtonSegment<PoolTab>(
+                  value: PoolTab.joined, 
+                  label: Text('Joined'),
                 ),
               ],
-              selected: {_showMyPools},
-              onSelectionChanged: (Set<bool> newSelection) {
+              selected: {_currentTab},
+              onSelectionChanged: (Set<PoolTab> newSelection) {
                 setState(() {
-                  _showMyPools = newSelection.first;
+                  _currentTab = newSelection.first;
                   _loadPools(silent: false);
                 });
               },
@@ -234,7 +251,7 @@ class _PoolDiscoveryScreenState extends State<PoolDiscoveryScreen> {
               Text(_error!, textAlign: TextAlign.center),
               const SizedBox(height: 16),
               OutlinedButton.icon(
-                onPressed: _init,
+                onPressed: () => _loadPools(silent: false),
                 icon: const Icon(Icons.refresh),
                 label: const Text('Retry'),
               ),
@@ -265,21 +282,30 @@ class _PoolDiscoveryScreenState extends State<PoolDiscoveryScreen> {
                         shape: BoxShape.circle,
                       ),
                       child: Icon(
-                        _showMyPools ? Icons.folder_open : Icons.local_shipping_outlined, 
+                        _currentTab == PoolTab.browse 
+                            ? Icons.local_shipping_outlined 
+                            : Icons.folder_open, 
                         size: 64, 
                         color: _kFarmerGreen
                       ),
                     ),
                     const SizedBox(height: 24),
                     Text(
-                      _showMyPools ? 'You have no active pools.' : 'No pools found nearby.',
+                      _currentTab == PoolTab.browse 
+                          ? 'No pools found nearby.' 
+                          : _currentTab == PoolTab.created 
+                              ? 'You haven\'t created any pools yet.' 
+                              : 'You haven\'t joined any pools yet.',
                       style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600, color: _kTextPrimary),
+                      textAlign: TextAlign.center,
                     ),
                     const SizedBox(height: 8),
                     Text(
-                      _showMyPools 
-                          ? 'Create a pool to start sharing transport with nearby farmers!'
-                          : 'Start a new pool and invite nearby farmers to share transport!', 
+                      _currentTab == PoolTab.browse 
+                          ? 'Start a new pool and invite nearby farmers to share transport!'
+                          : _currentTab == PoolTab.created
+                              ? 'Tap the button below to create your first pool.'
+                              : 'Browse nearby pools to join other farmers.',
                       textAlign: TextAlign.center, 
                       style: const TextStyle(fontSize: 13, color: _kTextSecondary)
                     ),
@@ -295,7 +321,7 @@ class _PoolDiscoveryScreenState extends State<PoolDiscoveryScreen> {
     return Column(
       children: [
         // Map Placeholder (Only show on Browse tab)
-        if (!_showMyPools)
+        if (_currentTab == PoolTab.browse)
           Container(
             height: 180,
             margin: const EdgeInsets.all(16),
@@ -306,7 +332,6 @@ class _PoolDiscoveryScreenState extends State<PoolDiscoveryScreen> {
             ),
             child: Stack(
               children: [
-                // Mock map dots for pool locations
                 Positioned(top: 30, left: 40, child: _buildMapDot()),
                 Positioned(top: 80, left: 100, child: _buildMapDot()),
                 Positioned(top: 40, right: 60, child: _buildMapDot()),
@@ -338,7 +363,7 @@ class _PoolDiscoveryScreenState extends State<PoolDiscoveryScreen> {
               padding: EdgeInsets.only(
                 left: 16, 
                 right: 16, 
-                top: _showMyPools ? 16 : 0, 
+                top: _currentTab == PoolTab.browse ? 0 : 16, 
                 bottom: 80 // For FAB
               ),
               itemCount: _pools.length,
@@ -351,7 +376,7 @@ class _PoolDiscoveryScreenState extends State<PoolDiscoveryScreen> {
         ),
 
         // Sticky Bottom Cost Calculator (Only on Browse tab)
-        if (!_showMyPools)
+        if (_currentTab == PoolTab.browse)
           Container(
             padding: const EdgeInsets.all(16),
             decoration: const BoxDecoration(
