@@ -115,21 +115,7 @@ class SavedAddress(Base):
 class ProduceRequest(Base):
     """
     A farmer's produce transport request.
-
-    ## Quantity metric
-
-    `weight_kg` is the SINGLE quantity field.
-
-    ## Status lifecycle
-
-    PENDING -> ACCEPTED -> PICKED_UP -> COMPLETED
-    Or:
-    PENDING -> CANCELLED  (farmer cancels before acceptance)
-
-    `cancellation_reason` is populated only when the farmer cancels a
-    PENDING order from the Order Detail screen.
     """
-
     __tablename__ = "produce_requests"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -152,7 +138,6 @@ class ProduceRequest(Base):
     pickup_otp = Column(String(4), nullable=True)
     status = Column(String(20), default="PENDING")
 
-    # Populated when the farmer cancels a PENDING order. NULL otherwise.
     cancellation_reason = Column(String(500), nullable=True)
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
@@ -192,6 +177,14 @@ class Trip(Base):
     pickup_latitude = Column(Float, nullable=True)
     pickup_longitude = Column(Float, nullable=True)
 
+    # PHASE 3 — link a pooled Trip back to its Pool
+    pool_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("pools.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+
     produce_request = relationship(
         "ProduceRequest",
         back_populates="trip",
@@ -204,6 +197,9 @@ class Trip(Base):
         foreign_keys="CrateScan.trip_id",
     )
     settlement = relationship("Settlement", uselist=False, back_populates="trip")
+
+    # PHASE 3 — back-reference to the Pool
+    pool = relationship("Pool", back_populates="trips")
 
 
 class CrateScan(Base):

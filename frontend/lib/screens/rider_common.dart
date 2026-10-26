@@ -8,9 +8,7 @@ String get kApiBaseUrl {
   return 'http://10.28.1.142:8000';
 }
 
-/// Rider's current position.
-const double kRiderLat = 13.1362;
-const double kRiderLng = 78.1291;
+/// Search radius for the nearby feed.
 const double kSearchRadiusKm = 50.0;
 
 /// Brand green used across the rider UI.
@@ -88,17 +86,6 @@ enum OtpSubmitResult { success, invalidOtp, otherError }
 // ---------------------------------------------------------------------------
 
 /// One PENDING produce request surfaced by `GET /produce-requests/nearby`.
-///
-/// The backend returns `pickup_address` and `pickup_landmark` on every
-/// row (both nullable). When the farmer's booking carried a real address
-/// those are populated; when the farmer only provided coordinates (e.g.
-/// GPS failed, they fell back to the mock), the client falls back to
-/// showing the lat/lng pair — see [displayPickup].
-///
-/// [createdAt] drives newest-first ordering in the Available feed. The
-/// backend already sorts this way, but the client re-sorts defensively
-/// (see [RiderAvailableTab]) so a proxy or an older backend can't
-/// accidentally surface stale requests above fresh ones.
 class AvailableRequest {
   AvailableRequest({
     required this.id,
@@ -115,9 +102,6 @@ class AvailableRequest {
   });
 
   factory AvailableRequest.fromJson(Map<String, dynamic> json) {
-    // A malformed or missing created_at shouldn't crash the whole list.
-    // Fall back to epoch so the row still renders (just at the bottom,
-    // after the sort).
     DateTime parsedCreatedAt;
     final rawCreated = json['created_at'];
     if (rawCreated is String) {
@@ -149,26 +133,11 @@ class AvailableRequest {
   final double longitude;
   final double distanceKm;
   final String status;
-
-  /// When the request was created, parsed from the backend's ISO-8601
-  /// `created_at` string. Used to keep the feed newest-first.
   final DateTime createdAt;
-
   final String? dropoffLocation;
-
-  /// Free-text pickup address entered by the farmer at booking time.
-  /// Null or empty when the farmer only supplied coordinates.
   final String? pickupAddress;
-
-  /// Short landmark line shown to the rider, e.g. "Behind the canal".
   final String? pickupLandmark;
 
-  /// What the card should render for the "Pickup:" row.
-  ///
-  /// Priority order:
-  ///   1. `pickupAddress` — the human-readable string the farmer typed.
-  ///   2. `pickupLandmark` — a fallback if only the landmark was filled.
-  ///   3. Formatted coordinates — last resort, still actionable.
   String get displayPickup {
     if (pickupAddress != null && pickupAddress!.isNotEmpty) {
       return pickupAddress!;
@@ -179,11 +148,6 @@ class AvailableRequest {
     return '${latitude.toStringAsFixed(4)}, ${longitude.toStringAsFixed(4)}';
   }
 
-  /// What we hand to Google Maps when the rider taps "Navigate".
-  ///
-  /// Prefers the address string (Maps searches free-text happily) and
-  /// falls back to raw coordinates so the button always does something
-  /// useful.
   String get mapsQuery {
     if (pickupAddress != null && pickupAddress!.isNotEmpty) {
       return pickupAddress!;
@@ -191,7 +155,6 @@ class AvailableRequest {
     return '$latitude,$longitude';
   }
 
-  /// True when a real pickup address (not just coords) is available.
   bool get hasPickupAddress =>
       (pickupAddress != null && pickupAddress!.isNotEmpty) ||
       (pickupLandmark != null && pickupLandmark!.isNotEmpty);
@@ -289,8 +252,6 @@ class ActiveTrip {
   bool get hasFarmerContact =>
       farmerPhoneNumber != null && farmerPhoneNumber!.trim().isNotEmpty;
 
-  /// What the trip card should render for the pickup row — see the same
-  /// helper on [AvailableRequest] for the fallback rules.
   String get displayPickup {
     if (pickupAddress != null && pickupAddress!.trim().isNotEmpty) {
       return pickupAddress!.trim();
@@ -298,7 +259,6 @@ class ActiveTrip {
     return '${latitude.toStringAsFixed(4)}, ${longitude.toStringAsFixed(4)}';
   }
 
-  /// Query string for Google Maps — address when available, else coords.
   String get mapsQuery {
     if (pickupAddress != null && pickupAddress!.trim().isNotEmpty) {
       return pickupAddress!.trim();

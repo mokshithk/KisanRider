@@ -29,6 +29,8 @@ import auth
 import config
 import crud
 import models
+import pools.models  # noqa: F401  -- registers Pool/PoolMember/PoolStop on Base.metadata
+from pools.router import router as pools_router  # PHASE 2 -- pools endpoints
 import otp_service
 import schemas
 from database import engine, get_db
@@ -109,11 +111,28 @@ async def lifespan(app: FastAPI):
             print("[startup] Checked/added cancellation_reason column.")
         except Exception as e:
             print(f"[startup] Migration note: {e}")
+
+        # PHASE 3 — link trips to pools (D1 = Option A, N Trips per Pool).
+        # Auto-migration: safe on fresh DBs (column already exists from
+        # create_all) and on existing DBs (adds the column in place).
+        try:
+            conn.execute(text(
+                "ALTER TABLE trips "
+                "ADD COLUMN IF NOT EXISTS pool_id UUID "
+                "REFERENCES pools(id) ON DELETE SET NULL;"
+            ))
+            conn.commit()
+            print("[startup] Checked/added trips.pool_id column.")
+        except Exception as e:
+            print(f"[startup] Migration note (trips.pool_id): {e}")
             
     yield
 
 
 app = FastAPI(title="KisanRider API", lifespan=lifespan)
+
+# PHASE 2 -- mount the farmer-pooling router
+app.include_router(pools_router)
 
 # Allows Flutter Web on any local port to interact with FastAPI
 app.add_middleware(

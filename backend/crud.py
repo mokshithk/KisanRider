@@ -18,7 +18,7 @@ from geoalchemy2.functions import (
     ST_Y,
 )
 from geoalchemy2.shape import to_shape
-from sqlalchemy import cast, func
+from sqlalchemy import cast, func, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, joinedload
 
@@ -741,7 +741,33 @@ def get_available_trips_for_rider(
     radius_km: float,
     limit: int = 50,
 ) -> List[schemas.TripAvailableOut]:
+    """
+    Return PENDING ProduceRequests near the rider for individual
+    acceptance.
+
+    ## Privacy model
+
+    Farmer phone numbers are withheld pre-acceptance. Only the first
+    name is exposed.
+
+    ## Phase 3 — pooling exclusion
+
+    ProduceRequests that belong to an **active** PoolMember
+    (``REQUESTED`` / ``ACCEPTED``, plus the Phase 1 legacy aliases) are
+    excluded. A rider must not be able to accept one farmer individually
+    who is already committed to a pool — the pool's driver handoff goes
+    through ``POST /pools/{pool_id}/accept`` instead.
+
+    A REQUESTED member's ProduceRequest is still PENDING at the DB level
+    (Phase 2 deliberately doesn't flip PR status on join), so filtering
+    on status alone would leak the PR into this feed. The PoolMember
+    subquery is what closes that gap.
+    """
     pr = models.ProduceRequest
+
+    # Local import — keeps the module import graph free of a cycle
+    # (``crud`` → ``pools.models``) if one is ever introduced.
+    from pools.models import PoolMember as _PoolMember
 
     query_point = ST_SetSRID(ST_MakePoint(lng, lat), 4326)
     query_point_geog = cast(query_point, Geography)
@@ -751,11 +777,23 @@ def get_available_trips_for_rider(
         ST_Distance(stored_geog, query_point_geog) / 1000.0
     ).label("distance_km")
 
+    # PRs already committed to an active pool are not individually
+    # acceptable — they're handled via POST /pools/{pool_id}/accept.
+    active_pool_pr_ids = (
+        select(_PoolMember.produce_request_id)
+        .where(
+            _PoolMember.status.in_(
+                ("REQUESTED", "ACCEPTED", "PENDING", "APPROVED")
+            )
+        )
+    )
+
     try:
         rows = (
             db.query(pr, distance_km)
             .options(joinedload(pr.farmer))
             .filter(pr.status == "PENDING")
+            .filter(~pr.id.in_(active_pool_pr_ids))
             .filter(ST_DWithin(stored_geog, query_point_geog, radius_km * 1000))
             .order_by(pr.created_at.desc())
             .limit(limit)
