@@ -155,6 +155,11 @@ def get_current_user(
     user = crud.get_user_by_id(db, user_id)
     if user is None:
         raise unauthorized
+    if not getattr(user, "is_active", True):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Account is suspended or deactivated. Contact support.",
+        )
     return user
 
 

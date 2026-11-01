@@ -31,6 +31,7 @@ import crud
 import models
 import pools.models  # noqa: F401  -- registers Pool/PoolMember/PoolStop on Base.metadata
 from pools.router import router as pools_router  # PHASE 2 -- pools endpoints
+from admin_router import router as admin_router
 import otp_service
 import schemas
 from database import engine, get_db
@@ -133,6 +134,7 @@ app = FastAPI(title="KisanRider API", lifespan=lifespan)
 
 # PHASE 2 -- mount the farmer-pooling router
 app.include_router(pools_router)
+app.include_router(admin_router)
 
 # Allows Flutter Web on any local port to interact with FastAPI
 app.add_middleware(
@@ -1174,6 +1176,12 @@ def login(
 
     if not matches:
         raise invalid
+
+    if not getattr(user, "is_active", True):
+        raise HTTPException(
+            status_code=403,
+            detail="Account is suspended or deactivated. Contact support.",
+        )
 
     token = auth.create_access_token(user.id)
     return schemas.Token(
@@ -2814,7 +2822,7 @@ def get_my_settlements(
 
 @app.get("/admin/stats/", response_model=schemas.AdminStatsResponse)
 def get_admin_stats(
-    current_user: models.User = Depends(auth.get_current_user),
+    current_user: models.User = Depends(auth.require_role("ADMIN")),
     db: Session = Depends(get_db),
 ):
     """

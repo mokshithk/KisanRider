@@ -68,6 +68,12 @@ class User(Base):
     )
 
     is_verified = Column(Boolean, nullable=False, default=True)
+    is_active = Column(
+        Boolean,
+        nullable=False,
+        default=True,
+        server_default="true",
+    )
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     produce_requests = relationship(
@@ -261,3 +267,43 @@ class Settlement(Base):
     created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
 
     trip = relationship("Trip", back_populates="settlement")
+
+class AdminInvitation(Base):
+    __tablename__ = "admin_invitations"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    email = Column(String(255), nullable=False, index=True)
+    full_name = Column(String(100), nullable=False)
+    token_hash = Column(String(64), unique=True, index=True, nullable=False)
+    invited_by_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+    accepted_at = Column(DateTime(timezone=True), nullable=True)
+
+    invited_by = relationship("User", foreign_keys=[invited_by_id])
+
+
+class AdminActivityLog(Base):
+    __tablename__ = "admin_activity_logs"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    admin_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    admin_email = Column(String(255), nullable=False)
+    admin_name = Column(String(100), nullable=False)
+    action = Column(String(100), nullable=False, index=True)
+    module = Column(String(50), nullable=False, index=True)
+    record_id = Column(String(100), nullable=True, index=True)
+    description = Column(Text, nullable=False)
+    changes = Column(Text, nullable=True)
+    ip_address = Column(String(50), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
+
+    admin = relationship("User", foreign_keys=[admin_id])
