@@ -16,6 +16,12 @@ class Pool {
   final DateTime createdAt;
   final double? distanceKm;
   final String? pickupAddress;
+  
+  // New Fields
+  final double? estimatedFreight;
+  final String? driverName;
+  final String? driverPhone;
+  final String? driverVehicle;
 
   Pool({
     required this.id,
@@ -35,6 +41,10 @@ class Pool {
     required this.createdAt,
     this.distanceKm,
     this.pickupAddress,
+    this.estimatedFreight,
+    this.driverName,
+    this.driverPhone,
+    this.driverVehicle,
   });
 
   factory Pool.fromJson(Map<String, dynamic> json) {
@@ -56,8 +66,14 @@ class Pool {
       createdAt: DateTime.tryParse(json['created_at']?.toString() ?? '') ?? DateTime.now(),
       distanceKm: (json['distance_km'] as num?)?.toDouble(),
       pickupAddress: json['pickup_address']?.toString(),
+      estimatedFreight: (json['estimated_freight'] as num?)?.toDouble(),
+      driverName: json['driver_name']?.toString(),
+      driverPhone: json['driver_phone']?.toString(),
+      driverVehicle: json['driver_vehicle']?.toString(),
     );
   }
+  
+  bool get isFull => currentQty >= maxQty;
 }
 
 class PoolMember {
@@ -134,6 +150,10 @@ class PoolDetail extends Pool {
     required super.createdAt,
     super.distanceKm,
     super.pickupAddress,
+    super.estimatedFreight,
+    super.driverName,
+    super.driverPhone,
+    super.driverVehicle,
     required this.members,
     required this.stops,
   });
@@ -167,6 +187,10 @@ class PoolDetail extends Pool {
       createdAt: pool.createdAt,
       distanceKm: pool.distanceKm,
       pickupAddress: pool.pickupAddress,
+      estimatedFreight: pool.estimatedFreight,
+      driverName: pool.driverName,
+      driverPhone: pool.driverPhone,
+      driverVehicle: pool.driverVehicle,
       members: membersList,
       stops: stopsList,
     );

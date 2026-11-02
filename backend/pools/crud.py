@@ -165,6 +165,22 @@ def to_pool_out(
         if pr:
             pickup_address = pr.pickup_address
 
+    # Driver details
+    driver_name = None
+    driver_phone = None
+    driver_vehicle = None
+    if pool.status == pool_models.PoolStatus.DRIVER_ASSIGNED.value:
+        trip = db.query(models.Trip).filter(models.Trip.pool_id == pool.id).first()
+        if trip and trip.rider:
+            driver_name = trip.rider.full_name
+            driver_phone = trip.rider.phone_number
+            driver_vehicle = trip.rider.vehicle_number
+
+    # Estimated Cost (Using base 10km for pool fare estimation)
+    from crud import _compute_settlement_values
+    values = _compute_settlement_values(float(pool.current_qty), 10.0, 40.0)
+    estimated_freight = values["rider_fare"]
+
     return pool_schemas.PoolOut(
         id=pool.id,
         creator_id=pool.creator_id,
@@ -187,6 +203,10 @@ def to_pool_out(
         locked_at=pool.locked_at,
         distance_km=distance_km,
         pickup_address=pickup_address,
+        estimated_freight=estimated_freight,
+        driver_name=driver_name,
+        driver_phone=driver_phone,
+        driver_vehicle=driver_vehicle,
     )
 
 
@@ -211,7 +231,6 @@ def to_pool_detail_out(
         .all()
     )
 
-    # Fetch member names
     member_outs = []
     for m in members:
         farmer = db.query(models.User).filter(models.User.id == m.farmer_id).first()
@@ -244,7 +263,7 @@ def create_pool(
             pickup_window_start=pool_data.pickup_window_start,
             pickup_window_end=pool_data.pickup_window_end,
             min_qty=pool_data.min_qty,
-            max_qty=1000.0,  # Hardcoded backend default per Phase 6 spec
+            max_qty=1000.0,
             current_qty=float(pool_data.weight_kg),
             status=pool_models.PoolStatus.OPEN.value,
             auto_approve=pool_data.auto_approve,
@@ -303,14 +322,15 @@ def get_nearby_pools(
     
     distance_km = (ST_Distance(stored_geog, query_point_geog) / 1000.0).label("distance_km")
 
-    # Use outerjoin for members to ensure pools without members don't crash
+    # Filter by status OPEN, not creator, within radius, and NOT EXPIRED
     query = (
         db.query(pool, distance_km)
         .outerjoin(pm, pm.pool_id == pool.id)
         .outerjoin(pr, pr.id == pm.produce_request_id)
         .filter(
             pool.status == pool_models.PoolStatus.OPEN.value,
-            pool.creator_id != current_user_id, # Prevent seeing own pool
+            pool.creator_id != current_user_id,
+            pool.pickup_window_end > datetime.utcnow(), # EXPIRED FILTER
             ST_DWithin(stored_geog, query_point_geog, radius_km * 1000),
         )
     )
@@ -318,7 +338,6 @@ def get_nearby_pools(
     if mandi_id:
         query = query.filter(pool.dropoff_mandi_id == mandi_id)
 
-    # Anchor on creator's PR, but if no PR, still fetch it (dist will be None)
     query = query.filter(
         or_(
             pm.farmer_id == pool.creator_id,

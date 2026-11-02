@@ -7,6 +7,7 @@ import 'package:geocoding/geocoding.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:http/http.dart' as http;
 import 'package:provider/provider.dart';
+import 'package:url_launcher/url_launcher.dart'; // Needed for Call Driver
 
 import '../../providers/auth_provider.dart';
 import 'pool_models.dart';
@@ -185,6 +186,24 @@ class _PoolDetailScreenState extends State<PoolDetailScreen> {
     }
   }
 
+  Future<void> _callDriver(String phone) async {
+    final uri = Uri(scheme: 'tel', path: phone.replaceAll(RegExp(r'[^\d+]'), ''));
+    try {
+      final ok = await launchUrl(uri);
+      if (!ok && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Could not open the dialer.')),
+        );
+      }
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Could not open the phone dialer')),
+        );
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -226,7 +245,18 @@ class _PoolDetailScreenState extends State<PoolDetailScreen> {
     final pool = _pool!;
     final isCreator = auth.userId == pool.creatorId;
     final isMember = pool.members.any((m) => m.farmerId == auth.userId);
-    final canJoin = pool.status == 'OPEN' && !isMember;
+    final isFull = pool.isFull;
+    final canJoin = pool.status == 'OPEN' && !isMember && !isFull;
+
+    // Calculate my share
+    double myShare = 0.0;
+    if (pool.estimatedFreight != null && pool.currentQty > 0) {
+      final myMember = pool.members.firstWhere((m) => m.farmerId == auth.userId, orElse: () => pool.members.first);
+      final myWeight = isMember ? myMember.weightKg : 0.0;
+      if (myWeight > 0) {
+        myShare = (myWeight / pool.currentQty) * pool.estimatedFreight!;
+      }
+    }
 
     return RefreshIndicator(
       onRefresh: () => _loadDetail(silent: false),
@@ -240,7 +270,20 @@ class _PoolDetailScreenState extends State<PoolDetailScreen> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  _buildHeaderCard(pool),
+                  _buildHeaderCard(pool, isFull),
+                  
+                  // Driver Card
+                  if (pool.status == 'DRIVER_ASSIGNED' && pool.driverName != null) ...[
+                    const SizedBox(height: 16),
+                    _buildDriverCard(pool),
+                  ],
+
+                  // Cost Card
+                  if (pool.estimatedFreight != null) ...[
+                    const SizedBox(height: 16),
+                    _buildCostCard(pool, myShare),
+                  ],
+
                   const SizedBox(height: 16),
                   _buildInfoCard('Members (${pool.members.length})', [
                     ...pool.members.map((m) {
@@ -273,7 +316,6 @@ class _PoolDetailScreenState extends State<PoolDetailScreen> {
             ),
           ),
           
-          // Bottom Action Bar
           if (pool.status == 'OPEN')
             Container(
               padding: const EdgeInsets.all(16),
@@ -306,11 +348,11 @@ class _PoolDetailScreenState extends State<PoolDetailScreen> {
                     : ElevatedButton(
                         onPressed: canJoin ? _showJoinSheet : null,
                         style: ElevatedButton.styleFrom(
-                          backgroundColor: _kFarmerGreen,
+                          backgroundColor: isFull ? Colors.grey : _kFarmerGreen,
                           foregroundColor: Colors.white,
                           padding: const EdgeInsets.symmetric(vertical: 16),
                         ),
-                        child: const Text('Join Pool'),
+                        child: Text(isFull ? 'Pool is Full' : 'Join Pool'),
                       ),
               ),
             ),
@@ -319,7 +361,7 @@ class _PoolDetailScreenState extends State<PoolDetailScreen> {
     );
   }
 
-  Widget _buildHeaderCard(PoolDetail pool) {
+  Widget _buildHeaderCard(PoolDetail pool, bool isFull) {
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
@@ -341,11 +383,18 @@ class _PoolDetailScreenState extends State<PoolDetailScreen> {
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
                 decoration: BoxDecoration(
-                  color: Colors.green.shade50,
+                  color: isFull ? Colors.red.shade50 : Colors.green.shade50,
                   borderRadius: BorderRadius.circular(20),
-                  border: Border.all(color: Colors.green.shade300),
+                  border: Border.all(color: isFull ? Colors.red.shade300 : Colors.green.shade300),
                 ),
-                child: Text(pool.status, style: TextStyle(color: Colors.green.shade800, fontWeight: FontWeight.bold, fontSize: 11)),
+                child: Text(
+                  isFull ? 'FULL' : pool.status, 
+                  style: TextStyle(
+                    color: isFull ? Colors.red.shade800 : Colors.green.shade800, 
+                    fontWeight: FontWeight.bold, 
+                    fontSize: 11
+                  )
+                ),
               ),
             ],
           ),
@@ -356,9 +405,86 @@ class _PoolDetailScreenState extends State<PoolDetailScreen> {
           const SizedBox(height: 12),
           _buildRow(Icons.storefront, 'Destination', pool.dropoffMandiName ?? 'Unknown'),
           const SizedBox(height: 12),
-          _buildRow(Icons.scale, 'Capacity', '${pool.currentQty.toStringAsFixed(0)} kg'),
+          _buildRow(Icons.scale, 'Capacity', '${pool.currentQty.toStringAsFixed(0)} / ${pool.maxQty.toStringAsFixed(0)} kg'),
           const SizedBox(height: 12),
           _buildRow(Icons.access_time, 'Window', '${_formatDate(pool.pickupWindowStart)} - ${_formatDate(pool.pickupWindowEnd)}'),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildDriverCard(PoolDetail pool) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.blue.shade50,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.blue.shade200),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.local_shipping, color: Colors.blue.shade800, size: 20),
+              const SizedBox(width: 8),
+              Text('Driver Assigned', style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: Colors.blue.shade800)),
+            ],
+          ),
+          const SizedBox(height: 12),
+          _buildRow(Icons.person, 'Name', pool.driverName ?? 'Driver'),
+          const SizedBox(height: 8),
+          _buildRow(Icons.directions_car, 'Vehicle', pool.driverVehicle ?? 'Unknown'),
+          const SizedBox(height: 12),
+          SizedBox(
+            width: double.infinity,
+            child: FilledButton.icon(
+              onPressed: pool.driverPhone != null && pool.driverPhone!.isNotEmpty 
+                ? () => _callDriver(pool.driverPhone!) 
+                : null,
+              icon: const Icon(Icons.phone, size: 18),
+              label: const Text('CALL DRIVER'),
+              style: FilledButton.styleFrom(backgroundColor: Colors.blue.shade800),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildCostCard(PoolDetail pool, double myShare) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.grey.shade300),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text('Estimated Cost', style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: _kTextPrimary)),
+          const SizedBox(height: 12),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              const Text('Total Pool Freight', style: TextStyle(fontSize: 13, color: _kTextSecondary)),
+              Text('₹${pool.estimatedFreight!.toStringAsFixed(0)}', style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
+            ],
+          ),
+          if (myShare > 0) ...[
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 8.0),
+              child: Divider(height: 1),
+            ),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                const Text('Your Estimated Share', style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: _kTextPrimary)),
+                Text('₹${myShare.toStringAsFixed(0)}', style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: _kFarmerGreen)),
+              ],
+            ),
+          ],
         ],
       ),
     );
@@ -607,7 +733,6 @@ class _JoinPoolSheetState extends State<_JoinPoolSheet> {
     final crop = _cropController.text.trim();
 
     try {
-      // 1. Silently create Produce Request
       final prResp = await http.post(
         Uri.parse('$_kApiBaseUrl/produce-requests/'),
         headers: _headers(json: true),
@@ -632,7 +757,6 @@ class _JoinPoolSheetState extends State<_JoinPoolSheet> {
 
       final prId = jsonDecode(prResp.body)['id'];
 
-      // 2. Join Pool
       await PoolsApi.joinPool(
         token: widget.authToken,
         poolId: widget.poolId,

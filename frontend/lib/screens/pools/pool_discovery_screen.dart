@@ -15,7 +15,6 @@ const Color _kBackground = Color(0xFFF8F9FA);
 const Color _kTextPrimary = Color(0xFF1C1B1F);
 const Color _kTextSecondary = Color(0xFF6B7280);
 
-// Enum for the 3 tabs
 enum PoolTab { browse, created, joined }
 
 class PoolDiscoveryScreen extends StatefulWidget {
@@ -33,9 +32,7 @@ class _PoolDiscoveryScreenState extends State<PoolDiscoveryScreen> {
   double _lng = 0.0;
   bool _locationFetched = false;
   
-  // 3-Way Toggle state
   PoolTab _currentTab = PoolTab.browse;
-
   Timer? _refreshTimer;
 
   @override
@@ -54,7 +51,6 @@ class _PoolDiscoveryScreenState extends State<PoolDiscoveryScreen> {
     await _fetchLocation();
     await _loadPools();
     
-    // Auto-refresh every 5 seconds
     _refreshTimer = Timer.periodic(const Duration(seconds: 5), (_) {
       _loadPools(silent: true);
     });
@@ -80,7 +76,6 @@ class _PoolDiscoveryScreenState extends State<PoolDiscoveryScreen> {
         throw Exception("Permission denied");
       }
     } catch (_) {
-      // Fallback if timeout or error
       if (mounted) {
         setState(() {
           _lat = 13.1362;
@@ -117,7 +112,6 @@ class _PoolDiscoveryScreenState extends State<PoolDiscoveryScreen> {
       List<Pool> fetchedPools = [];
 
       if (_currentTab == PoolTab.browse) {
-        // Fetch nearby pools
         fetchedPools = await PoolsApi.fetchNearbyPools(
           token: auth.token!,
           lat: _lat,
@@ -125,7 +119,6 @@ class _PoolDiscoveryScreenState extends State<PoolDiscoveryScreen> {
           radiusKm: 10.0,
         );
       } else {
-        // Fetch all my pools, then filter by created vs joined
         final myPools = await PoolsApi.fetchMyPools(token: auth.token!);
         
         if (_currentTab == PoolTab.created) {
@@ -156,7 +149,6 @@ class _PoolDiscoveryScreenState extends State<PoolDiscoveryScreen> {
     await Navigator.of(context).push(
       MaterialPageRoute(builder: (_) => const CreatePoolScreen()),
     );
-    // After creating, switch to 'Created' tab and refresh
     setState(() => _currentTab = PoolTab.created);
     _loadPools();
   }
@@ -177,7 +169,6 @@ class _PoolDiscoveryScreenState extends State<PoolDiscoveryScreen> {
         backgroundColor: _kFarmerGreen,
         foregroundColor: Colors.white,
         actions: [
-          // Replaced Refresh with Logout
           IconButton(
             tooltip: 'Logout',
             icon: const Icon(Icons.logout),
@@ -187,24 +178,14 @@ class _PoolDiscoveryScreenState extends State<PoolDiscoveryScreen> {
       ),
       body: Column(
         children: [
-          // 3-Way Toggle
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
             color: Colors.white,
             child: SegmentedButton<PoolTab>(
               segments: const [
-                ButtonSegment<PoolTab>(
-                  value: PoolTab.browse, 
-                  label: Text('Browse'),
-                ),
-                ButtonSegment<PoolTab>(
-                  value: PoolTab.created, 
-                  label: Text('Created'),
-                ),
-                ButtonSegment<PoolTab>(
-                  value: PoolTab.joined, 
-                  label: Text('Joined'),
-                ),
+                ButtonSegment<PoolTab>(value: PoolTab.browse, label: Text('Browse')),
+                ButtonSegment<PoolTab>(value: PoolTab.created, label: Text('Created')),
+                ButtonSegment<PoolTab>(value: PoolTab.joined, label: Text('Joined')),
               ],
               selected: {_currentTab},
               onSelectionChanged: (Set<PoolTab> newSelection) {
@@ -320,13 +301,12 @@ class _PoolDiscoveryScreenState extends State<PoolDiscoveryScreen> {
 
     return Column(
       children: [
-        // Map Placeholder (Only show on Browse tab)
         if (_currentTab == PoolTab.browse)
           Container(
             height: 180,
             margin: const EdgeInsets.all(16),
             decoration: BoxDecoration(
-              color: const Color(0xFFE8F5E9), // Light green map background
+              color: const Color(0xFFE8F5E9),
               borderRadius: BorderRadius.circular(16),
               border: Border.all(color: _kFarmerGreen.withOpacity(0.2)),
             ),
@@ -354,7 +334,6 @@ class _PoolDiscoveryScreenState extends State<PoolDiscoveryScreen> {
             ),
           ),
         
-        // Pool List
         Expanded(
           child: RefreshIndicator(
             onRefresh: () => _loadPools(silent: false),
@@ -364,7 +343,7 @@ class _PoolDiscoveryScreenState extends State<PoolDiscoveryScreen> {
                 left: 16, 
                 right: 16, 
                 top: _currentTab == PoolTab.browse ? 0 : 16, 
-                bottom: 80 // For FAB
+                bottom: 80
               ),
               itemCount: _pools.length,
               itemBuilder: (context, index) {
@@ -374,39 +353,8 @@ class _PoolDiscoveryScreenState extends State<PoolDiscoveryScreen> {
             ),
           ),
         ),
-
-        // Sticky Bottom Cost Calculator (Only on Browse tab)
-        if (_currentTab == PoolTab.browse)
-          Container(
-            padding: const EdgeInsets.all(16),
-            decoration: const BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-              boxShadow: [BoxShadow(color: Colors.black12, blurRadius: 10, offset: Offset(0, -4))],
-            ),
-            child: SafeArea(
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  const Text('Est. Shared Freight:', style: TextStyle(color: _kTextSecondary, fontSize: 13, fontWeight: FontWeight.w600)),
-                  Text(
-                    '₹${_calculateAverageCost().toStringAsFixed(0)}',
-                    style: const TextStyle(color: _kFarmerGreen, fontSize: 15, fontWeight: FontWeight.bold),
-                  ),
-                ],
-              ),
-            ),
-          ),
       ],
     );
-  }
-
-  double _calculateAverageCost() {
-    if (_pools.isEmpty) return 0.0;
-    final firstPool = _pools.first;
-    final totalFare = 50.0 + (firstPool.currentQty * 2.0);
-    final members = firstPool.memberCount > 0 ? firstPool.memberCount : 1;
-    return totalFare / members;
   }
 
   Widget _buildMapDot() {
@@ -431,6 +379,8 @@ class _PoolCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final isFull = pool.isFull;
+
     return Card(
       elevation: 0,
       margin: const EdgeInsets.only(bottom: 12),
@@ -455,15 +405,26 @@ class _PoolCard extends StatelessWidget {
                       style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: _kTextPrimary),
                     ),
                   ),
-                  Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                    decoration: BoxDecoration(
-                      color: Colors.green.shade50,
-                      borderRadius: BorderRadius.circular(20),
-                      border: Border.all(color: Colors.green.shade300),
+                  if (isFull)
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                      decoration: BoxDecoration(
+                        color: Colors.red.shade50,
+                        borderRadius: BorderRadius.circular(20),
+                        border: Border.all(color: Colors.red.shade300),
+                      ),
+                      child: Text('FULL', style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Colors.red.shade800)),
+                    )
+                  else
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                      decoration: BoxDecoration(
+                        color: Colors.green.shade50,
+                        borderRadius: BorderRadius.circular(20),
+                        border: Border.all(color: Colors.green.shade300),
+                      ),
+                      child: Text(pool.status, style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Colors.green.shade800)),
                     ),
-                    child: Text(pool.status, style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Colors.green.shade800)),
-                  ),
                 ],
               ),
               const SizedBox(height: 8),
