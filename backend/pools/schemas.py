@@ -91,6 +91,7 @@ class PoolMemberOut(BaseModel):
     decided_at: Optional[datetime] = None
     cancellation_reason: Optional[str] = None
     farmer_full_name: Optional[str] = None
+    pickup_otp: Optional[str] = None
 
 
 class PoolStopOut(BaseModel):
@@ -129,3 +130,8 @@ class PoolGroupCreate(BaseModel):
     other_produce_request_ids: List[UUID]
     pickup_window_start: datetime
     pickup_window_end: datetime
+class PoolAcceptPayload(BaseModel):
+    rider_expected_pickup_at: Optional[datetime] = Field(
+        None,
+        description="Expected pickup date and time entered by rider, must fall within pool pickup window."
+    )

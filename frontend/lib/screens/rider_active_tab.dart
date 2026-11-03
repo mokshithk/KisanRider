@@ -1,3 +1,4 @@
+import 'pools/rider_pool_detail_screen.dart';
 import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
@@ -75,6 +76,10 @@ class RiderActiveTrip {
     this.farmAddress,
     this.createdAt,
     this.completedAt,
+    this.poolId,
+    this.riderExpectedPickupAt,
+    this.pickupWindowStart,
+    this.pickupWindowEnd,
   });
 
   factory RiderActiveTrip.fromJson(Map<String, dynamic> json) {
@@ -102,6 +107,10 @@ class RiderActiveTrip {
       farmAddress: json['farm_address']?.toString(),
       createdAt: parseDate(json['created_at']),
       completedAt: parseDate(json['completed_at']),
+      poolId: json['pool_id']?.toString(),
+      riderExpectedPickupAt: parseDate(json['rider_expected_pickup_at']),
+      pickupWindowStart: parseDate(json['pickup_window_start']),
+      pickupWindowEnd: parseDate(json['pickup_window_end']),
     );
   }
 
@@ -141,6 +150,10 @@ class RiderActiveTrip {
 
   final DateTime? createdAt;
   final DateTime? completedAt;
+  final String? poolId;
+  final DateTime? riderExpectedPickupAt;
+  final DateTime? pickupWindowStart;
+  final DateTime? pickupWindowEnd;
 
   // ---------------------------------------------------------------------
   // Convenience accessors
@@ -244,7 +257,7 @@ class _RiderActiveTabState extends State<RiderActiveTab>
     (label: 'All', tag: null),
     (label: 'Accepted', tag: 'ACCEPTED'),
     (label: 'Picked Up', tag: 'PICKED_UP'),
-    (label: 'Completed', tag: 'COMPLETED'),
+    (label: 'Pooled', tag: 'POOLED'),
   ];
 
   @override
@@ -576,6 +589,9 @@ class _RiderActiveTabState extends State<RiderActiveTab>
   List<RiderActiveTrip> get _filteredTrips {
     final tag = _filters[_activeFilterIndex].tag;
     if (tag == null) return _trips;
+    if (tag == 'POOLED') {
+      return _trips.where((t) => t.poolId != null && t.poolId!.isNotEmpty).toList(growable: false);
+    }
     return _trips.where((t) => t.status == tag).toList(growable: false);
   }
 
@@ -658,6 +674,64 @@ class _RiderActiveTabState extends State<RiderActiveTab>
               ),
             ),
           ],
+        ),
+      );
+    }
+
+    if (_filters[_activeFilterIndex].tag == 'POOLED') {
+      final Map<String, List<RiderActiveTrip>> poolGroups = {};
+      for (final trip in _trips) {
+        if (trip.poolId != null && trip.poolId!.isNotEmpty) {
+          poolGroups.putIfAbsent(trip.poolId!, () => []).add(trip);
+        }
+      }
+
+      if (poolGroups.isEmpty) {
+        return RefreshIndicator(
+          onRefresh: _fetch,
+          child: ListView(
+            physics: const AlwaysScrollableScrollPhysics(),
+            padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 80),
+            children: [
+              Icon(Icons.groups_outlined, size: 56, color: Colors.grey.shade400),
+              const SizedBox(height: 12),
+              Center(
+                child: Text(
+                  'No active pooled trips.',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(fontSize: 14, color: Colors.grey.shade700),
+                ),
+              ),
+            ],
+          ),
+        );
+      }
+
+      final poolIds = poolGroups.keys.toList();
+      return RefreshIndicator(
+        onRefresh: _fetch,
+        child: ListView.builder(
+          padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
+          itemCount: poolIds.length,
+          itemBuilder: (context, index) {
+            final pid = poolIds[index];
+            final poolTrips = poolGroups[pid]!;
+            return _GroupedPoolCard(
+              poolId: pid,
+              trips: poolTrips,
+              onTap: () async {
+                await Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (_) => RiderPoolDetailScreen(
+                      poolId: pid,
+                      isActiveTrip: true,
+                    ),
+                  ),
+                );
+                if (mounted) _fetch();
+              },
+            );
+          },
         ),
       );
     }
@@ -792,6 +866,26 @@ class _TripCard extends StatelessWidget {
                 ],
               ),
               const SizedBox(height: 8),
+
+              if (trip.riderExpectedPickupAt != null) ...[
+                Row(
+                  children: [
+                    const Icon(Icons.schedule, size: 14, color: kRiderGreen),
+                    const SizedBox(width: 6),
+                    Expanded(
+                      child: Text(
+                        'Pickup: ${trip.riderExpectedPickupAt!.toLocal().day}/${trip.riderExpectedPickupAt!.toLocal().month} ${trip.riderExpectedPickupAt!.toLocal().hour.toString().padLeft(2, '0')}:${trip.riderExpectedPickupAt!.toLocal().minute.toString().padLeft(2, '0')}',
+                        style: const TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
+                          color: kRiderGreen,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 4),
+              ],
 
               // ----- Line 2: dropoff ----------------------------------
               Row(
@@ -1168,9 +1262,48 @@ class _TripOperationalSheetState extends State<_TripOperationalSheet> {
   // -------------------------------------------------------------------------
 
   Widget _buildAcceptedBody(ThemeData theme) {
+    final exp = widget.trip.riderExpectedPickupAt?.toLocal();
+    final winStart = widget.trip.pickupWindowStart?.toLocal();
+    final winEnd = widget.trip.pickupWindowEnd?.toLocal();
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
+        if (exp != null || winEnd != null) ...[
+          Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: Colors.blue.shade50,
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: Colors.blue.shade200),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                if (exp != null)
+                  Row(
+                    children: [
+                      Icon(Icons.schedule, size: 16, color: Colors.blue.shade800),
+                      const SizedBox(width: 8),
+                      Text(
+                        'Expected Pickup: ${exp.day}/${exp.month} at ${exp.hour.toString().padLeft(2, '0')}:${exp.minute.toString().padLeft(2, '0')}',
+                        style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Colors.blue.shade900),
+                      ),
+                    ],
+                  ),
+                if (winStart != null && winEnd != null) ...[
+                  const SizedBox(height: 4),
+                  Text(
+                    'Pickup Window: ${winStart.day}/${winStart.month} ${winStart.hour.toString().padLeft(2, '0')}:${winStart.minute.toString().padLeft(2, '0')} — ${winEnd.day}/${winEnd.month} ${winEnd.hour.toString().padLeft(2, '0')}:${winEnd.minute.toString().padLeft(2, '0')}',
+                    style: TextStyle(fontSize: 12, color: Colors.blue.shade800),
+                  ),
+                ],
+              ],
+            ),
+          ),
+          const SizedBox(height: 14),
+        ],
+
         // ----- Farmer contact card -----------------------------------
         _FarmerContactCard(trip: widget.trip),
 
@@ -2014,6 +2147,145 @@ class _DeliveryProofDialogState extends State<_DeliveryProofDialog> {
           style: FilledButton.styleFrom(backgroundColor: kRiderGreen),
         ),
       ],
+    );
+  }
+}
+
+// ============================================================================
+// Grouped Pool Card for Active Trips
+// ============================================================================
+
+class _GroupedPoolCard extends StatelessWidget {
+  const _GroupedPoolCard({
+    required this.poolId,
+    required this.trips,
+    required this.onTap,
+  });
+
+  final String poolId;
+  final List<RiderActiveTrip> trips;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final cropName = trips.isNotEmpty ? trips.first.cropName : 'Produce';
+    final totalWeight = trips.fold<double>(0.0, (acc, t) => acc + t.weightKg);
+    final totalFarmers = trips.length;
+    final completedPickups = trips.where((t) => t.status == 'PICKED_UP').length;
+    final dropoff = trips.isNotEmpty ? (trips.first.dropoffMandi ?? 'Mandi Destination') : '—';
+    final isDelivered = trips.every((t) => t.status == 'COMPLETED' || t.status == 'DELIVERED');
+
+    return Card(
+      elevation: 1,
+      margin: const EdgeInsets.only(bottom: 12),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      '$cropName (Pooled Trip)',
+                      style: theme.textTheme.titleMedium?.copyWith(
+                        fontWeight: FontWeight.bold,
+                        color: const Color(0xFF1C1B1F),
+                      ),
+                    ),
+                  ),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: kRiderGreen.withOpacity(0.12),
+                      borderRadius: BorderRadius.circular(20),
+                      border: Border.all(color: kRiderGreen),
+                    ),
+                    child: Text(
+                      isDelivered ? 'COMPLETED' : 'ACTIVE POOL',
+                      style: const TextStyle(
+                        color: kRiderGreen,
+                        fontWeight: FontWeight.bold,
+                        fontSize: 11,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 12),
+              Row(
+                children: [
+                  const Icon(Icons.inventory_2_outlined, size: 16, color: Colors.grey),
+                  const SizedBox(width: 6),
+                  Text(
+                    'Combined: ${totalWeight.toStringAsFixed(0)} kg',
+                    style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
+                  ),
+                  const Spacer(),
+                  const Icon(Icons.people_alt_outlined, size: 16, color: Colors.grey),
+                  const SizedBox(width: 6),
+                  Text(
+                    '$totalFarmers Farmer Pickups',
+                    style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              Row(
+                children: [
+                  const Icon(Icons.check_circle_outline, size: 16, color: Colors.blue),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text(
+                      'Pickup Progress: $completedPickups of $totalFarmers completed',
+                      style: TextStyle(
+                        fontSize: 12.5,
+                        color: completedPickups == totalFarmers ? kRiderGreen : Colors.blue.shade800,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              Row(
+                children: [
+                  const Icon(Icons.storefront_outlined, size: 16, color: Colors.grey),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text(
+                      'Destination: $dropoff',
+                      style: const TextStyle(fontSize: 12.5, color: Colors.black87),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 12),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.end,
+                children: [
+                  Text(
+                    'Tap to view map & stops',
+                    style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                      color: kRiderGreen,
+                    ),
+                  ),
+                  const SizedBox(width: 4),
+                  const Icon(Icons.chevron_right, size: 16, color: kRiderGreen),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }

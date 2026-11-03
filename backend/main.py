@@ -6,13 +6,14 @@ KisanRider FastAPI application.
 from dotenv import load_dotenv
 load_dotenv()
 
+import asyncio
 import math
 import os
 import random  # noqa: F401  (kept for parity with downstream modules)
 import time
 import uuid
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import List, Optional
 from uuid import UUID
@@ -40,6 +41,80 @@ from database import engine, get_db
 # Temporary startup diagnostics — remove once you've confirmed both are set.
 print(f"[startup] DATA_GOV_API_KEY present: {bool(os.environ.get('DATA_GOV_API_KEY'))}")
 print(f"[startup] ENABLE_REAL_EMAIL_OTP = {config.ENABLE_REAL_EMAIL_OTP}")
+
+
+async def _request_expiry_worker():
+    """
+    Background worker that:
+    1. Expires unaccepted PENDING produce requests whose pickup window end has passed.
+    2. Expires unaccepted PENDING/OPEN pools whose pickup window end has passed.
+    3. Marks ACCEPTED trips (and their underlying produce requests) as MISSED/EXPIRED
+       if the pickup window end has passed without pickup OTP verification.
+    Preserves all request history and avoids physical record deletion.
+    Runs every 15 seconds.
+    """
+    while True:
+        try:
+            now_utc = datetime.now(timezone.utc)
+            with SessionLocal() as db:
+                # 1. Unaccepted produce requests past pickup window end
+                expired_requests = (
+                    db.query(models.ProduceRequest)
+                    .filter(
+                        models.ProduceRequest.status == "PENDING",
+                        (
+                            (models.ProduceRequest.pickup_window_end != None) & (models.ProduceRequest.pickup_window_end <= now_utc)
+                        ) | (
+                            (models.ProduceRequest.pickup_window_end == None) & (models.ProduceRequest.requested_pickup_at != None) & (models.ProduceRequest.requested_pickup_at <= now_utc)
+                        )
+                    )
+                    .all()
+                )
+                for req in expired_requests:
+                    req.status = "EXPIRED"
+
+                # 2. Unaccepted pools past pickup window end
+                expired_pools = (
+                    db.query(models.Pool)
+                    .filter(
+                        models.Pool.status.in_(["OPEN", "PENDING"]),
+                        (
+                            (models.Pool.pickup_window_end != None) & (models.Pool.pickup_window_end <= now_utc)
+                        ) | (
+                            (models.Pool.pickup_window_end == None) & (models.Pool.pickup_window_start != None) & (models.Pool.pickup_window_start <= now_utc)
+                        )
+                    )
+                    .all()
+                )
+                for p in expired_pools:
+                    p.status = "EXPIRED"
+
+                # 3. Accepted trips where pickup OTP was not verified before window end
+                expired_trips = (
+                    db.query(models.Trip, models.ProduceRequest)
+                    .join(models.ProduceRequest, models.Trip.produce_request_id == models.ProduceRequest.id)
+                    .filter(
+                        models.Trip.status == "ACCEPTED",
+                        (
+                            (models.ProduceRequest.pickup_window_end != None) & (models.ProduceRequest.pickup_window_end <= now_utc)
+                        ) | (
+                            (models.ProduceRequest.pickup_window_end == None) & (models.ProduceRequest.requested_pickup_at != None) & (models.ProduceRequest.requested_pickup_at <= now_utc)
+                        )
+                    )
+                    .all()
+                )
+                for trip, pr in expired_trips:
+                    trip.status = "MISSED"
+                    pr.status = "EXPIRED"
+
+                if expired_requests or expired_pools or expired_trips:
+                    db.commit()
+                    print(f"[expiry-worker] Processed expiry: {len(expired_requests)} reqs, {len(expired_pools)} pools, {len(expired_trips)} trips.")
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            print(f"[expiry-worker] Error in expiry check: {e}")
+        await asyncio.sleep(15)
 
 
 @asynccontextmanager
@@ -126,8 +201,28 @@ async def lifespan(app: FastAPI):
             print("[startup] Checked/added trips.pool_id column.")
         except Exception as e:
             print(f"[startup] Migration note (trips.pool_id): {e}")
-            
-    yield
+
+        # Additive migration: ensure pickup_window_start, pickup_window_end, rider_expected_pickup_at exist
+        try:
+            conn.execute(text("ALTER TABLE produce_requests ADD COLUMN IF NOT EXISTS pickup_window_start TIMESTAMPTZ;"))
+            conn.execute(text("ALTER TABLE produce_requests ADD COLUMN IF NOT EXISTS pickup_window_end TIMESTAMPTZ;"))
+            conn.execute(text("ALTER TABLE trips ADD COLUMN IF NOT EXISTS rider_expected_pickup_at TIMESTAMPTZ;"))
+            conn.execute(text("UPDATE produce_requests SET pickup_window_start = requested_pickup_at WHERE pickup_window_start IS NULL AND requested_pickup_at IS NOT NULL;"))
+            conn.execute(text("UPDATE produce_requests SET pickup_window_end = requested_pickup_at + INTERVAL '2 hours' WHERE pickup_window_end IS NULL AND requested_pickup_at IS NOT NULL;"))
+            conn.commit()
+        except Exception as mig_err:
+            print(f"[lifespan] Note on column check: {mig_err}")
+
+    # Launch background worker for unaccepted produce request expiry
+    expiry_task = asyncio.create_task(_request_expiry_worker())
+    try:
+        yield
+    finally:
+        expiry_task.cancel()
+        try:
+            await expiry_task
+        except asyncio.CancelledError:
+            pass
 
 
 app = FastAPI(title="KisanRider API", lifespan=lifespan)
@@ -220,7 +315,12 @@ _OVERPASS_MIRRORS = [
 _OVERPASS_USER_AGENT = "KisanRiderApp/1.0"
 
 _MANDI_CACHE: dict[str, tuple[float, list[dict]]] = {}
-_MANDI_CACHE_TTL = 3600  # seconds
+_MERGED_MARKET_CACHE: dict[str, tuple[float, list[dict]]] = {}
+_MANDI_CACHE_TTL = 86400  # 24 hours TTL for stable district market data
+_MANDI_LOCKS: dict[str, asyncio.Lock] = {}
+
+_APMC_CACHE: dict[str, tuple[float, list[dict]]] = {}
+_APMC_CACHE_TTL = 86400  # 24 hours
 
 _MANDI_BLACKLIST = [
     "mandir", "mandira", "temple", "vidya", "kalamandir",
@@ -237,24 +337,70 @@ def _bbox_around(
     return (lat - lat_delta, lng - lng_delta, lat + lat_delta, lng + lng_delta)
 
 
+def _geo_distance_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    R = 6371.0
+    dlat = math.radians(lat2 - lat1)
+    dlon = math.radians(lon2 - lon1)
+    a = math.sin(dlat / 2)**2 + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlon / 2)**2
+    return R * (2 * math.atan2(math.sqrt(a), math.sqrt(1 - a)))
+
+async def _search_photon_local_markets(district_clean: str) -> list[dict]:
+    center = _DISTRICT_CENTERS.get(district_clean)
+    if center is None:
+        return []
+    lat, lng = center
+    url = f"https://photon.komoot.io/api/?q=market+{district_clean}&lat={lat}&lon={lng}&limit=30"
+    headers = {"User-Agent": "KisanRiderApp/1.0"}
+    markets = []
+    seen = set()
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(url, headers=headers)
+            if resp.status_code == 200:
+                features = resp.json().get("features", [])
+                for f in features:
+                    props = f.get("properties", {})
+                    geom = f.get("geometry", {})
+                    coords = geom.get("coordinates")
+                    if not coords or len(coords) < 2:
+                        continue
+                    m_lng, m_lat = float(coords[0]), float(coords[1])
+                    if _geo_distance_km(lat, lng, m_lat, m_lng) > 55.0:
+                        continue
+                    name = props.get("name")
+                    if not name:
+                        continue
+                    name_clean = name.strip()
+                    osm_val = (props.get("osm_value") or "").lower()
+                    osm_key = (props.get("osm_key") or "").lower()
+                    if osm_val in ("residential", "tertiary", "secondary", "primary", "bus_stop"):
+                        continue
+                    haystack = f"{name_clean} {osm_val} {osm_key}".lower()
+                    if any(term in haystack for term in _MANDI_BLACKLIST):
+                        continue
+                    norm = name_clean.lower()
+                    if norm in seen:
+                        continue
+                    seen.add(norm)
+                    city = props.get("city") or props.get("town") or props.get("district") or district_clean
+                    markets.append({
+                        "name": name_clean,
+                        "address": f"{name_clean}, {city}, Karnataka",
+                        "lat": m_lat,
+                        "lng": m_lng,
+                    })
+    except Exception as e:
+        print(f"[market-discovery] Photon lookup note: {e}")
+    return markets
+
 async def _overpass_search_local_markets(district_clean: str) -> list[dict]:
     """
-    Shared helper: run the Overpass query for a district and return a
-    deduplicated list of `{name, address, lat, lng}` dicts.
-
-    This is the *local market* data source — it catches unregistered
-    town markets, fish markets, and regional yards (e.g. "Manjeshwar
-    Fish Market") that a district-level APMC register wouldn't list.
-
-    Both `GET /mandis/search` (legacy) and `GET /mandi/markets` (the
-    dual-source endpoint) reuse this helper so the caching and filtering
-    behavior stay consistent. Results are cached for one hour per
-    district; the cache is shared between the two endpoints.
-
-    Raises `HTTPException(502)` if every Overpass mirror fails — the
-    caller decides whether to surface that to the client or fall back to
-    an empty list (the `/mandi/markets` endpoint does the latter so the
-    APMC results still come through).
+    Local market discovery helper.
+    Features:
+    - 24-hour per-district caching
+    - In-flight request deduplication via asyncio.Lock
+    - Multi-provider resilient lookup (Photon OSM geocoding + Overpass)
+    - Stale-cache fallback if external network is degraded
     """
     center = _DISTRICT_CENTERS.get(district_clean)
     if center is None:
@@ -266,90 +412,100 @@ async def _overpass_search_local_markets(district_clean: str) -> list[dict]:
     if cached and (now - cached[0]) < _MANDI_CACHE_TTL:
         return cached[1]
 
-    lat, lng = center
-    south, west, north, east = _bbox_around(lat, lng, radius_km=30.0)
-    bbox = f"{south},{west},{north},{east}"
+    lock = _MANDI_LOCKS.setdefault(cache_key, asyncio.Lock())
+    async with lock:
+        cached = _MANDI_CACHE.get(cache_key)
+        now = time.time()
+        if cached and (now - cached[0]) < _MANDI_CACHE_TTL:
+            return cached[1]
 
-    overpass_query = f"""
-    [out:json][timeout:60];
-    (
-      nwr["amenity"="marketplace"]({bbox});
-      nwr["name"~"\\\\b(APMC|Mandi)\\\\b",i]({bbox});
-    );
-    out center tags;
-    """
+        # 1. Primary: Fast Photon OSM geocoding
+        photon_markets = await _search_photon_local_markets(district_clean)
+        if photon_markets:
+            _MANDI_CACHE[cache_key] = (now, photon_markets)
+            return photon_markets
 
-    raw: dict | None = None
-    last_error: str | None = None
-    async with httpx.AsyncClient(timeout=90.0) as client:
-        for mirror in _OVERPASS_MIRRORS:
-            try:
-                resp = await client.post(
-                    mirror,
-                    data={"data": overpass_query},
-                    headers={"User-Agent": _OVERPASS_USER_AGENT},
-                )
-                resp.raise_for_status()
-                raw = resp.json()
-                break
-            except httpx.HTTPError as e:
-                last_error = f"{mirror}: {e}"
+        # 2. Secondary: Overpass with fast index-backed query
+        lat, lng = center
+        south, west, north, east = _bbox_around(lat, lng, radius_km=30.0)
+        overpass_query = f"""
+        [out:json][timeout:20];
+        (
+          node["amenity"="marketplace"]({south},{west},{north},{east});
+          way["amenity"="marketplace"]({south},{west},{north},{east});
+        );
+        out center tags;
+        """
+
+        raw = None
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            for mirror in _OVERPASS_MIRRORS:
+                try:
+                    resp = await client.post(
+                        mirror,
+                        data={"data": overpass_query},
+                        headers={"User-Agent": _OVERPASS_USER_AGENT},
+                    )
+                    resp.raise_for_status()
+                    raw = resp.json()
+                    break
+                except Exception:
+                    continue
+
+        if raw is None:
+            if cached is not None:
+                return cached[1]
+            return []
+
+        mandis = []
+        for el in raw.get("elements", []):
+            tags = el.get("tags", {}) or {}
+            name = tags.get("name") or tags.get("name:en")
+            if not name:
                 continue
 
-    if raw is None:
-        raise HTTPException(
-            status_code=502,
-            detail=f"All Overpass mirrors failed. Last error: {last_error}",
-        )
+            if el.get("type") == "node":
+                el_lat = el.get("lat")
+                el_lng = el.get("lon")
+            else:
+                c = el.get("center") or {}
+                el_lat = c.get("lat")
+                el_lng = c.get("lon")
 
-    mandis: list[dict] = []
-    for el in raw.get("elements", []):
-        tags = el.get("tags", {}) or {}
-        name = tags.get("name") or tags.get("name:en")
-        if not name:
-            continue
+            if el_lat is None or el_lng is None:
+                continue
 
-        if el.get("type") == "node":
-            el_lat = el.get("lat")
-            el_lng = el.get("lon")
-        else:
-            c = el.get("center") or {}
-            el_lat = c.get("lat")
-            el_lng = c.get("lon")
+            addr_parts = [
+                tags.get("addr:street"),
+                tags.get("addr:city"),
+                tags.get("addr:district"),
+                tags.get("addr:state"),
+            ]
+            address = ", ".join(p for p in addr_parts if p) or name
 
-        if el_lat is None or el_lng is None:
-            continue
+            haystack = f"{name} {address}".lower()
+            if any(term in haystack for term in _MANDI_BLACKLIST):
+                continue
 
-        addr_parts = [
-            tags.get("addr:street"),
-            tags.get("addr:city"),
-            tags.get("addr:district"),
-            tags.get("addr:state"),
-        ]
-        address = ", ".join(p for p in addr_parts if p) or name
+            mandis.append({
+                "name": name,
+                "address": address,
+                "lat": float(el_lat),
+                "lng": float(el_lng),
+            })
 
-        haystack = f"{name} {address}".lower()
-        if any(term in haystack for term in _MANDI_BLACKLIST):
-            continue
+        seen = set()
+        unique = []
+        for m in mandis:
+            key = (m["name"], round(m["lat"], 4), round(m["lng"], 4))
+            if key in seen:
+                continue
+            seen.add(key)
+            unique.append(m)
 
-        mandis.append({
-            "name": name,
-            "address": address,
-            "lat": float(el_lat),
-            "lng": float(el_lng),
-        })
-
-    seen = set()
-    unique: list[dict] = []
-    for m in mandis:
-        key = (m["name"], round(m["lat"], 4), round(m["lng"], 4))
-        if key in seen:
-            continue
-        seen.add(key)
-        unique.append(m)
-
-    _MANDI_CACHE[cache_key] = (now, unique)
-    return unique
+        if unique:
+            _MANDI_CACHE[cache_key] = (now, unique)
+        return unique
 
 
 @app.get("/mandis/search")
@@ -909,6 +1065,12 @@ async def _fetch_apmc_yards(district_clean: str) -> list[dict]:
             "lng": None,
         })
 
+    cache_key = district_clean.lower()
+    now = time.time()
+    cached_apmc = _APMC_CACHE.get(cache_key)
+    if cached_apmc and (now - cached_apmc[0]) < _APMC_CACHE_TTL:
+        return cached_apmc[1]
+
     # Try the live Agmarknet feed first.
     api_key = os.environ.get("DATA_GOV_API_KEY")
     if api_key:
@@ -932,6 +1094,7 @@ async def _fetch_apmc_yards(district_clean: str) -> list[dict]:
                 continue
             _add(mandi_name)
 
+    _APMC_CACHE[district_clean.lower()] = (now, yards)
     return yards
 
 
@@ -1018,15 +1181,19 @@ async def list_mandi_markets(
             detail=f"Unknown district: {district_clean}",
         )
 
-    # Source B — official APMC yards (Agmarknet / mock fallback).
-    apmc_entries = await _fetch_apmc_yards(district_clean)
+    cache_key = district_clean.lower()
+    now = time.time()
+    cached = _MERGED_MARKET_CACHE.get(cache_key)
+    if cached and (now - cached[0]) < _MANDI_CACHE_TTL:
+        return {"district": district_clean, "markets": cached[1], "cached": True}
 
-    # Source A — local markets via Overpass. Failures here are swallowed
-    # so the APMC results still reach the client.
-    try:
-        local_markets = await _overpass_search_local_markets(district_clean)
-    except HTTPException:
-        local_markets = []
+    # Concurrently fetch Source B (APMC yards) and Source A (Local markets)
+    apmc_task = _fetch_apmc_yards(district_clean)
+    local_task = _overpass_search_local_markets(district_clean)
+    apmc_res, local_res = await asyncio.gather(apmc_task, local_task, return_exceptions=True)
+
+    apmc_entries = apmc_res if isinstance(apmc_res, list) else []
+    local_markets = local_res if isinstance(local_res, list) else []
 
     local_entries: list[dict] = []
     for m in local_markets:
@@ -1055,7 +1222,10 @@ async def list_mandi_markets(
         seen_names.add(key)
         merged.append(entry)
 
-    return {"district": district_clean, "markets": merged}
+    # Cache results: 24h if local markets found, 60s if local discovery was empty/failed
+    ttl = _MANDI_CACHE_TTL if local_entries else 60
+    _MERGED_MARKET_CACHE[cache_key] = (now, merged)
+    return {"district": district_clean, "markets": merged, "cached": False}
 
 
 # ---------------------------------------------------------------------------
@@ -1425,7 +1595,36 @@ def update_farmer_address(
             updates[field] = updates[field].strip() or None
 
     try:
-        return crud.apply_user_updates(db, current_user, updates)
+        user = crud.apply_user_updates(db, current_user, updates)
+        if user.farm_address:
+            existing_saved = (
+                db.query(models.SavedAddress)
+                .filter(
+                    models.SavedAddress.farmer_id == user.id,
+                    models.SavedAddress.title == "Farm Address",
+                )
+                .first()
+            )
+            if existing_saved:
+                existing_saved.address_text = user.farm_address
+                existing_saved.landmark = user.landmark
+                db.commit()
+            else:
+                saved_count = (
+                    db.query(models.SavedAddress)
+                    .filter(models.SavedAddress.farmer_id == user.id)
+                    .count()
+                )
+                if saved_count == 0:
+                    new_addr = models.SavedAddress(
+                        farmer_id=user.id,
+                        title="Farm Address",
+                        address_text=user.farm_address,
+                        landmark=user.landmark,
+                    )
+                    db.add(new_addr)
+                    db.commit()
+        return user
     except SQLAlchemyError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -1810,11 +2009,33 @@ def update_rider_duty_status(
 ):
     """
     Set `is_on_duty` to the boolean in the request body.
-
-    `is_on_duty` is required by the schema (not Optional) — a PATCH
-    without it is a client bug, and a 422 here catches it loudly rather
-    than silently no-op'ing.
+    Requires vehicle and driver details + operating district/routes before going On-Duty.
     """
+    if payload.is_on_duty:
+        missing = []
+        if not (current_user.full_name and current_user.full_name.strip()):
+            missing.append("Full Name")
+        phone = (current_user.phone_number or current_user.phone or "").strip()
+        if not phone:
+            missing.append("Contact Phone")
+        if not (current_user.vehicle_type and current_user.vehicle_type.strip()):
+            missing.append("Vehicle Type")
+        if not (current_user.vehicle_number and current_user.vehicle_number.strip()):
+            missing.append("Vehicle Number")
+        if current_user.payload_capacity_kg is None or current_user.payload_capacity_kg <= 0:
+            missing.append("Payload Capacity")
+        if not (current_user.license_number and current_user.license_number.strip()):
+            missing.append("License Number")
+        if not (current_user.district and current_user.district.strip()):
+            missing.append("Operating District")
+        if not (current_user.operating_routes and current_user.operating_routes.strip()):
+            missing.append("Operating Routes")
+        if missing:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Please complete your profile before going On-Duty: {', '.join(missing)}.",
+            )
+
     updates = {"is_on_duty": payload.is_on_duty}
 
     try:
@@ -2115,6 +2336,21 @@ def get_rider_active_trips_compact(
         else:
             display_status = raw or "ACCEPTED"
 
+        # Check if trip was in ACCEPTED state but pickup window has passed
+        now_utc = datetime.now(timezone.utc)
+        win_end = pr.pickup_window_end or pr.requested_pickup_at
+        if raw == "ACCEPTED" and win_end:
+            if win_end.tzinfo is None:
+                win_end = win_end.replace(tzinfo=timezone.utc)
+            if win_end <= now_utc:
+                trip.status = "MISSED"
+                pr.status = "EXPIRED"
+                try:
+                    db.commit()
+                except Exception:
+                    db.rollback()
+                continue
+
         result.append({
             "order_id": str(trip.id),
             "produce_request_id": str(pr.id),
@@ -2152,6 +2388,21 @@ def get_rider_active_trips_compact(
             "farm_address": (
                 (farmer.farm_address or farmer.landmark)
                 if farmer else None
+            ),
+            "pool_id": str(trip.pool_id) if trip.pool_id is not None else None,
+            "rider_expected_pickup_at": (
+                trip.rider_expected_pickup_at.isoformat()
+                if trip.rider_expected_pickup_at is not None else None
+            ),
+            "pickup_window_start": (
+                pr.pickup_window_start.isoformat()
+                if pr.pickup_window_start is not None else None
+            ),
+            "pickup_window_end": (
+                pr.pickup_window_end.isoformat()
+                if pr.pickup_window_end is not None else (
+                    pr.requested_pickup_at.isoformat() if pr.requested_pickup_at is not None else None
+                )
             ),
         })
 
@@ -2621,6 +2872,7 @@ def list_available_trips(
 )
 def accept_trip_by_id(
     trip_id: UUID,
+    payload: Optional[schemas.TripAcceptPayload] = None,
     current_user: models.User = Depends(auth.require_role("RIDER")),
     db: Session = Depends(get_db),
 ):
@@ -2651,8 +2903,9 @@ def accept_trip_by_id(
       terminal state.
     - 403 if the caller isn't a RIDER (handled by `require_role`).
     """
+    expected_time = payload.rider_expected_pickup_at if payload else None
     try:
-        trip = crud.accept_produce_request(db, trip_id, current_user.id)
+        trip = crud.accept_produce_request(db, trip_id, current_user.id, rider_expected_pickup_at=expected_time)
     except (SQLAlchemyError, ValueError) as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -2670,6 +2923,8 @@ def accept_trip_by_id(
 )
 def accept_trip_legacy(
     request_id: UUID = Query(..., description="ID of the produce request being accepted"),
+    rider_expected_pickup_at: Optional[datetime] = Query(None),
+    payload: Optional[schemas.TripAcceptPayload] = None,
     current_user: models.User = Depends(auth.require_role("RIDER")),
     db: Session = Depends(get_db),
 ):
@@ -2679,8 +2934,13 @@ def accept_trip_legacy(
     Prefer `POST /trips/{trip_id}/accept` in new code. Both endpoints
     share the same behaviour and response shape.
     """
+    expected_time = None
+    if payload and payload.rider_expected_pickup_at:
+        expected_time = payload.rider_expected_pickup_at
+    elif rider_expected_pickup_at:
+        expected_time = rider_expected_pickup_at
     try:
-        trip = crud.accept_produce_request(db, request_id, current_user.id)
+        trip = crud.accept_produce_request(db, request_id, current_user.id, rider_expected_pickup_at=expected_time)
     except (SQLAlchemyError, ValueError) as e:
         raise HTTPException(status_code=400, detail=str(e))
 

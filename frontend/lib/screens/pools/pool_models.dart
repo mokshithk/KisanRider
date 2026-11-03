@@ -84,6 +84,7 @@ class PoolMember {
   final String status;
   final DateTime requestedAt;
   final String? farmerFullName;
+  final String? pickupOtp;
 
   PoolMember({
     required this.id,
@@ -93,6 +94,7 @@ class PoolMember {
     required this.status,
     required this.requestedAt,
     this.farmerFullName,
+    this.pickupOtp,
   });
 
   factory PoolMember.fromJson(Map<String, dynamic> json) {
@@ -104,6 +106,7 @@ class PoolMember {
       status: json['status']?.toString() ?? 'REQUESTED',
       requestedAt: DateTime.tryParse(json['requested_at']?.toString() ?? '') ?? DateTime.now(),
       farmerFullName: json['farmer_full_name']?.toString(),
+      pickupOtp: json['pickup_otp']?.toString(),
     );
   }
 }

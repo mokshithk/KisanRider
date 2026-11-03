@@ -96,9 +96,12 @@ class AvailableRequest {
     required this.distanceKm,
     required this.status,
     required this.createdAt,
+    this.requestedPickupAt,
     this.dropoffLocation,
     this.pickupAddress,
     this.pickupLandmark,
+    required this.pickupWindowStart,
+    required this.pickupWindowEnd,
   });
 
   factory AvailableRequest.fromJson(Map<String, dynamic> json) {
@@ -111,6 +114,24 @@ class AvailableRequest {
       parsedCreatedAt = DateTime.fromMillisecondsSinceEpoch(0);
     }
 
+    DateTime? parsedRequestedPickupAt;
+    final rawRequestedPickup = json['requested_pickup_at'];
+    if (rawRequestedPickup is String) {
+      parsedRequestedPickupAt = DateTime.tryParse(rawRequestedPickup);
+    }
+
+    DateTime? parsedWindowStart;
+    final rawWinStart = json['pickup_window_start'];
+    if (rawWinStart is String) {
+      parsedWindowStart = DateTime.tryParse(rawWinStart);
+    }
+
+    DateTime? parsedWindowEnd;
+    final rawWinEnd = json['pickup_window_end'];
+    if (rawWinEnd is String) {
+      parsedWindowEnd = DateTime.tryParse(rawWinEnd);
+    }
+
     return AvailableRequest(
       id: (json['id'] ?? '').toString(),
       cropType: (json['crop_type'] ?? '') as String,
@@ -120,9 +141,12 @@ class AvailableRequest {
       distanceKm: ((json['distance_km'] ?? 0) as num).toDouble(),
       status: (json['status'] ?? 'PENDING') as String,
       createdAt: parsedCreatedAt,
+      requestedPickupAt: parsedRequestedPickupAt,
       dropoffLocation: json['dropoff_location'] as String?,
       pickupAddress: (json['pickup_address'] as String?)?.trim(),
       pickupLandmark: (json['pickup_landmark'] as String?)?.trim(),
+      pickupWindowStart: parsedWindowStart ?? parsedRequestedPickupAt ?? parsedCreatedAt,
+      pickupWindowEnd: parsedWindowEnd ?? (parsedRequestedPickupAt != null ? parsedRequestedPickupAt.add(const Duration(hours: 2)) : parsedCreatedAt.add(const Duration(hours: 2))),
     );
   }
 
@@ -134,9 +158,28 @@ class AvailableRequest {
   final double distanceKm;
   final String status;
   final DateTime createdAt;
+  final DateTime? requestedPickupAt;
   final String? dropoffLocation;
   final String? pickupAddress;
   final String? pickupLandmark;
+  final DateTime pickupWindowStart;
+  final DateTime pickupWindowEnd;
+
+  String get displayRequestedPickup {
+    if (requestedPickupAt == null) return '';
+    final local = requestedPickupAt!.toLocal();
+    final months = [
+      'January', 'February', 'March', 'April', 'May', 'June',
+      'July', 'August', 'September', 'October', 'November', 'December'
+    ];
+    final day = local.day.toString().padLeft(2, '0');
+    final month = months[local.month - 1];
+    final year = local.year;
+    final hour = local.hour > 12 ? local.hour - 12 : (local.hour == 0 ? 12 : local.hour);
+    final ampm = local.hour >= 12 ? 'PM' : 'AM';
+    final minute = local.minute.toString().padLeft(2, '0');
+    return '$day $month $year — $hour:$minute $ampm';
+  }
 
   String get displayPickup {
     if (pickupAddress != null && pickupAddress!.isNotEmpty) {

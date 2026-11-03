@@ -27,6 +27,40 @@ const List<String> _kDistricts = [
   'Uttara Kannada', 'Vijayapura', 'Yadgir', 'Vijayanagara',
 ];
 
+const Map<String, (double, double)> _kDistrictCenters = {
+  'Bagalkot': (16.1817, 75.6958),
+  'Ballari': (15.1394, 76.9214),
+  'Belagavi': (15.8497, 74.4977),
+  'Bengaluru Rural': (13.1500, 77.4000),
+  'Bengaluru Urban': (12.9716, 77.5946),
+  'Bidar': (17.9104, 77.5199),
+  'Chamarajanagar': (11.9261, 76.9437),
+  'Chikkaballapura': (13.4355, 77.7315),
+  'Chikkamagaluru': (13.3161, 75.7720),
+  'Chitradurga': (14.2251, 76.3980),
+  'Dakshina Kannada': (12.9141, 74.8560),
+  'Davanagere': (14.4644, 75.9218),
+  'Dharwad': (15.4589, 75.0078),
+  'Gadag': (15.4166, 75.6167),
+  'Hassan': (13.0071, 76.0962),
+  'Haveri': (14.7935, 75.4040),
+  'Kalaburagi': (17.3297, 76.8343),
+  'Kodagu': (12.4244, 75.7382),
+  'Kolar': (13.1362, 78.1291),
+  'Koppal': (15.3510, 76.1550),
+  'Mandya': (12.5223, 76.8954),
+  'Mysuru': (12.2958, 76.6394),
+  'Raichur': (16.2076, 77.3463),
+  'Ramanagara': (12.7216, 77.2801),
+  'Shivamogga': (13.9299, 75.5681),
+  'Tumakuru': (13.3392, 77.1140),
+  'Udupi': (13.3409, 74.7421),
+  'Uttara Kannada': (14.8050, 74.6300),
+  'Vijayapura': (16.8302, 75.7100),
+  'Yadgir': (16.7700, 77.1400),
+  'Vijayanagara': (15.2689, 76.3909),
+};
+
 enum PickupMode { gps, saved, manual }
 
 class CreatePoolScreen extends StatefulWidget {
@@ -72,6 +106,7 @@ class _CreatePoolScreenState extends State<CreatePoolScreen> {
   @override
   void initState() {
     super.initState();
+    _windowStart = DateTime.now();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _loadSavedAddresses();
       _fetchCurrentLocation();
@@ -234,7 +269,9 @@ class _CreatePoolScreenState extends State<CreatePoolScreen> {
   }
 
   Future<void> _pickDateTime({required bool isStart}) async {
-    final initialDate = DateTime.now().add(const Duration(days: 1));
+    final initialDate = isStart
+        ? (_windowStart ?? DateTime.now())
+        : (_windowEnd ?? _windowStart ?? DateTime.now());
     final date = await showDatePicker(
       context: context,
       initialDate: initialDate,
@@ -294,7 +331,7 @@ class _CreatePoolScreenState extends State<CreatePoolScreen> {
     switch (_pickupMode) {
       case PickupMode.gps:
         if (_gpsLat == null || _gpsLng == null) {
-          _showError('Cannot submit without GPS location. Please tap Refresh to detect your location.');
+          _showError('GPS location unavailable. Please tap Refresh or switch to Manual Entry / Saved Places.');
           return null;
         }
         return (address: _gpsAddress ?? '', landmark: _pickupLandmarkController.text.trim(), lat: _gpsLat!, lng: _gpsLng!);
@@ -304,11 +341,12 @@ class _CreatePoolScreenState extends State<CreatePoolScreen> {
           return null;
         }
         final a = _savedAddresses[_selectedSavedIndex!];
-        final lat = (a['latitude'] as num?)?.toDouble();
-        final lng = (a['longitude'] as num?)?.toDouble();
+        var lat = (a['latitude'] as num?)?.toDouble();
+        var lng = (a['longitude'] as num?)?.toDouble();
         if (lat == null || lng == null) {
-          _showError('Selected saved address has no coordinates. Please update it or choose another option.');
-          return null;
+          final center = _selectedDistrict != null ? _kDistrictCenters[_selectedDistrict!] : null;
+          lat = center?.$1 ?? 12.9716;
+          lng = center?.$2 ?? 77.5946;
         }
         return (address: (a['address_text'] ?? '').toString(), landmark: _pickupLandmarkController.text.trim(), lat: lat, lng: lng);
       case PickupMode.manual:
@@ -317,12 +355,17 @@ class _CreatePoolScreenState extends State<CreatePoolScreen> {
           _showError('Please enter the village or area name.');
           return null;
         }
-        if (_gpsLat == null || _gpsLng == null) {
-          _fetchCurrentLocation();
-          _showError('Please wait for location detection before submitting.');
-          return null;
+        double lat;
+        double lng;
+        if (_gpsLat != null && _gpsLng != null) {
+          lat = _gpsLat!;
+          lng = _gpsLng!;
+        } else {
+          final center = _selectedDistrict != null ? _kDistrictCenters[_selectedDistrict!] : null;
+          lat = center?.$1 ?? 12.9716;
+          lng = center?.$2 ?? 77.5946;
         }
-        return (address: address, landmark: _pickupLandmarkController.text.trim(), lat: _gpsLat!, lng: _gpsLng!);
+        return (address: address, landmark: _pickupLandmarkController.text.trim(), lat: lat, lng: lng);
     }
   }
 
@@ -338,7 +381,17 @@ class _CreatePoolScreenState extends State<CreatePoolScreen> {
     }
 
     if (_windowStart == null || _windowEnd == null) {
-      _showError('Please select the pickup window.');
+      _showError('Please select both Pickup Window Starts and Ends.');
+      return;
+    }
+
+    if (_windowStart!.isBefore(DateTime.now().subtract(const Duration(minutes: 5)))) {
+      _showError('Pickup Window Starts cannot be in the past.');
+      return;
+    }
+
+    if (!_windowEnd!.isAfter(_windowStart!)) {
+      _showError('Pickup Window Ends must be later than Pickup Window Starts.');
       return;
     }
 
@@ -372,6 +425,10 @@ class _CreatePoolScreenState extends State<CreatePoolScreen> {
           'dropoff_mandi_name': mandiName,
           'dropoff_stall_number': shop.isEmpty ? null : shop,
           'dropoff_location': dropoff,
+          'for_pool': true,
+          'pickup_window_start': _windowStart!.toUtc().toIso8601String(),
+          'pickup_window_end': _windowEnd!.toUtc().toIso8601String(),
+          'requested_pickup_at': _windowStart!.toUtc().toIso8601String(),
         }),
       );
 
@@ -542,12 +599,12 @@ class _CreatePoolScreenState extends State<CreatePoolScreen> {
               ),
               const SizedBox(height: 24),
 
-              Text('Pickup Window', style: theme.textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w600)),
+              Text('Pickup Window *', style: theme.textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w600)),
               const SizedBox(height: 8),
               InkWell(
                 onTap: _isSubmitting ? null : () => _pickDateTime(isStart: true),
                 child: InputDecorator(
-                  decoration: const InputDecoration(border: OutlineInputBorder(), prefixIcon: Icon(Icons.calendar_today), labelText: 'Starts'),
+                  decoration: const InputDecoration(border: OutlineInputBorder(), prefixIcon: Icon(Icons.calendar_today), labelText: 'Pickup Window Starts'),
                   child: Text(_formatDateTime(_windowStart)),
                 ),
               ),
@@ -555,7 +612,7 @@ class _CreatePoolScreenState extends State<CreatePoolScreen> {
               InkWell(
                 onTap: _isSubmitting ? null : () => _pickDateTime(isStart: false),
                 child: InputDecorator(
-                  decoration: const InputDecoration(border: OutlineInputBorder(), prefixIcon: Icon(Icons.calendar_today), labelText: 'Ends'),
+                  decoration: const InputDecoration(border: OutlineInputBorder(), prefixIcon: Icon(Icons.calendar_today), labelText: 'Pickup Window Ends'),
                   child: Text(_formatDateTime(_windowEnd)),
                 ),
               ),

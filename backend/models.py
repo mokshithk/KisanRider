@@ -145,6 +145,9 @@ class ProduceRequest(Base):
     status = Column(String(20), default="PENDING")
 
     cancellation_reason = Column(String(500), nullable=True)
+    requested_pickup_at = Column(DateTime(timezone=True), nullable=True)
+    pickup_window_start = Column(DateTime(timezone=True), nullable=True)
+    pickup_window_end = Column(DateTime(timezone=True), nullable=True)
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
@@ -177,6 +180,7 @@ class Trip(Base):
     status = Column(String(20), nullable=False, default="ACCEPTED")
     created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
     completed_at = Column(DateTime(timezone=True), nullable=True)
+    rider_expected_pickup_at = Column(DateTime(timezone=True), nullable=True)
 
     pickup_address = Column(String(500), nullable=True)
     pickup_landmark = Column(String(255), nullable=True)

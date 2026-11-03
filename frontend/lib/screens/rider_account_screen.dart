@@ -195,6 +195,68 @@ class _RiderAccountScreenState extends State<RiderAccountScreen>
     final auth = context.read<AuthProvider>();
     if (auth.token == null) return;
 
+    if (newValue) {
+      final missing = <String>[];
+      final fullName = (_account?['full_name'] ?? auth.fullName ?? '').toString().trim();
+      final district = (_account?['district'] ?? auth.district ?? '').toString().trim();
+      final vehicleType = (_account?['vehicle_type'] ?? '').toString().trim();
+      final vehicleNumber = (_account?['vehicle_number'] ?? '').toString().trim();
+      final payload = (_account?['payload_capacity_kg'] as num?)?.toDouble() ?? 0.0;
+      final license = (_account?['license_number'] ?? '').toString().trim();
+      final routes = (_account?['operating_routes'] ?? '').toString().trim();
+
+      if (fullName.isEmpty) missing.add('Personal Info (Full Name)');
+      if (district.isEmpty) missing.add('Operating District');
+      if (vehicleType.isEmpty) missing.add('Vehicle Type');
+      if (vehicleNumber.isEmpty) missing.add('Vehicle Registration Number');
+      if (payload <= 0) missing.add('Payload Capacity (> 0 kg)');
+      if (license.isEmpty) missing.add('Driving Licence Number');
+      if (routes.isEmpty) missing.add('Operating Routes / Coverage Area');
+
+      if (missing.isNotEmpty) {
+        await showDialog<void>(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+            title: const Text('Complete Profile to Go On-Duty'),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'Before you can go On-Duty and accept trips, please complete the following mandatory profile details:',
+                  style: TextStyle(fontSize: 14),
+                ),
+                const SizedBox(height: 12),
+                ...missing.map((m) => Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 2),
+                  child: Row(
+                    children: [
+                      const Icon(Icons.error_outline, size: 16, color: Colors.orange),
+                      const SizedBox(width: 8),
+                      Expanded(child: Text(m, style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13))),
+                    ],
+                  ),
+                )),
+                const SizedBox(height: 12),
+                const Text(
+                  'Note: Bank details and UPI ID are optional.',
+                  style: TextStyle(fontSize: 12, color: Colors.grey, fontStyle: FontStyle.italic),
+                ),
+              ],
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: const Text('OK'),
+              ),
+            ],
+          ),
+        );
+        return;
+      }
+    }
+
     // Capture the current value so we can revert on failure.
     final previousValue =
         (_account?['is_on_duty'] as bool?) ?? false;

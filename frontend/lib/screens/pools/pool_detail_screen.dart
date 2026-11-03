@@ -23,6 +23,40 @@ const Color _kBackground = Color(0xFFF8F9FA);
 const Color _kTextPrimary = Color(0xFF1C1B1F);
 const Color _kTextSecondary = Color(0xFF6B7280);
 
+const Map<String, (double, double)> _kDistrictCenters = {
+  'Bagalkot': (16.1817, 75.6958),
+  'Ballari': (15.1394, 76.9214),
+  'Belagavi': (15.8497, 74.4977),
+  'Bengaluru Rural': (13.1500, 77.4000),
+  'Bengaluru Urban': (12.9716, 77.5946),
+  'Bidar': (17.9104, 77.5199),
+  'Chamarajanagar': (11.9261, 76.9437),
+  'Chikkaballapura': (13.4355, 77.7315),
+  'Chikkamagaluru': (13.3161, 75.7720),
+  'Chitradurga': (14.2251, 76.3980),
+  'Dakshina Kannada': (12.9141, 74.8560),
+  'Davanagere': (14.4644, 75.9218),
+  'Dharwad': (15.4589, 75.0078),
+  'Gadag': (15.4166, 75.6167),
+  'Hassan': (13.0071, 76.0962),
+  'Haveri': (14.7935, 75.4040),
+  'Kalaburagi': (17.3297, 76.8343),
+  'Kodagu': (12.4244, 75.7382),
+  'Kolar': (13.1362, 78.1291),
+  'Koppal': (15.3510, 76.1550),
+  'Mandya': (12.5223, 76.8954),
+  'Mysuru': (12.2958, 76.6394),
+  'Raichur': (16.2076, 77.3463),
+  'Ramanagara': (12.7216, 77.2801),
+  'Shivamogga': (13.9299, 75.5681),
+  'Tumakuru': (13.3392, 77.1140),
+  'Udupi': (13.3409, 74.7421),
+  'Uttara Kannada': (14.8050, 74.6300),
+  'Vijayapura': (16.8302, 75.7100),
+  'Yadgir': (16.7700, 77.1400),
+  'Vijayanagara': (15.2689, 76.3909),
+};
+
 enum PickupMode { gps, saved, manual }
 
 class PoolDetailScreen extends StatefulWidget {
@@ -245,6 +279,7 @@ class _PoolDetailScreenState extends State<PoolDetailScreen> {
     final pool = _pool!;
     final isCreator = auth.userId == pool.creatorId;
     final isMember = pool.members.any((m) => m.farmerId == auth.userId);
+    final myMember = pool.members.where((m) => m.farmerId == auth.userId).firstOrNull;
     final isFull = pool.isFull;
     final canJoin = pool.status == 'OPEN' && !isMember && !isFull;
 
@@ -276,6 +311,12 @@ class _PoolDetailScreenState extends State<PoolDetailScreen> {
                   if (pool.status == 'DRIVER_ASSIGNED' && pool.driverName != null) ...[
                     const SizedBox(height: 16),
                     _buildDriverCard(pool),
+                  ],
+
+                  // Farmer Pickup OTP Banner (each farmer sees only their own individual OTP)
+                  if (myMember != null && myMember.pickupOtp != null && myMember.pickupOtp!.isNotEmpty) ...[
+                    const SizedBox(height: 16),
+                    _buildPickupOtpBanner(myMember.pickupOtp!),
                   ],
 
                   // Cost Card
@@ -408,6 +449,61 @@ class _PoolDetailScreenState extends State<PoolDetailScreen> {
           _buildRow(Icons.scale, 'Capacity', '${pool.currentQty.toStringAsFixed(0)} / ${pool.maxQty.toStringAsFixed(0)} kg'),
           const SizedBox(height: 12),
           _buildRow(Icons.access_time, 'Window', '${_formatDate(pool.pickupWindowStart)} - ${_formatDate(pool.pickupWindowEnd)}'),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildPickupOtpBanner(String otp) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+      decoration: BoxDecoration(
+        color: const Color(0xFFFFF7E0),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: const Color(0xFFFFE0A3), width: 1.5),
+      ),
+      child: Row(
+        children: [
+          const Icon(
+            Icons.vpn_key_rounded,
+            size: 24,
+            color: Color(0xFF8A5A00),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'YOUR PICKUP OTP',
+                  style: TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w700,
+                    color: Color(0xFF8A5A00),
+                    letterSpacing: 1.0,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  otp,
+                  style: const TextStyle(
+                    fontSize: 26,
+                    fontWeight: FontWeight.bold,
+                    color: Color(0xFF8A5A00),
+                    letterSpacing: 8,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                const Text(
+                  'Share this code with the rider when they arrive at your farm.',
+                  style: TextStyle(
+                    fontSize: 11,
+                    color: Color(0xFF8A5A00),
+                  ),
+                ),
+              ],
+            ),
+          ),
         ],
       ),
     );
@@ -689,7 +785,7 @@ class _JoinPoolSheetState extends State<_JoinPoolSheet> {
     switch (_pickupMode) {
       case PickupMode.gps:
         if (_gpsLat == null || _gpsLng == null) {
-          _showError('Cannot submit without GPS location. Please tap Refresh to detect your location.');
+          _showError('GPS location unavailable. Please tap Refresh or switch to Manual Entry / Saved Places.');
           return null;
         }
         return (address: _gpsAddress ?? '', landmark: _pickupLandmarkController.text.trim(), lat: _gpsLat!, lng: _gpsLng!);
@@ -699,11 +795,12 @@ class _JoinPoolSheetState extends State<_JoinPoolSheet> {
           return null;
         }
         final a = _savedAddresses[_selectedSavedIndex!];
-        final lat = (a['latitude'] as num?)?.toDouble();
-        final lng = (a['longitude'] as num?)?.toDouble();
+        var lat = (a['latitude'] as num?)?.toDouble();
+        var lng = (a['longitude'] as num?)?.toDouble();
         if (lat == null || lng == null) {
-          _showError('Selected saved address has no coordinates.');
-          return null;
+          final center = _kDistrictCenters[widget.poolDistrict];
+          lat = center?.$1 ?? 12.9716;
+          lng = center?.$2 ?? 77.5946;
         }
         return (address: (a['address_text'] ?? '').toString(), landmark: _pickupLandmarkController.text.trim(), lat: lat, lng: lng);
       case PickupMode.manual:
@@ -712,12 +809,17 @@ class _JoinPoolSheetState extends State<_JoinPoolSheet> {
           _showError('Please enter the village or area name.');
           return null;
         }
-        if (_gpsLat == null || _gpsLng == null) {
-          _fetchCurrentLocation();
-          _showError('Please wait for location detection before submitting.');
-          return null;
+        double lat;
+        double lng;
+        if (_gpsLat != null && _gpsLng != null) {
+          lat = _gpsLat!;
+          lng = _gpsLng!;
+        } else {
+          final center = _kDistrictCenters[widget.poolDistrict];
+          lat = center?.$1 ?? 12.9716;
+          lng = center?.$2 ?? 77.5946;
         }
-        return (address: address, landmark: _pickupLandmarkController.text.trim(), lat: _gpsLat!, lng: _gpsLng!);
+        return (address: address, landmark: _pickupLandmarkController.text.trim(), lat: lat, lng: lng);
     }
   }
 
@@ -745,6 +847,7 @@ class _JoinPoolSheetState extends State<_JoinPoolSheet> {
           'pickup_landmark': pickup.landmark,
           'dropoff_district': widget.poolDistrict,
           'dropoff_mandi_name': widget.poolMandiName,
+          'for_pool': true,
         }),
       );
 

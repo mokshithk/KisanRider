@@ -4,6 +4,7 @@ FastAPI router for the KisanRider farmer-pooling feature.
 
 from typing import Optional
 from uuid import UUID
+from pydantic import BaseModel, Field
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.exc import SQLAlchemyError
@@ -167,7 +168,7 @@ def group_pool(
 )
 def get_pool_detail(
     pool_id: UUID,
-    current_user: models.User = Depends(auth.require_role("FARMER")),
+    current_user: models.User = Depends(auth.get_current_user),
     db: Session = Depends(get_db),
 ):
     """
@@ -184,11 +185,12 @@ def get_pool_detail(
         and m.status in ("REQUESTED", "ACCEPTED")
         for m in pool.members
     )
+    is_rider = current_user.role == "RIDER"
 
-    if not (is_creator or is_open or is_member):
+    if not (is_creator or is_open or is_member or is_rider):
         raise HTTPException(status_code=404, detail="Pool not found")
 
-    return pool_crud.to_pool_detail_out(db, pool)
+    return pool_crud.to_pool_detail_out(db, pool, requesting_user_id=current_user.id)
 
 
 # ---------------------------------------------------------------------------
@@ -350,15 +352,17 @@ def cancel_pool(
 )
 def accept_pool(
     pool_id: UUID,
+    payload: Optional[pool_schemas.PoolAcceptPayload] = None,
     current_user: models.User = Depends(auth.require_role("RIDER")),
     db: Session = Depends(get_db),
 ):
     """
     Accept an OPEN pool as the authenticated rider.
     """
+    rider_expected = payload.rider_expected_pickup_at if payload else None
     try:
         pool, trip_ids = pool_crud.accept_pool(
-            db, pool_id, current_user.id
+            db, pool_id, current_user.id, rider_expected_pickup_at=rider_expected
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -371,3 +375,61 @@ def accept_pool(
         trip_ids=trip_ids,
         trips_created=len(trip_ids),
     )
+
+
+@router.get(
+    "/{pool_id}/route-optimization",
+    summary="Calculate shortest road pickup sequence and route geometry for a pool",
+)
+def get_pool_route_optimization(
+    pool_id: UUID,
+    rider_lat: float = Query(..., ge=-90, le=90, description="Rider starting latitude"),
+    rider_lng: float = Query(..., ge=-180, le=180, description="Rider starting longitude"),
+    current_user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Compute shortest road-network pickup sequence using OR-Tools and OSRM:
+    Rider GPS -> Farmer 1 -> Farmer 2 -> ... -> Farmer N -> Dropoff Mandi.
+    """
+    try:
+        return pool_crud.get_pool_route_optimization(
+            db, pool_id, rider_lat=rider_lat, rider_lng=rider_lng
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except SQLAlchemyError as e:
+        raise HTTPException(status_code=500, detail=f"Database error: {e}")
+
+
+class PoolFarmerOtpVerifyRequest(BaseModel):
+    produce_request_id: UUID
+    otp: str = Field(..., min_length=4, max_length=8)
+
+
+@router.post(
+    "/{pool_id}/verify-farmer-otp",
+    summary="Verify individual farmer pickup OTP in a pool",
+)
+def verify_pool_farmer_otp(
+    pool_id: UUID,
+    payload: PoolFarmerOtpVerifyRequest,
+    current_user: models.User = Depends(auth.require_role("RIDER")),
+    db: Session = Depends(get_db),
+):
+    """
+    Verify the 4-digit pickup OTP for a specific farmer's stop in a pool.
+    On success, transitions only that farmer's ProduceRequest and Trip to PICKED_UP.
+    """
+    try:
+        return pool_crud.verify_pooled_farmer_otp(
+            db=db,
+            pool_id=pool_id,
+            produce_request_id=payload.produce_request_id,
+            otp=payload.otp,
+            rider_id=current_user.id,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except SQLAlchemyError as e:
+        raise HTTPException(status_code=500, detail=f"Database error: {e}")

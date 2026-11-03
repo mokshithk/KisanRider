@@ -83,10 +83,8 @@ class FarmerOrder {
   ///   - 'other'     -> CANCELLED etc.
   String get filterTag {
     final s = status.toUpperCase();
-    if (s == 'PENDING') return 'pending';
-    if (s == 'ACCEPTED' || s == 'PICKED_UP' || s == 'IN_TRANSIT') {
-      return 'accepted';
-    }
+    if (s == 'PENDING' || s == 'ACCEPTED') return 'active';
+    if (s == 'PICKED_UP' || s == 'IN_TRANSIT') return 'in_transit';
     if (s == 'COMPLETED' || s == 'DELIVERED') return 'completed';
     return 'other';
   }
@@ -120,15 +118,17 @@ class FarmerOrdersTab extends StatefulWidget {
   const FarmerOrdersTab({
     super.key,
     required this.onBookTransport,
+    this.initialFilterTag,
   });
 
   final VoidCallback onBookTransport;
+  final String? initialFilterTag;
 
   @override
-  State<FarmerOrdersTab> createState() => _FarmerOrdersTabState();
+  FarmerOrdersTabState createState() => FarmerOrdersTabState();
 }
 
-class _FarmerOrdersTabState extends State<FarmerOrdersTab> {
+class FarmerOrdersTabState extends State<FarmerOrdersTab> {
   List<FarmerOrder> myRequests = [];
   bool isLoading = true;
   String? _error;
@@ -141,14 +141,27 @@ class _FarmerOrdersTabState extends State<FarmerOrdersTab> {
   /// Chip definitions. `tag == null` means "all".
   static const List<({String label, String? tag})> _filters = [
     (label: 'All', tag: null),
-    (label: 'Pending', tag: 'pending'),
-    (label: 'Accepted', tag: 'accepted'),
+    (label: 'Active', tag: 'active'),
+    (label: 'In Transit', tag: 'in_transit'),
     (label: 'Completed', tag: 'completed'),
   ];
+
+  void selectFilterTag(String tag) {
+    final idx = _filters.indexWhere((f) => f.tag == tag);
+    if (idx != -1) {
+      setState(() {
+        _activeFilterIndex = idx;
+      });
+    }
+  }
 
   @override
   void initState() {
     super.initState();
+    if (widget.initialFilterTag != null) {
+      final idx = _filters.indexWhere((f) => f.tag == widget.initialFilterTag);
+      if (idx != -1) _activeFilterIndex = idx;
+    }
     WidgetsBinding.instance.addPostFrameCallback((_) => _fetchOrders());
   }
 
@@ -512,6 +525,8 @@ class _StatusChip extends StatelessWidget {
     'DELIVERED': (Color(0xFF166534), Color(0x2616A34A)),
     'COMPLETED': (Color(0xFF166534), Color(0x2616A34A)),
     'CANCELLED': (Color(0xFF991B1B), Color(0x26DC2626)),
+    'EXPIRED': (Color(0xFF6B7280), Color(0x266B7280)),
+    'MISSED': (Color(0xFF991B1B), Color(0x26DC2626)),
   };
 
   @override

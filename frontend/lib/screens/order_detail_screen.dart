@@ -39,6 +39,10 @@ class OrderDetail {
     this.dropoffDistrict,
     this.dropoffMandiName,
     this.dropoffStallNumber,
+    this.requestedPickupAt,
+    this.pickupWindowStart,
+    this.pickupWindowEnd,
+    this.riderExpectedPickupAt,
   });
 
   factory OrderDetail.fromJson(Map<String, dynamic> json) {
@@ -67,6 +71,10 @@ class OrderDetail {
       dropoffDistrict: json['dropoff_district']?.toString(),
       dropoffMandiName: json['dropoff_mandi_name']?.toString(),
       dropoffStallNumber: json['dropoff_stall_number']?.toString(),
+      requestedPickupAt: _parseDate(json['requested_pickup_at']),
+      pickupWindowStart: _parseDate(json['pickup_window_start']),
+      pickupWindowEnd: _parseDate(json['pickup_window_end']),
+      riderExpectedPickupAt: _parseDate(json['rider_expected_pickup_at']),
     );
   }
 
@@ -88,6 +96,10 @@ class OrderDetail {
   final String? dropoffDistrict;
   final String? dropoffMandiName;
   final String? dropoffStallNumber;
+  final DateTime? requestedPickupAt;
+  final DateTime? pickupWindowStart;
+  final DateTime? pickupWindowEnd;
+  final DateTime? riderExpectedPickupAt;
 
   bool get hasRider => rider != null;
   bool get hasSettlement => settlement != null;
@@ -95,6 +107,7 @@ class OrderDetail {
   bool get isPending => status == 'PENDING';
   bool get isCancelled => status == 'CANCELLED';
   bool get isCompleted => status == 'COMPLETED';
+  bool get isExpired => status == 'EXPIRED';
   bool get isAcceptedState => tripStatus == 'ACCEPTED';
   bool get isInTransitState =>
       tripStatus == 'PICKED_UP' ||
@@ -699,6 +712,23 @@ class _SpecCard extends StatelessWidget {
             label: 'Weight',
             value: '${order.crop.weightKg.toStringAsFixed(0)} kg',
           ),
+          if (order.pickupWindowStart != null && order.pickupWindowEnd != null) ...[
+            _DetailRow(
+              label: 'Pickup Window',
+              value: '${order.pickupWindowStart!.toLocal().day}/${order.pickupWindowStart!.toLocal().month} ${order.pickupWindowStart!.toLocal().hour.toString().padLeft(2, '0')}:${order.pickupWindowStart!.toLocal().minute.toString().padLeft(2, '0')} — ${order.pickupWindowEnd!.toLocal().day}/${order.pickupWindowEnd!.toLocal().month} ${order.pickupWindowEnd!.toLocal().hour.toString().padLeft(2, '0')}:${order.pickupWindowEnd!.toLocal().minute.toString().padLeft(2, '0')}',
+            ),
+          ] else if (order.requestedPickupAt != null) ...[
+            _DetailRow(
+              label: 'Pickup Requested',
+              value: '${order.requestedPickupAt!.toLocal().day}/${order.requestedPickupAt!.toLocal().month} at ${order.requestedPickupAt!.toLocal().hour.toString().padLeft(2, '0')}:${order.requestedPickupAt!.toLocal().minute.toString().padLeft(2, '0')}',
+            ),
+          ],
+          if (order.riderExpectedPickupAt != null) ...[
+            _DetailRow(
+              label: 'Rider Expected Pickup',
+              value: '${order.riderExpectedPickupAt!.toLocal().day}/${order.riderExpectedPickupAt!.toLocal().month} at ${order.riderExpectedPickupAt!.toLocal().hour.toString().padLeft(2, '0')}:${order.riderExpectedPickupAt!.toLocal().minute.toString().padLeft(2, '0')}',
+            ),
+          ],
           const SizedBox(height: 14),
           const _SubHeading(text: 'ROUTE'),
           const SizedBox(height: 6),
