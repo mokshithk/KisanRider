@@ -1,8 +1,9 @@
+import random
 """
 CRUD layer for KisanRider farmer pooling.
 """
 
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from typing import List, Optional, Tuple
 from uuid import UUID
 
@@ -215,6 +216,7 @@ def to_pool_detail_out(
     pool: pool_models.Pool,
     *,
     creator_full_name: Optional[str] = None,
+    requesting_user_id: Optional[UUID] = None,
 ) -> pool_schemas.PoolDetailOut:
     base = to_pool_out(db, pool, creator_full_name=creator_full_name)
 
@@ -236,6 +238,10 @@ def to_pool_detail_out(
         farmer = db.query(models.User).filter(models.User.id == m.farmer_id).first()
         m_out = pool_schemas.PoolMemberOut.model_validate(m)
         m_out.farmer_full_name = farmer.full_name if farmer else None
+        if requesting_user_id and m.farmer_id == requesting_user_id:
+            pr = db.query(models.ProduceRequest).filter(models.ProduceRequest.id == m.produce_request_id).first()
+            if pr and pr.pickup_otp:
+                m_out.pickup_otp = pr.pickup_otp
         member_outs.append(m_out)
 
     return pool_schemas.PoolDetailOut(
@@ -597,7 +603,12 @@ def cancel_pool(db: Session, pool_id: UUID, creator_id: UUID, reason: Optional[s
         raise
 
 
-def accept_pool(db: Session, pool_id: UUID, rider_id: UUID) -> Tuple[pool_models.Pool, List[UUID]]:
+def accept_pool(
+    db: Session,
+    pool_id: UUID,
+    rider_id: UUID,
+    rider_expected_pickup_at: Optional[datetime] = None,
+) -> Tuple[pool_models.Pool, List[UUID]]:
     try:
         pool = _get_locked_pool(db, pool_id)
         if pool is None:
@@ -606,6 +617,29 @@ def accept_pool(db: Session, pool_id: UUID, rider_id: UUID) -> Tuple[pool_models
             raise ValueError(f"Pool is not OPEN (current: {pool.status})")
         if float(pool.current_qty) <= 0:
             raise ValueError("Pool has no committed weight; cannot accept")
+
+        now_utc = datetime.now(timezone.utc)
+        p_end = pool.pickup_window_end
+        if p_end.tzinfo is None:
+            p_end = p_end.replace(tzinfo=timezone.utc)
+        if p_end <= now_utc:
+            pool.status = "CANCELLED"
+            db.commit()
+            raise ValueError("This pool pickup window has expired and cannot be accepted.")
+
+        p_start = pool.pickup_window_start
+        if p_start.tzinfo is None:
+            p_start = p_start.replace(tzinfo=timezone.utc)
+
+        if rider_expected_pickup_at is not None:
+            if rider_expected_pickup_at.tzinfo is None:
+                rider_expected_pickup_at = rider_expected_pickup_at.replace(tzinfo=timezone.utc)
+            if rider_expected_pickup_at < p_start:
+                raise ValueError(f"Expected pickup time cannot be earlier than pool pickup window start ({p_start.isoformat()}).")
+            if rider_expected_pickup_at > p_end:
+                raise ValueError(f"Expected pickup time cannot be later than pool pickup window end ({p_end.isoformat()}).")
+        else:
+            rider_expected_pickup_at = p_start
 
         accepted_members = (
             db.query(pool_models.PoolMember)
@@ -617,6 +651,34 @@ def accept_pool(db: Session, pool_id: UUID, rider_id: UUID) -> Tuple[pool_models
         )
         if not accepted_members:
             raise ValueError("Pool has no accepted members")
+
+        rider = db.query(models.User).filter(models.User.id == rider_id).first()
+        if rider:
+            missing = []
+            if not (rider.full_name and rider.full_name.strip()):
+                missing.append("Full Name")
+            phone = (rider.phone_number or rider.phone or "").strip()
+            if not phone:
+                missing.append("Contact Phone")
+            if not (rider.vehicle_type and rider.vehicle_type.strip()):
+                missing.append("Vehicle Type")
+            if not (rider.vehicle_number and rider.vehicle_number.strip()):
+                missing.append("Vehicle Number")
+            if rider.payload_capacity_kg is None or rider.payload_capacity_kg <= 0:
+                missing.append("Payload Capacity")
+            if not (rider.license_number and rider.license_number.strip()):
+                missing.append("License Number")
+            if not (rider.district and rider.district.strip()):
+                missing.append("Operating District")
+            if not (rider.operating_routes and rider.operating_routes.strip()):
+                missing.append("Operating Routes")
+            if missing:
+                raise ValueError(f"Please complete your profile before accepting pools: {', '.join(missing)}.")
+
+            if rider.payload_capacity_kg is not None and float(pool.current_qty) > float(rider.payload_capacity_kg):
+                raise ValueError(
+                    f"Total pool quantity ({pool.current_qty} kg) exceeds your vehicle capacity ({rider.payload_capacity_kg} kg)."
+                )
 
         pending_members = (
             db.query(pool_models.PoolMember)
@@ -633,6 +695,7 @@ def accept_pool(db: Session, pool_id: UUID, rider_id: UUID) -> Tuple[pool_models
                 pm.cancellation_reason = "Pool assigned to a rider"
 
         trips_created: List[models.Trip] = []
+        used_otps = set()
         for member in accepted_members:
             pr = (
                 db.query(models.ProduceRequest)
@@ -646,6 +709,11 @@ def accept_pool(db: Session, pool_id: UUID, rider_id: UUID) -> Tuple[pool_models
                 raise ValueError(f"ProduceRequest {pr.id} is not PENDING (current: {pr.status})")
 
             pr.status = "ACCEPTED"
+
+            # Ensure each farmer in the pool has their own distinct unique 4-digit pickup OTP
+            while not pr.pickup_otp or pr.pickup_otp in used_otps:
+                pr.pickup_otp = f"{random.randint(1000, 9999)}"
+            used_otps.add(pr.pickup_otp)
 
             pickup_lat: Optional[float] = None
             pickup_lng: Optional[float] = None
@@ -665,6 +733,7 @@ def accept_pool(db: Session, pool_id: UUID, rider_id: UUID) -> Tuple[pool_models
                 pickup_landmark=pr.pickup_landmark,
                 pickup_latitude=pickup_lat,
                 pickup_longitude=pickup_lng,
+                rider_expected_pickup_at=rider_expected_pickup_at,
             )
             db.add(new_trip)
             trips_created.append(new_trip)
@@ -824,3 +893,203 @@ def group_pool(db: Session, payload: pool_schemas.PoolGroupCreate, creator_id: U
     except SQLAlchemyError:
         db.rollback()
         raise
+
+def get_pool_route_optimization(
+    db: Session,
+    pool_id: UUID,
+    rider_lat: float,
+    rider_lng: float,
+) -> dict:
+    import sys
+    from pathlib import Path
+    backend_root = Path(__file__).resolve().parent.parent
+    if str(backend_root) not in sys.path:
+        sys.path.insert(0, str(backend_root))
+    import routing_service
+
+    pool = db.query(pool_models.Pool).filter(pool_models.Pool.id == pool_id).first()
+    if pool is None:
+        raise ValueError("Pool not found")
+
+    members = (
+        db.query(pool_models.PoolMember)
+        .filter(pool_models.PoolMember.pool_id == pool_id)
+        .filter(pool_models.PoolMember.status.in_((
+            pool_models.PoolMemberStatus.ACCEPTED.value,
+            pool_models.PoolMemberStatus.REQUESTED.value,
+            pool_models.PoolMemberStatus.APPROVED.value,
+            pool_models.PoolMemberStatus.PENDING.value,
+        )))
+        .order_by(pool_models.PoolMember.requested_at.asc())
+        .all()
+    )
+
+    if not members:
+        raise ValueError("No members in this pool")
+
+    farmers_data = []
+    dropoff_lat: Optional[float] = None
+    dropoff_lng: Optional[float] = None
+
+    for m in members:
+        pr = db.query(models.ProduceRequest).filter(models.ProduceRequest.id == m.produce_request_id).first()
+        if not pr:
+            continue
+        farmer = db.query(models.User).filter(models.User.id == m.farmer_id).first()
+
+        f_lat = None
+        f_lng = None
+        if pr.pickup_location is not None:
+            try:
+                pt = to_shape(pr.pickup_location)
+                f_lat = float(pt.y)
+                f_lng = float(pt.x)
+            except Exception:
+                pass
+
+        if dropoff_lat is None and pr.dropoff_lat and pr.dropoff_lng:
+            dropoff_lat = pr.dropoff_lat
+            dropoff_lng = pr.dropoff_lng
+
+        linked_trip = db.query(models.Trip).filter(models.Trip.produce_request_id == pr.id).first()
+        trip_status = linked_trip.status if linked_trip else pr.status
+        trip_id = str(linked_trip.id) if linked_trip else None
+
+        farmers_data.append({
+            "id": str(m.id),
+            "farmer_id": str(m.farmer_id),
+            "produce_request_id": str(pr.id),
+            "trip_id": trip_id,
+            "status": trip_status,
+            "farmer_name": (farmer.full_name if farmer else "Farmer"),
+            "farmer_phone": (farmer.phone_number or farmer.phone or "") if farmer else "",
+            "crop_type": pr.crop_type,
+            "weight_kg": float(m.weight_kg),
+            "pickup_address": pr.pickup_address or "Farm Gate",
+            "pickup_landmark": pr.pickup_landmark,
+            "lat": f_lat,
+            "lng": f_lng,
+            "requested_pickup_at": (
+                pr.requested_pickup_at.isoformat()
+                if pr.requested_pickup_at is not None else None
+            ),
+        })
+
+    # Resolve dropoff location coordinates
+    dropoff_name = pool.dropoff_mandi_name or pool.dropoff_district or "Dropoff Mandi"
+    if dropoff_lat is None:
+        from main import _DISTRICT_CENTERS
+        if pool.dropoff_district and pool.dropoff_district in _DISTRICT_CENTERS:
+            dropoff_lat, dropoff_lng = _DISTRICT_CENTERS[pool.dropoff_district]
+        else:
+            dropoff_lat, dropoff_lng = rider_lat, rider_lng
+
+    result = routing_service.optimize_pool_route(
+        rider_lat=rider_lat,
+        rider_lng=rider_lng,
+        dropoff_lat=dropoff_lat,
+        dropoff_lng=dropoff_lng,
+        dropoff_name=dropoff_name,
+        farmers=farmers_data,
+    )
+
+    result["pool_id"] = str(pool.id)
+    result["crop_type"] = pool.crop_type
+    result["pool_status"] = pool.status
+    result["pickup_window_start"] = (
+        pool.pickup_window_start.isoformat()
+        if pool.pickup_window_start is not None else None
+    )
+    result["pickup_window_end"] = (
+        pool.pickup_window_end.isoformat()
+        if pool.pickup_window_end is not None else None
+    )
+    result["dropoff_district"] = pool.dropoff_district
+    result["dropoff_mandi_name"] = pool.dropoff_mandi_name
+    result["dropoff_stall_number"] = pool.dropoff_stall_number
+    result["min_qty"] = pool.min_qty
+    result["max_qty"] = pool.max_qty
+    result["current_qty"] = pool.current_qty
+
+    return result
+
+
+def verify_pooled_farmer_otp(
+    db: Session,
+    pool_id: UUID,
+    produce_request_id: UUID,
+    otp: str,
+    rider_id: UUID,
+) -> dict:
+    """
+    Verifies the individual pickup OTP for a specific farmer in a pool.
+    Updates only that farmer's ProduceRequest and Trip to PICKED_UP.
+    """
+    pool = db.query(pool_models.Pool).filter(pool_models.Pool.id == pool_id).first()
+    if not pool:
+        raise ValueError("Pool not found")
+
+    trip = (
+        db.query(models.Trip)
+        .filter(
+            models.Trip.pool_id == pool_id,
+            models.Trip.produce_request_id == produce_request_id,
+        )
+        .with_for_update()
+        .first()
+    )
+    if not trip:
+        raise ValueError("No trip found for this farmer in the pool")
+    if trip.rider_id != rider_id:
+        raise ValueError("You are not the assigned rider for this trip")
+
+    if trip.status == "PICKED_UP":
+        return {
+            "success": True,
+            "message": "Pickup already verified for this farmer",
+            "produce_request_id": str(produce_request_id),
+            "status": "PICKED_UP",
+            "already_verified": True,
+        }
+    if trip.status != "ACCEPTED":
+        raise ValueError(f"Trip cannot be verified from status {trip.status}")
+
+    pr_check = db.query(models.ProduceRequest).filter(models.ProduceRequest.id == produce_request_id).first()
+    if pr_check and pr_check.pickup_window_end:
+        now_utc = datetime.now(timezone.utc)
+        p_end = pr_check.pickup_window_end
+        if p_end.tzinfo is None:
+            p_end = p_end.replace(tzinfo=timezone.utc)
+        if p_end <= now_utc:
+            trip.status = "MISSED"
+            pr_check.status = "EXPIRED"
+            db.commit()
+            raise ValueError("The pickup window has expired. This pickup is no longer active.")
+
+    pr = (
+        db.query(models.ProduceRequest)
+        .filter(models.ProduceRequest.id == produce_request_id)
+        .with_for_update()
+        .first()
+    )
+    if not pr:
+        raise ValueError("Produce request not found")
+
+    submitted = otp.strip()
+    if not pr.pickup_otp or submitted != pr.pickup_otp:
+        raise ValueError("Invalid OTP. Please check the code with the farmer.")
+
+    pr.status = "PICKED_UP"
+    trip.status = "PICKED_UP"
+    db.commit()
+
+    pool_trips = db.query(models.Trip).filter(models.Trip.pool_id == pool_id).all()
+    all_picked_up = all(t.status in ("PICKED_UP", "DELIVERED") for t in pool_trips) if pool_trips else False
+
+    return {
+        "success": True,
+        "message": "Pickup verified successfully for farmer",
+        "produce_request_id": str(produce_request_id),
+        "status": "PICKED_UP",
+        "all_picked_up": all_picked_up,
+    }

@@ -1,3 +1,5 @@
+import 'dart:async';
+import 'package:intl/intl.dart';
 import 'dart:convert';
 
 import 'package:flutter/foundation.dart' show kIsWeb;
@@ -29,6 +31,40 @@ const List<String> _kDistricts = [
   'Uttara Kannada', 'Vijayapura', 'Yadgir', 'Vijayanagara',
 ];
 
+const Map<String, (double, double)> _kDistrictCenters = {
+  'Bagalkot': (16.1817, 75.6958),
+  'Ballari': (15.1394, 76.9214),
+  'Belagavi': (15.8497, 74.4977),
+  'Bengaluru Rural': (13.1500, 77.4000),
+  'Bengaluru Urban': (12.9716, 77.5946),
+  'Bidar': (17.9104, 77.5199),
+  'Chamarajanagar': (11.9261, 76.9437),
+  'Chikkaballapura': (13.4355, 77.7315),
+  'Chikkamagaluru': (13.3161, 75.7720),
+  'Chitradurga': (14.2251, 76.3980),
+  'Dakshina Kannada': (12.9141, 74.8560),
+  'Davanagere': (14.4644, 75.9218),
+  'Dharwad': (15.4589, 75.0078),
+  'Gadag': (15.4166, 75.6167),
+  'Hassan': (13.0071, 76.0962),
+  'Haveri': (14.7935, 75.4040),
+  'Kalaburagi': (17.3297, 76.8343),
+  'Kodagu': (12.4244, 75.7382),
+  'Kolar': (13.1362, 78.1291),
+  'Koppal': (15.3510, 76.1550),
+  'Mandya': (12.5223, 76.8954),
+  'Mysuru': (12.2958, 76.6394),
+  'Raichur': (16.2076, 77.3463),
+  'Ramanagara': (12.7216, 77.2801),
+  'Shivamogga': (13.9299, 75.5681),
+  'Tumakuru': (13.3392, 77.1140),
+  'Udupi': (13.3409, 74.7421),
+  'Uttara Kannada': (14.8050, 74.6300),
+  'Vijayapura': (16.8302, 75.7100),
+  'Yadgir': (16.7700, 77.1400),
+  'Vijayanagara': (15.2689, 76.3909),
+};
+
 const Color _kFarmerGreen = Color(0xFF2E7D32);
 
 enum PickupMode { gps, saved, manual }
@@ -42,6 +78,8 @@ class FarmerDashboard extends StatefulWidget {
 
 class _FarmerDashboardState extends State<FarmerDashboard> {
   int _currentIndex = 0;
+  final GlobalKey<FarmerOrdersTabState> _ordersKey =
+      GlobalKey<FarmerOrdersTabState>();
 
   static const List<String> _titles = [
     'KisanRider', 'My Orders', 'Earnings', 'Account',
@@ -50,6 +88,11 @@ class _FarmerDashboardState extends State<FarmerDashboard> {
   void _goToTab(int index) {
     if (index == _currentIndex) return;
     setState(() => _currentIndex = index);
+  }
+
+  void _openOrdersFilter(String filterTag) {
+    _ordersKey.currentState?.selectFilterTag(filterTag);
+    _goToTab(1);
   }
 
   void _handleHomeTabSwitch(int requestedIndex) {
@@ -78,6 +121,8 @@ class _FarmerDashboardState extends State<FarmerDashboard> {
     );
   }
 
+
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -96,8 +141,14 @@ class _FarmerDashboardState extends State<FarmerDashboard> {
       body: IndexedStack(
         index: _currentIndex,
         children: [
-          FarmerHomeTab(onTabSwitch: _handleHomeTabSwitch),
-          FarmerOrdersTab(onBookTransport: _openBookTransport),
+          FarmerHomeTab(
+            onTabSwitch: _handleHomeTabSwitch,
+            onOpenOrdersFilter: _openOrdersFilter,
+          ),
+          FarmerOrdersTab(
+            key: _ordersKey,
+            onBookTransport: _openBookTransport,
+          ),
           const FarmerEarningsTab(),
           const FarmerAccountScreen(),
         ],
@@ -191,6 +242,13 @@ class _FarmerBookTransportTabState extends State<FarmerBookTransportTab> {
   String? _savedAddressesError;
   int? _selectedSavedIndex;
 
+  static final Map<String, List<Map<String, dynamic>>> _mandiCache = {};
+
+  DateTime? _windowStartDate;
+  TimeOfDay? _windowStartTime;
+  DateTime? _windowEndDate;
+  TimeOfDay? _windowEndTime;
+
   String? _selectedDistrict;
   List<Map<String, dynamic>> _mandis = [];
   int? _selectedMandiIndex;
@@ -203,6 +261,9 @@ class _FarmerBookTransportTabState extends State<FarmerBookTransportTab> {
   @override
   void initState() {
     super.initState();
+    final now = DateTime.now();
+    _windowStartDate = now;
+    _windowStartTime = TimeOfDay.fromDateTime(now);
 
     if (widget.isEditing) {
       _cropController.text = widget.initialCropType ?? '';
@@ -397,9 +458,20 @@ class _FarmerBookTransportTabState extends State<FarmerBookTransportTab> {
 
     setState(() {
       _selectedDistrict = district;
-      _mandis = [];
       _selectedMandiIndex = null;
       _mandiError = null;
+    });
+
+    if (_mandiCache.containsKey(district) && _mandiCache[district]!.isNotEmpty) {
+      setState(() {
+        _mandis = _mandiCache[district]!;
+        _isLoadingMandis = false;
+      });
+      return;
+    }
+
+    setState(() {
+      _mandis = [];
       _isLoadingMandis = true;
     });
 
@@ -410,18 +482,19 @@ class _FarmerBookTransportTabState extends State<FarmerBookTransportTab> {
       final response = await http.get(
         uri,
         headers: const {'Accept': 'application/json'},
-      );
+      ).timeout(const Duration(seconds: 25));
 
       if (!mounted) return;
 
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body) as Map<String, dynamic>;
         final list = (data['markets'] as List<dynamic>?) ?? const [];
+        final parsed = list.whereType<Map<String, dynamic>>().toList(growable: false);
+
+        _mandiCache[district] = parsed;
 
         setState(() {
-          _mandis = list
-              .whereType<Map<String, dynamic>>()
-              .toList(growable: false);
+          _mandis = parsed;
           _selectedMandiIndex = null;
           _isLoadingMandis = false;
 
@@ -454,7 +527,7 @@ class _FarmerBookTransportTabState extends State<FarmerBookTransportTab> {
     switch (_pickupMode) {
       case PickupMode.gps:
         if (_gpsLat == null || _gpsLng == null) {
-          _showRedSnack('Cannot submit without GPS location. Please tap Refresh to detect your location.');
+          _showRedSnack('GPS location unavailable. Please tap Refresh or switch to Manual Entry / Saved Places.');
           return null;
         }
         return (
@@ -472,11 +545,12 @@ class _FarmerBookTransportTabState extends State<FarmerBookTransportTab> {
           return null;
         }
         final a = _savedAddresses[_selectedSavedIndex!];
-        final lat = (a['latitude'] as num?)?.toDouble();
-        final lng = (a['longitude'] as num?)?.toDouble();
+        var lat = (a['latitude'] as num?)?.toDouble();
+        var lng = (a['longitude'] as num?)?.toDouble();
         if (lat == null || lng == null) {
-          _showRedSnack('Selected saved address has no coordinates. Please update it or choose another option.');
-          return null;
+          final center = _selectedDistrict != null ? _kDistrictCenters[_selectedDistrict!] : null;
+          lat = center?.$1 ?? 12.9716;
+          lng = center?.$2 ?? 77.5946;
         }
         return (
           address: (a['address_text'] ?? '').toString(),
@@ -492,16 +566,21 @@ class _FarmerBookTransportTabState extends State<FarmerBookTransportTab> {
               _submitError = 'Please enter the village or area name.');
           return null;
         }
-        if (_gpsLat == null || _gpsLng == null) {
-          _fetchCurrentLocation();
-          _showRedSnack('Please wait for location detection before submitting.');
-          return null;
+        double lat;
+        double lng;
+        if (_gpsLat != null && _gpsLng != null) {
+          lat = _gpsLat!;
+          lng = _gpsLng!;
+        } else {
+          final center = _selectedDistrict != null ? _kDistrictCenters[_selectedDistrict!] : null;
+          lat = center?.$1 ?? 12.9716;
+          lng = center?.$2 ?? 77.5946;
         }
         return (
           address: address,
           landmark: _pickupLandmarkController.text.trim(),
-          lat: _gpsLat!,
-          lng: _gpsLng!,
+          lat: lat,
+          lng: lng,
         );
     }
   }
@@ -518,17 +597,154 @@ class _FarmerBookTransportTabState extends State<FarmerBookTransportTab> {
   }
 
   Future<void> _submitCreate() async {
-    final pickup = _resolvePickup();
-    if (pickup == null) return;
-
-    if (_selectedMandiIndex == null) {
-      setState(() => _submitError = 'Please select a dropoff market.');
-      return;
-    }
-
     final auth = context.read<AuthProvider>();
     if (auth.token == null) {
       setState(() => _submitError = 'Not signed in.');
+      return;
+    }
+
+    // --- Profile Completion Validation ---
+    setState(() => _isSubmitting = true);
+    Map<String, dynamic>? account;
+    try {
+      final accResp = await http.get(
+        Uri.parse('$_kApiBaseUrl/farmer/account'),
+        headers: _headers(auth),
+      );
+      if (accResp.statusCode == 200) {
+        account = jsonDecode(accResp.body) as Map<String, dynamic>;
+      }
+    } catch (_) {}
+
+    final farmSize = (account?['farm_size_acres'] as num?)?.toDouble() ?? 0.0;
+    final primaryCrops = (account?['primary_crops'] ?? '').toString().trim();
+
+    if (farmSize <= 0 || primaryCrops.isEmpty) {
+      setState(() => _isSubmitting = false);
+      if (!mounted) return;
+      await showDialog<void>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          title: const Text('Farm Details Required'),
+          content: const Text(
+            'Before booking transport, please complete your Farm Details (Farm Size > 0 acres and Primary Crops).\n\nBank and UPI details are optional.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              style: FilledButton.styleFrom(backgroundColor: _kFarmerGreen),
+              onPressed: () async {
+                Navigator.pop(ctx);
+                await openFarmDetailsSheet(context, account);
+              },
+              child: const Text('Complete Farm Details'),
+            ),
+          ],
+        ),
+      );
+      return;
+    }
+
+    final hasFarmAddress = (account?['farm_address'] ?? '').toString().trim().isNotEmpty;
+    if (_savedAddresses.isEmpty && !hasFarmAddress) {
+      await _loadSavedAddresses();
+    }
+    if (_savedAddresses.isEmpty && !hasFarmAddress) {
+      setState(() => _isSubmitting = false);
+      if (!mounted) return;
+      await showDialog<void>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          title: const Text('Saved Address Required'),
+          content: const Text(
+            'Before booking transport, you need at least one Saved Farm Address so riders know where to pick up your produce.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              style: FilledButton.styleFrom(backgroundColor: _kFarmerGreen),
+              onPressed: () async {
+                Navigator.pop(ctx);
+                final res = await openFarmAddressSheet(context, account);
+                if (res == true) {
+                  await _loadSavedAddresses();
+                }
+              },
+              child: const Text('Add Farm Address'),
+            ),
+          ],
+        ),
+      );
+      return;
+    }
+
+    // --- Pickup Window Validation ---
+    if (_windowStartDate == null || _windowStartTime == null) {
+      setState(() {
+        _isSubmitting = false;
+        _submitError = 'Please select when the pickup window starts.';
+      });
+      return;
+    }
+    if (_windowEndDate == null || _windowEndTime == null) {
+      setState(() {
+        _isSubmitting = false;
+        _submitError = 'Please select when the pickup window ends.';
+      });
+      return;
+    }
+
+    final winStart = DateTime(
+      _windowStartDate!.year,
+      _windowStartDate!.month,
+      _windowStartDate!.day,
+      _windowStartTime!.hour,
+      _windowStartTime!.minute,
+    );
+
+    final winEnd = DateTime(
+      _windowEndDate!.year,
+      _windowEndDate!.month,
+      _windowEndDate!.day,
+      _windowEndTime!.hour,
+      _windowEndTime!.minute,
+    );
+
+    if (winStart.isBefore(DateTime.now().subtract(const Duration(minutes: 5)))) {
+      setState(() {
+        _isSubmitting = false;
+        _submitError = 'Pickup window start cannot be in the past.';
+      });
+      return;
+    }
+
+    if (!winEnd.isAfter(winStart)) {
+      setState(() {
+        _isSubmitting = false;
+        _submitError = 'Pickup window end must be later than the start time.';
+      });
+      return;
+    }
+
+    final pickup = _resolvePickup();
+    if (pickup == null) {
+      setState(() => _isSubmitting = false);
+      return;
+    }
+
+    if (_selectedMandiIndex == null) {
+      setState(() {
+        _isSubmitting = false;
+        _submitError = 'Please select a dropoff market.';
+      });
       return;
     }
 
@@ -540,8 +756,6 @@ class _FarmerBookTransportTabState extends State<FarmerBookTransportTab> {
     final weightKg = double.parse(_weightKgController.text.trim());
     final saveForFuture =
         _pickupMode != PickupMode.saved && _saveAddressForFuture;
-
-    setState(() => _isSubmitting = true);
 
     try {
       final response = await http.post(
@@ -560,6 +774,9 @@ class _FarmerBookTransportTabState extends State<FarmerBookTransportTab> {
           'dropoff_mandi_name': mandiName,
           'dropoff_stall_number': shop.isEmpty ? null : shop,
           'dropoff_location': dropoff,
+          'requested_pickup_at': winStart.toUtc().toIso8601String(),
+          'pickup_window_start': winStart.toUtc().toIso8601String(),
+          'pickup_window_end': winEnd.toUtc().toIso8601String(),
         }),
       );
 
@@ -666,6 +883,201 @@ class _FarmerBookTransportTabState extends State<FarmerBookTransportTab> {
     return null;
   }
 
+  Widget _buildPickupWindowCard(ThemeData theme) {
+    final startDateStr = _windowStartDate == null
+        ? 'Select Date'
+        : DateFormat('dd MMM yyyy').format(_windowStartDate!);
+    final startTimeStr = _windowStartTime == null
+        ? 'Select Time'
+        : _windowStartTime!.format(context);
+
+    final endDateStr = _windowEndDate == null
+        ? 'Select Date'
+        : DateFormat('dd MMM yyyy').format(_windowEndDate!);
+    final endTimeStr = _windowEndTime == null
+        ? 'Select Time'
+        : _windowEndTime!.format(context);
+
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.grey.shade300),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.access_time_filled, color: _kFarmerGreen, size: 20),
+              const SizedBox(width: 8),
+              Text(
+                'Pickup Window *',
+                style: theme.textTheme.titleSmall?.copyWith(fontWeight: FontWeight.bold),
+              ),
+            ],
+          ),
+          const SizedBox(height: 4),
+          Text(
+            'Specify the time window when the rider can arrive for pickup.',
+            style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
+          ),
+          const SizedBox(height: 14),
+          Text(
+            'Pickup Window Starts',
+            style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: Colors.grey.shade800),
+          ),
+          const SizedBox(height: 6),
+          Row(
+            children: [
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed: _isSubmitting
+                      ? null
+                      : () async {
+                          final now = DateTime.now();
+                          final picked = await showDatePicker(
+                            context: context,
+                            initialDate: _windowStartDate ?? now,
+                            firstDate: now,
+                            lastDate: now.add(const Duration(days: 30)),
+                          );
+                          if (picked != null) {
+                            setState(() => _windowStartDate = picked);
+                          }
+                        },
+                  icon: const Icon(Icons.calendar_today_outlined, size: 16),
+                  label: Text(
+                    startDateStr,
+                    style: TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
+                      color: _windowStartDate == null ? Colors.grey.shade600 : Colors.black87,
+                    ),
+                  ),
+                  style: OutlinedButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 8),
+                    side: BorderSide(
+                      color: _windowStartDate == null ? Colors.grey.shade400 : _kFarmerGreen,
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed: _isSubmitting
+                      ? null
+                      : () async {
+                          final picked = await showTimePicker(
+                            context: context,
+                            initialTime: _windowStartTime ?? TimeOfDay.now(),
+                          );
+                          if (picked != null) {
+                            setState(() => _windowStartTime = picked);
+                          }
+                        },
+                  icon: const Icon(Icons.alarm_outlined, size: 16),
+                  label: Text(
+                    startTimeStr,
+                    style: TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
+                      color: _windowStartTime == null ? Colors.grey.shade600 : Colors.black87,
+                    ),
+                  ),
+                  style: OutlinedButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 8),
+                    side: BorderSide(
+                      color: _windowStartTime == null ? Colors.grey.shade400 : _kFarmerGreen,
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 14),
+          Text(
+            'Pickup Window Ends',
+            style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: Colors.grey.shade800),
+          ),
+          const SizedBox(height: 6),
+          Row(
+            children: [
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed: _isSubmitting
+                      ? null
+                      : () async {
+                          final now = _windowStartDate ?? DateTime.now();
+                          final picked = await showDatePicker(
+                            context: context,
+                            initialDate: _windowEndDate ?? now,
+                            firstDate: now,
+                            lastDate: now.add(const Duration(days: 30)),
+                          );
+                          if (picked != null) {
+                            setState(() => _windowEndDate = picked);
+                          }
+                        },
+                  icon: const Icon(Icons.calendar_today_outlined, size: 16),
+                  label: Text(
+                    endDateStr,
+                    style: TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
+                      color: _windowEndDate == null ? Colors.grey.shade600 : Colors.black87,
+                    ),
+                  ),
+                  style: OutlinedButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 8),
+                    side: BorderSide(
+                      color: _windowEndDate == null ? Colors.grey.shade400 : _kFarmerGreen,
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed: _isSubmitting
+                      ? null
+                      : () async {
+                          final picked = await showTimePicker(
+                            context: context,
+                            initialTime: _windowEndTime ?? TimeOfDay.now(),
+                          );
+                          if (picked != null) {
+                            setState(() => _windowEndTime = picked);
+                          }
+                        },
+                  icon: const Icon(Icons.alarm_outlined, size: 16),
+                  label: Text(
+                    endTimeStr,
+                    style: TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
+                      color: _windowEndTime == null ? Colors.grey.shade600 : Colors.black87,
+                    ),
+                  ),
+                  style: OutlinedButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 8),
+                    side: BorderSide(
+                      color: _windowEndTime == null ? Colors.grey.shade400 : _kFarmerGreen,
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -755,7 +1167,11 @@ class _FarmerBookTransportTabState extends State<FarmerBookTransportTab> {
               widget.isEditing
                   ? _buildEditPickupSection(theme)
                   : _buildPickupSection(theme),
-              const SizedBox(height: 24),
+              const SizedBox(height: 20),
+              if (!widget.isEditing) ...[
+                _buildPickupWindowCard(theme),
+                const SizedBox(height: 24),
+              ],
 
               DropdownButtonFormField<String>(
                 value: _selectedDistrict,

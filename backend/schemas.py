@@ -683,6 +683,22 @@ class ProduceRequestCreate(BaseModel):
     )
     dropoff_lat: Optional[float] = Field(None, ge=-90, le=90)
     dropoff_lng: Optional[float] = Field(None, ge=-180, le=180)
+    requested_pickup_at: Optional[datetime] = Field(
+        None,
+        description="Farmer requested pickup date and time in UTC. Must be in the future.",
+    )
+    pickup_window_start: Optional[datetime] = Field(
+        None,
+        description="Farmer pickup window start in UTC.",
+    )
+    pickup_window_end: Optional[datetime] = Field(
+        None,
+        description="Farmer pickup window end in UTC. Must be later than start.",
+    )
+    for_pool: bool = Field(
+        False,
+        description="True if this request is created as part of pool creation or joining, where pickup window is used.",
+    )
 
 
 class ProduceRequestResponse(BaseModel):
@@ -702,6 +718,10 @@ class ProduceRequestResponse(BaseModel):
     dropoff_mandi_id: Optional[str] = None
     dropoff_mandi_name: Optional[str] = None
     dropoff_stall_number: Optional[str] = None
+    requested_pickup_at: Optional[datetime] = None
+    pickup_window_start: Optional[datetime] = None
+    pickup_window_end: Optional[datetime] = None
+    rider_expected_pickup_at: Optional[datetime] = None
 
     # Legacy dropoff (kept for backward compat)
     dropoff_location: Optional[str] = None
@@ -710,6 +730,9 @@ class ProduceRequestResponse(BaseModel):
 
     status: str
     created_at: datetime
+    requested_pickup_at: Optional[datetime] = None
+    pickup_window_start: Optional[datetime] = None
+    pickup_window_end: Optional[datetime] = None
 
 
 class NearbyProduceRequestResponse(ProduceRequestResponse):
@@ -761,6 +784,7 @@ class TripResponse(BaseModel):
     rider_id: UUID
     status: TripStatus
     created_at: datetime
+    requested_pickup_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
 
 
@@ -898,6 +922,10 @@ class TripActiveOut(BaseModel):
     dropoff_mandi_id: Optional[str] = None
     dropoff_mandi_name: Optional[str] = None
     dropoff_stall_number: Optional[str] = None
+    requested_pickup_at: Optional[datetime] = None
+    pickup_window_start: Optional[datetime] = None
+    pickup_window_end: Optional[datetime] = None
+    rider_expected_pickup_at: Optional[datetime] = None
 
     dropoff_lat: Optional[float] = None
     dropoff_lng: Optional[float] = None
@@ -909,6 +937,9 @@ class TripActiveOut(BaseModel):
     rider_phone_number: Optional[str] = None
     vehicle_number: Optional[str] = None
     vehicle_type: Optional[str] = None
+    rider_expected_pickup_at: Optional[datetime] = None
+    pickup_window_start: Optional[datetime] = None
+    pickup_window_end: Optional[datetime] = None
 
 
 # ---------------------------------------------------------------------------
@@ -956,6 +987,9 @@ class RiderSummary(BaseModel):
     # of their Account screen.
     vehicle_number: Optional[str] = None
     vehicle_type: Optional[str] = None
+    rider_expected_pickup_at: Optional[datetime] = None
+    pickup_window_start: Optional[datetime] = None
+    pickup_window_end: Optional[datetime] = None
 
 
 class TripSummary(BaseModel):
@@ -1137,6 +1171,10 @@ class FarmerOrderDetailResponse(BaseModel):
     dropoff_district: Optional[str] = None
     dropoff_mandi_name: Optional[str] = None
     dropoff_stall_number: Optional[str] = None
+    requested_pickup_at: Optional[datetime] = None
+    pickup_window_start: Optional[datetime] = None
+    pickup_window_end: Optional[datetime] = None
+    rider_expected_pickup_at: Optional[datetime] = None
 
 
 # ---------------------------------------------------------------------------
@@ -1364,3 +1402,8 @@ class AdminStatsResponse(BaseModel):
 
 class PhotoUploadResponse(BaseModel):
     image_url: str
+class TripAcceptPayload(BaseModel):
+    rider_expected_pickup_at: Optional[datetime] = Field(
+        None,
+        description="Expected pickup date and time entered by rider, must fall within pickup window."
+    )

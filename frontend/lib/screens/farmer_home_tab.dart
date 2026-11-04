@@ -32,9 +32,14 @@ const String _kSupportPhone = '1800000000';
 // ============================================================================
 
 class FarmerHomeTab extends StatefulWidget {
-  const FarmerHomeTab({super.key, required this.onTabSwitch});
+  const FarmerHomeTab({
+    super.key,
+    required this.onTabSwitch,
+    this.onOpenOrdersFilter,
+  });
 
   final void Function(int) onTabSwitch;
+  final void Function(String filterTag)? onOpenOrdersFilter;
 
   @override
   State<FarmerHomeTab> createState() => _FarmerHomeTabState();
@@ -370,14 +375,28 @@ class _FarmerHomeTabState extends State<FarmerHomeTab> {
   Widget _buildMetricsRow() {
     return Row(
       children: [
-        Expanded(child: _MetricCard(value: _activeCount, label: 'ACTIVE')),
-        const SizedBox(width: 10),
         Expanded(
-          child: _MetricCard(value: _inTransitCount, label: 'IN TRANSIT'),
+          child: _MetricCard(
+            value: _activeCount,
+            label: 'ACTIVE',
+            onTap: () => widget.onOpenOrdersFilter?.call('active'),
+          ),
         ),
         const SizedBox(width: 10),
         Expanded(
-          child: _MetricCard(value: _completedCount, label: 'COMPLETED'),
+          child: _MetricCard(
+            value: _inTransitCount,
+            label: 'IN TRANSIT',
+            onTap: () => widget.onOpenOrdersFilter?.call('in_transit'),
+          ),
+        ),
+        const SizedBox(width: 10),
+        Expanded(
+          child: _MetricCard(
+            value: _completedCount,
+            label: 'COMPLETED',
+            onTap: () => widget.onOpenOrdersFilter?.call('completed'),
+          ),
         ),
       ],
     );
@@ -520,45 +539,57 @@ class _FarmerHomeTabState extends State<FarmerHomeTab> {
 }
 
 class _MetricCard extends StatelessWidget {
-  const _MetricCard({required this.value, required this.label});
+  const _MetricCard({
+    required this.value,
+    required this.label,
+    this.onTap,
+  });
 
   final int value;
   final String label;
+  final VoidCallback? onTap;
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
-      decoration: BoxDecoration(
-        color: Colors.white,
+    return Material(
+      color: Colors.white,
+      borderRadius: BorderRadius.circular(12),
+      child: InkWell(
+        onTap: onTap,
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: Colors.grey.shade300),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            value.toString(),
-            style: const TextStyle(
-              fontSize: 24,
-              fontWeight: FontWeight.bold,
-              color: _kTextPrimary,
-              height: 1.1,
-            ),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: Colors.grey.shade300),
           ),
-          const SizedBox(height: 4),
-          Text(
-            label,
-            style: const TextStyle(
-              fontSize: 10.5,
-              fontWeight: FontWeight.w700,
-              color: _kTextSecondary,
-              letterSpacing: 0.6,
-            ),
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                value.toString(),
+                style: const TextStyle(
+                  fontSize: 24,
+                  fontWeight: FontWeight.bold,
+                  color: _kTextPrimary,
+                  height: 1.1,
+                ),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                label,
+                style: const TextStyle(
+                  fontSize: 10.5,
+                  fontWeight: FontWeight.w700,
+                  color: _kTextSecondary,
+                  letterSpacing: 0.6,
+                ),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ],
           ),
-        ],
+        ),
       ),
     );
   }

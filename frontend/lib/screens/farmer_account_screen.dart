@@ -1986,3 +1986,25 @@ class _ErrorView extends StatelessWidget {
     );
   }
 }
+
+// ============================================================================
+// Public Sheet Openers (reused by Book Transport profile validation)
+// ============================================================================
+
+Future<bool?> openFarmDetailsSheet(BuildContext context, [Map<String, dynamic>? account]) {
+  return showModalBottomSheet<bool>(
+    context: context,
+    isScrollControlled: true,
+    backgroundColor: Colors.transparent,
+    builder: (_) => _FarmDetailsSheet(account: account),
+  );
+}
+
+Future<bool?> openFarmAddressSheet(BuildContext context, [Map<String, dynamic>? account]) {
+  return showModalBottomSheet<bool>(
+    context: context,
+    isScrollControlled: true,
+    backgroundColor: Colors.transparent,
+    builder: (_) => _FarmAddressSheet(account: account),
+  );
+}
