@@ -1,17 +1,12 @@
 import React, { useState, useEffect } from 'react';
 import {
-  History,
   Search,
-  Filter,
   Eye,
   RefreshCw,
   Shield,
-  Clock,
-  Terminal,
 } from 'lucide-react';
 import { adminService } from '../services/adminService';
 import DataTable from '../components/common/DataTable';
-import Badge from '../components/common/Badge';
 import DetailModal from '../components/common/DetailModal';
 
 export default function ActivityLogs() {
@@ -75,8 +70,8 @@ export default function ActivityLogs() {
       accessor: 'admin_name',
       render: (row) => (
         <div>
-          <span className="font-semibold text-text-primary block text-xs">{row.admin_name}</span>
-          <span className="text-[11px] text-text-secondary">{row.admin_email}</span>
+          <span className="font-semibold text-text-primary block text-xs leading-tight">{row.admin_name}</span>
+          <span className="text-[11px] text-text-secondary mt-0.5 block">{row.admin_email}</span>
         </div>
       ),
     },
@@ -93,7 +88,7 @@ export default function ActivityLogs() {
       header: 'Module',
       accessor: 'module',
       render: (row) => (
-        <span className="text-xs font-semibold px-2 py-0.5 rounded bg-surface-subtle border border-surface-border text-text-primary">
+        <span className="text-[11px] font-semibold px-2.5 py-0.5 rounded-full bg-surface-subtle border border-surface-border text-text-primary">
           {row.module}
         </span>
       ),
@@ -134,8 +129,9 @@ export default function ActivityLogs() {
             setSelectedLog(row);
             setIsDetailOpen(true);
           }}
-          className="p-1 rounded text-text-secondary hover:text-forest hover:bg-surface-subtle transition-colors"
+          className="p-1.5 rounded-lg text-text-secondary hover:text-forest hover:bg-surface-subtle transition-colors"
           title="Inspect Audit Log"
+          aria-label="Inspect Audit Log"
         >
           <Eye className="w-4 h-4" />
         </button>
@@ -146,10 +142,10 @@ export default function ActivityLogs() {
   return (
     <div className="space-y-5">
       {/* Immutability Banner */}
-      <div className="p-3.5 bg-white rounded-lg border border-surface-border text-xs text-text-secondary flex items-start space-x-2.5 shadow-xs">
+      <div className="p-4 bg-white rounded-xl border border-surface-border text-xs text-text-secondary flex items-start space-x-3 shadow-xs">
         <Shield className="w-4 h-4 text-forest shrink-0 mt-0.5" />
         <p className="leading-relaxed">
-          <strong className="text-text-primary">Append-Only Audit Security:</strong> Activity logs
+          <strong className="text-text-primary font-semibold">Append-Only Audit Security:</strong> Activity logs
           are immutable. Every consequential administrative decision—including status transitions,
           cancellations, invitations, and financial reconciliations—is permanently preserved. No
           delete or modification endpoints exist.
@@ -157,21 +153,21 @@ export default function ActivityLogs() {
       </div>
 
       {/* Filter and Search Bar */}
-      <div className="bg-white p-4 rounded-lg border border-surface-border flex flex-col md:flex-row md:items-center justify-between gap-3 shadow-xs">
+      <div className="bg-white p-4 rounded-xl border border-surface-border flex flex-col md:flex-row md:items-center justify-between gap-3 shadow-xs">
         <form onSubmit={handleSearchSubmit} className="flex-1 flex items-center space-x-2">
           <div className="relative flex-1 max-w-md">
-            <Search className="w-4 h-4 absolute left-3 top-2.5 text-text-secondary" />
+            <Search className="w-4 h-4 absolute left-3 top-2.5 text-text-muted" />
             <input
               type="text"
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
               placeholder="Search by description, admin email, record ID..."
-              className="w-full text-xs rounded border border-surface-border pl-9 pr-3 py-2 focus:outline-none focus:ring-1 focus:ring-forest text-text-primary"
+              className="w-full text-xs rounded-lg border border-surface-border pl-9 pr-3 py-2 bg-white text-text-primary placeholder:text-text-muted focus:outline-none focus:ring-2 focus:ring-forest/20 focus:border-forest transition-all"
             />
           </div>
           <button
             type="submit"
-            className="px-3.5 py-2 text-xs font-medium rounded bg-forest text-white hover:bg-forest-light transition-colors"
+            className="px-4 py-2 text-xs font-semibold rounded-lg bg-forest text-white hover:bg-forest-light transition-colors shadow-xs"
           >
             Search
           </button>
@@ -181,7 +177,7 @@ export default function ActivityLogs() {
           <select
             value={moduleFilter}
             onChange={(e) => setModuleFilter(e.target.value)}
-            className="text-xs rounded border border-surface-border px-3 py-2 bg-white text-text-primary focus:outline-none focus:ring-1 focus:ring-forest"
+            className="text-xs rounded-lg border border-surface-border px-3 py-2 bg-white text-text-primary focus:outline-none focus:ring-2 focus:ring-forest/20 focus:border-forest transition-all"
           >
             <option value="ALL">All Modules</option>
             <option value="AUTH">Auth</option>
@@ -195,15 +191,16 @@ export default function ActivityLogs() {
 
           <button
             onClick={() => fetchLogs(page)}
-            className="p-2 rounded border border-surface-border text-text-secondary hover:text-text-primary hover:bg-surface-subtle transition-colors"
+            className="p-2 rounded-lg border border-surface-border text-text-secondary hover:text-text-primary hover:bg-surface-subtle transition-colors shadow-xs"
             title="Refresh logs"
+            aria-label="Refresh logs"
           >
-            <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
+            <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin text-forest' : ''}`} />
           </button>
         </div>
       </div>
 
-      {/* Logs Table */}
+      {/* Activity Logs Table */}
       <DataTable
         columns={columns}
         data={logs}
@@ -213,62 +210,64 @@ export default function ActivityLogs() {
         totalPages={totalPages}
         onPageChange={(p) => fetchLogs(p)}
         isLoading={loading}
-        emptyMessage="No activity logs found."
+        emptyMessage="No audit logs recorded for query."
       />
 
       {/* Detail Modal */}
       <DetailModal
         isOpen={isDetailOpen}
         onClose={() => setIsDetailOpen(false)}
-        title={selectedLog ? `Audit Record #${selectedLog.id.slice(0, 8)}` : 'Audit Record'}
-        subtitle={`Recorded on ${selectedLog?.created_at ? new Date(selectedLog.created_at).toLocaleString() : ''}`}
+        title={selectedLog ? `Audit Record #${selectedLog.id.slice(0, 8)}` : 'Log Details'}
+        subtitle={`Action: ${selectedLog?.action || ''} • Timestamp: ${
+          selectedLog?.created_at ? new Date(selectedLog.created_at).toLocaleString() : ''
+        }`}
         maxWidth="max-w-2xl"
       >
         {selectedLog && (
-          <div className="space-y-4">
-            <div className="grid grid-cols-2 gap-3 text-xs bg-surface-subtle p-3.5 rounded border border-surface-border">
+          <div className="space-y-4 text-xs">
+            <div className="grid grid-cols-2 gap-3 bg-surface-subtle/70 p-4 rounded-xl border border-surface-border">
               <div>
-                <span className="text-text-secondary block">Admin Performing Action:</span>
-                <span className="font-semibold text-text-primary block mt-0.5">
+                <span className="text-text-secondary block font-medium">Administrator</span>
+                <span className="font-semibold text-text-primary block mt-1">
                   {selectedLog.admin_name} ({selectedLog.admin_email})
                 </span>
               </div>
               <div>
-                <span className="text-text-secondary block">Module / Domain:</span>
-                <span className="font-semibold text-text-primary block mt-0.5">
-                  {selectedLog.module}
-                </span>
+                <span className="text-text-secondary block font-medium">IP Address</span>
+                <span className="font-mono text-text-primary block mt-1">{selectedLog.ip_address || 'Internal/Localhost'}</span>
               </div>
               <div>
-                <span className="text-text-secondary block">Action Signature:</span>
-                <span className="font-mono font-bold text-forest block mt-0.5">
-                  {selectedLog.action}
-                </span>
+                <span className="text-text-secondary block font-medium">Module</span>
+                <span className="font-semibold text-text-primary block mt-1">{selectedLog.module}</span>
               </div>
               <div>
-                <span className="text-text-secondary block">Client IP Address:</span>
-                <span className="font-mono text-text-primary block mt-0.5">
-                  {selectedLog.ip_address || 'Internal / Local'}
-                </span>
+                <span className="text-text-secondary block font-medium">Target Record</span>
+                <span className="font-mono text-text-primary block mt-1">{selectedLog.record_id || 'Global / Batch'}</span>
               </div>
             </div>
 
             <div>
-              <span className="text-xs font-bold uppercase tracking-wider text-text-secondary block mb-1">
-                Full Description
-              </span>
-              <p className="text-xs text-text-primary p-3 bg-white rounded border border-surface-border leading-relaxed">
+              <h4 className="font-bold uppercase tracking-wider text-text-secondary mb-1.5 text-[11px]">
+                Operation Summary
+              </h4>
+              <p className="bg-white p-3.5 rounded-xl border border-surface-border text-text-primary leading-relaxed">
                 {selectedLog.description}
               </p>
             </div>
 
             {selectedLog.changes && (
               <div>
-                <span className="text-xs font-bold uppercase tracking-wider text-text-secondary block mb-1">
-                  Delta State & Captured Context
-                </span>
-                <pre className="bg-forest-dark text-lime-accent p-3.5 rounded font-mono text-xs overflow-x-auto">
-                  {JSON.stringify(selectedLog.changes, null, 2)}
+                <h4 className="font-bold uppercase tracking-wider text-text-secondary mb-1.5 text-[11px]">
+                  State Changes Payload (JSON)
+                </h4>
+                <pre className="bg-forest-dark text-emerald-300 p-3.5 rounded-xl text-[11px] font-mono overflow-x-auto">
+                  {(() => {
+                    try {
+                      return JSON.stringify(JSON.parse(selectedLog.changes), null, 2);
+                    } catch {
+                      return selectedLog.changes;
+                    }
+                  })()}
                 </pre>
               </div>
             )}

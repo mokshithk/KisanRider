@@ -4,9 +4,17 @@
 
 @layer base {
   body {
-    background-color: #F4F7F3;
-    color: #18231D;
+    background-color: #F6F8F5;
+    color: #111827;
     font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  /* Accessible keyboard navigation focus style */
+  :focus-visible {
+    outline: 2px solid #173D2C;
+    outline-offset: 2px;
   }
 }
 
@@ -17,14 +25,21 @@
 }
 
 ::-webkit-scrollbar-track {
-  background: #F4F7F3;
+  background: #F1F4F0;
 }
 
 ::-webkit-scrollbar-thumb {
   background: #CBD5E1;
-  border-radius: 3px;
+  border-radius: 4px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
   background: #94A3B8;
+}
+
+/* Subtle transitions across interactive components */
+button, a, input, select, textarea {
+  transition-property: color, background-color, border-color, box-shadow, transform;
+  transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+  transition-duration: 150ms;
 }

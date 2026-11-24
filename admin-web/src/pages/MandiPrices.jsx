@@ -1,12 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import {
-  TrendingUp,
   Search,
-  Filter,
   RefreshCw,
   Database,
   Globe,
-  AlertCircle,
 } from 'lucide-react';
 import { adminService } from '../services/adminService';
 import DataTable from '../components/common/DataTable';
@@ -71,7 +68,7 @@ export default function MandiPrices() {
       header: 'Modal Price',
       accessor: 'modal_price',
       render: (row) => (
-        <span className="font-bold text-text-primary text-xs bg-surface-subtle px-2 py-0.5 rounded border border-surface-border">
+        <span className="font-bold text-text-primary text-xs bg-surface-subtle px-2.5 py-1 rounded-md border border-surface-border inline-block">
           {row.modal_price}
         </span>
       ),
@@ -82,7 +79,7 @@ export default function MandiPrices() {
       render: () => (
         <Badge
           status={isLive ? 'LIVE' : 'MOCK'}
-          text={isLive ? 'Live Data.gov.in' : 'Mock Fallback Feed'}
+          text={isLive ? 'Live Agmarknet' : 'Local Fallback'}
         />
       ),
     },
@@ -92,10 +89,10 @@ export default function MandiPrices() {
     <div className="space-y-5">
       {/* Transparency Banner */}
       <div
-        className={`p-4 rounded-lg border text-xs flex items-start space-x-3 shadow-xs ${
+        className={`p-4 rounded-xl border text-xs flex items-start space-x-3 shadow-xs ${
           isLive
-            ? 'bg-emerald-50 border-emerald-200 text-emerald-900'
-            : 'bg-amber-50 border-amber-200 text-amber-900'
+            ? 'bg-emerald-50 border-emerald-200/80 text-emerald-900'
+            : 'bg-amber-50 border-amber-200/80 text-amber-900'
         }`}
       >
         {isLive ? (
@@ -104,12 +101,12 @@ export default function MandiPrices() {
           <Database className="w-5 h-5 text-amber-700 shrink-0 mt-0.5" />
         )}
         <div>
-          <span className="font-bold block">
+          <span className="font-bold block tracking-tight">
             {isLive
               ? 'Connected to Live Agmarknet Data Feed'
               : 'Operating on Local Fallback Dataset (Mock)'}
           </span>
-          <p className="mt-0.5 leading-relaxed">
+          <p className="mt-0.5 leading-relaxed text-text-secondary">
             {isLive
               ? 'Market rates are streamed live via the Open Government Data Platform (data.gov.in). APMC mandi wholesale rates are monitored in real time.'
               : 'DATA_GOV_API_KEY is not configured or remote upstream is uncontactable. Displaying accurate historical baseline rates for all 31 Karnataka APMCs.'}
@@ -118,21 +115,21 @@ export default function MandiPrices() {
       </div>
 
       {/* Filter and Search Bar */}
-      <div className="bg-white p-4 rounded-lg border border-surface-border flex flex-col md:flex-row md:items-center justify-between gap-3 shadow-xs">
+      <div className="bg-white p-4 rounded-xl border border-surface-border flex flex-col md:flex-row md:items-center justify-between gap-3 shadow-xs">
         <form onSubmit={handleSearch} className="flex-1 flex items-center space-x-2">
           <div className="relative flex-1 max-w-md">
-            <Search className="w-4 h-4 absolute left-3 top-2.5 text-text-secondary" />
+            <Search className="w-4 h-4 absolute left-3 top-2.5 text-text-muted" />
             <input
               type="text"
               value={cropSearch}
               onChange={(e) => setCropSearch(e.target.value)}
               placeholder="Search crop commodity (Tomato, Onion, Coffee...)"
-              className="w-full text-xs rounded border border-surface-border pl-9 pr-3 py-2 focus:outline-none focus:ring-1 focus:ring-forest text-text-primary"
+              className="w-full text-xs rounded-lg border border-surface-border pl-9 pr-3 py-2 bg-white text-text-primary placeholder:text-text-muted focus:outline-none focus:ring-2 focus:ring-forest/20 focus:border-forest transition-all"
             />
           </div>
           <button
             type="submit"
-            className="px-3.5 py-2 text-xs font-medium rounded bg-forest text-white hover:bg-forest-light transition-colors"
+            className="px-4 py-2 text-xs font-semibold rounded-lg bg-forest text-white hover:bg-forest-light transition-colors shadow-xs"
           >
             Search
           </button>
@@ -142,7 +139,7 @@ export default function MandiPrices() {
           <select
             value={district}
             onChange={(e) => setDistrict(e.target.value)}
-            className="text-xs rounded border border-surface-border px-3 py-2 bg-white text-text-primary focus:outline-none focus:ring-1 focus:ring-forest"
+            className="text-xs rounded-lg border border-surface-border px-3 py-2 bg-white text-text-primary focus:outline-none focus:ring-2 focus:ring-forest/20 focus:border-forest transition-all"
           >
             <option value="ALL">All Karnataka Districts</option>
             {districts.map((d) => (
@@ -154,10 +151,11 @@ export default function MandiPrices() {
 
           <button
             onClick={fetchPrices}
-            className="p-2 rounded border border-surface-border text-text-secondary hover:text-text-primary hover:bg-surface-subtle transition-colors"
+            className="p-2 rounded-lg border border-surface-border text-text-secondary hover:text-text-primary hover:bg-surface-subtle transition-colors shadow-xs"
             title="Refresh prices"
+            aria-label="Refresh prices"
           >
-            <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
+            <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin text-forest' : ''}`} />
           </button>
         </div>
       </div>

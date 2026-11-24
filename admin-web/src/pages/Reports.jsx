@@ -1,12 +1,8 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
-  FileBarChart2,
   Download,
-  Calendar,
-  Filter,
+  AlertCircle,
   RefreshCw,
-  FileSpreadsheet,
-  CheckCircle2,
 } from 'lucide-react';
 import { adminService } from '../services/adminService';
 import DataTable from '../components/common/DataTable';
@@ -28,24 +24,54 @@ export default function Reports() {
   const [reportData, setReportData] = useState([]);
   const [totalRecords, setTotalRecords] = useState(0);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
   const [exporting, setExporting] = useState(false);
 
-  const fetchReport = async () => {
+  // Track active request to prevent race conditions when switching tabs rapidly
+  const activeRequestId = useRef(0);
+
+  const fetchReport = async (category = selectedCategory, start = startDate, end = endDate) => {
+    const requestId = ++activeRequestId.current;
     setLoading(true);
+    setError(null);
+
     try {
-      const res = await adminService.getReportsSummary(selectedCategory, startDate, endDate);
-      setReportData(res.data || []);
-      setTotalRecords(res.total_records || 0);
+      const res = await adminService.getReportsSummary(category, start, end);
+      if (requestId === activeRequestId.current) {
+        setReportData(res?.data || []);
+        setTotalRecords(res?.total_records || 0);
+      }
     } catch (err) {
-      console.error('Failed to load report summary:', err);
+      if (requestId === activeRequestId.current) {
+        console.error('Failed to load report summary:', err);
+        setError('Failed to load report records. Please check the network connection or retry.');
+        setReportData([]);
+        setTotalRecords(0);
+      }
     } finally {
-      setLoading(false);
+      if (requestId === activeRequestId.current) {
+        setLoading(false);
+      }
     }
   };
 
+  const handleCategoryChange = (newCatId) => {
+    if (newCatId === selectedCategory) return;
+    // Clear data and set loading synchronously so stale rows are never evaluated against new category column definitions
+    setSelectedCategory(newCatId);
+    setReportData([]);
+    setTotalRecords(0);
+    setError(null);
+    setLoading(true);
+  };
+
   useEffect(() => {
-    fetchReport();
+    fetchReport(selectedCategory, startDate, endDate);
   }, [selectedCategory]);
+
+  const handleFilterClick = () => {
+    fetchReport(selectedCategory, startDate, endDate);
+  };
 
   const handleExportCsv = async () => {
     setExporting(true);
@@ -59,64 +85,78 @@ export default function Reports() {
     }
   };
 
-  // Dynamic columns depending on category
+  // Safe dynamic columns depending on category
   const getColumns = () => {
     if (selectedCategory === 'farmers') {
       return [
-        { header: 'Farmer Name', accessor: 'name' },
-        { header: 'Email', accessor: 'email' },
-        { header: 'Phone', accessor: 'phone' },
-        { header: 'District', accessor: 'district' },
-        { header: 'Status', accessor: 'status', render: (r) => <Badge status={r.status} /> },
-        { header: 'Registered On', accessor: 'registered_on' },
+        { header: 'Farmer Name', accessor: 'name', render: (r) => r.name || '-' },
+        { header: 'Email', accessor: 'email', render: (r) => r.email || '-' },
+        { header: 'Phone', accessor: 'phone', render: (r) => r.phone || '-' },
+        { header: 'District', accessor: 'district', render: (r) => r.district || 'Karnataka' },
+        { header: 'Status', accessor: 'status', render: (r) => <Badge status={r.status || 'ACTIVE'} /> },
+        { header: 'Registered On', accessor: 'registered_on', render: (r) => r.registered_on || '-' },
       ];
     } else if (selectedCategory === 'riders') {
       return [
-        { header: 'Rider Name', accessor: 'name' },
-        { header: 'Phone', accessor: 'phone' },
-        { header: 'Vehicle Specs', accessor: 'vehicle' },
-        { header: 'Capacity', accessor: 'capacity_kg', render: (r) => `${r.capacity_kg} kg` },
-        { header: 'Duty Status', accessor: 'duty_status', render: (r) => <Badge status={r.duty_status.replace(' ', '_')} text={r.duty_status} /> },
-        { header: 'Registered On', accessor: 'registered_on' },
+        { header: 'Rider Name', accessor: 'name', render: (r) => r.name || '-' },
+        { header: 'Phone', accessor: 'phone', render: (r) => r.phone || '-' },
+        { header: 'Vehicle Specs', accessor: 'vehicle', render: (r) => r.vehicle || 'Vehicle (N/A)' },
+        { header: 'Capacity', accessor: 'capacity_kg', render: (r) => `${r.capacity_kg ?? 0} kg` },
+        {
+          header: 'Duty Status',
+          accessor: 'duty_status',
+          render: (r) => (
+            <Badge
+              status={r.duty_status ? r.duty_status.replace(/\s+/g, '_') : 'OFF_DUTY'}
+              text={r.duty_status || 'OFF DUTY'}
+            />
+          ),
+        },
+        { header: 'Status', accessor: 'status', render: (r) => <Badge status={r.status || 'ACTIVE'} /> },
+        { header: 'Registered On', accessor: 'registered_on', render: (r) => r.registered_on || '-' },
       ];
     } else if (selectedCategory === 'requests') {
       return [
-        { header: 'ID', accessor: 'id', render: (r) => `#${r.id}` },
-        { header: 'Farmer', accessor: 'farmer' },
-        { header: 'Crop', accessor: 'crop' },
-        { header: 'Weight', accessor: 'weight_kg', render: (r) => `${r.weight_kg} kg` },
-        { header: 'Mandi District', accessor: 'district' },
+        { header: 'ID', accessor: 'id', render: (r) => `#${r.id || '-'}` },
+        { header: 'Farmer', accessor: 'farmer', render: (r) => r.farmer || '-' },
+        { header: 'Crop', accessor: 'crop', render: (r) => r.crop || '-' },
+        { header: 'Weight', accessor: 'weight_kg', render: (r) => `${r.weight_kg ?? 0} kg` },
+        { header: 'Mandi District', accessor: 'district', render: (r) => r.district || '-' },
         { header: 'Status', accessor: 'status', render: (r) => <Badge status={r.status} /> },
-        { header: 'Date', accessor: 'date' },
+        { header: 'Date', accessor: 'date', render: (r) => r.date || '-' },
       ];
     } else if (selectedCategory === 'trips') {
       return [
-        { header: 'Trip ID', accessor: 'id', render: (r) => `#${r.id}` },
-        { header: 'Rider', accessor: 'rider' },
-        { header: 'Crop', accessor: 'crop' },
-        { header: 'Origin', accessor: 'pickup' },
+        { header: 'Trip ID', accessor: 'id', render: (r) => `#${r.id || '-'}` },
+        { header: 'Rider', accessor: 'rider', render: (r) => r.rider || '-' },
+        { header: 'Crop', accessor: 'crop', render: (r) => r.crop || '-' },
+        { header: 'Origin', accessor: 'pickup', render: (r) => r.pickup || '-' },
         { header: 'Status', accessor: 'status', render: (r) => <Badge status={r.status} /> },
-        { header: 'Date', accessor: 'date' },
+        { header: 'Date', accessor: 'date', render: (r) => r.date || '-' },
       ];
     } else if (selectedCategory === 'pools') {
       return [
-        { header: 'Pool ID', accessor: 'id', render: (r) => `#${r.id}` },
-        { header: 'Crop', accessor: 'crop' },
-        { header: 'Current Tonnage', accessor: 'current_qty', render: (r) => `${r.current_qty} / ${r.max_qty} kg` },
-        { header: 'Dropoff District', accessor: 'district' },
+        { header: 'Pool ID', accessor: 'id', render: (r) => `#${r.id || '-'}` },
+        { header: 'Crop', accessor: 'crop', render: (r) => r.crop || '-' },
+        {
+          header: 'Current Tonnage',
+          accessor: 'current_qty',
+          render: (r) => `${r.current_qty ?? 0} / ${r.max_qty ?? 0} kg`,
+        },
+        { header: 'Dropoff District', accessor: 'district', render: (r) => r.district || '-' },
         { header: 'Status', accessor: 'status', render: (r) => <Badge status={r.status} /> },
-        { header: 'Created', accessor: 'created_at' },
+        { header: 'Created', accessor: 'created_at', render: (r) => r.created_at || '-' },
       ];
     } else {
       // Settlements
       return [
-        { header: 'Settlement ID', accessor: 'id', render: (r) => `#${r.id}` },
-        { header: 'Crop', accessor: 'crop' },
-        { header: 'Gross (₹)', accessor: 'gross_amount', render: (r) => `₹${r.gross_amount}` },
-        { header: 'Platform Fee (₹)', accessor: 'platform_fee', render: (r) => `₹${r.platform_fee}` },
-        { header: 'Net Payout (₹)', accessor: 'net_payout', render: (r) => `₹${r.net_payout}` },
+        { header: 'Settlement ID', accessor: 'id', render: (r) => `#${r.id || '-'}` },
+        { header: 'Crop', accessor: 'crop', render: (r) => r.crop || '-' },
+        { header: 'Gross (₹)', accessor: 'gross_amount', render: (r) => `₹${r.gross_amount ?? 0}` },
+        { header: 'Platform Fee (₹)', accessor: 'platform_fee', render: (r) => `₹${r.platform_fee ?? 0}` },
+        { header: 'Net Payout (₹)', accessor: 'net_payout', render: (r) => `₹${r.net_payout ?? 0}` },
         { header: 'Status', accessor: 'status', render: (r) => <Badge status={r.status} /> },
-        { header: 'Date', accessor: 'date' },
+        { header: 'Date', accessor: 'date', render: (r) => r.date || '-' },
       ];
     }
   };
@@ -124,15 +164,15 @@ export default function Reports() {
   return (
     <div className="space-y-6">
       {/* Category Tabs */}
-      <div className="flex items-center space-x-1.5 overflow-x-auto pb-1 border-b border-surface-border">
+      <div className="flex items-center space-x-1 overflow-x-auto p-1 bg-surface-subtle/80 rounded-xl border border-surface-border">
         {categories.map((c) => (
           <button
             key={c.id}
-            onClick={() => setSelectedCategory(c.id)}
-            className={`px-3.5 py-2 rounded-t-lg text-xs font-semibold whitespace-nowrap transition-colors ${
+            onClick={() => handleCategoryChange(c.id)}
+            className={`px-4 py-2 rounded-lg text-xs font-semibold whitespace-nowrap transition-all ${
               selectedCategory === c.id
-                ? 'bg-white text-forest border-t-2 border-forest shadow-xs'
-                : 'text-text-secondary hover:text-text-primary hover:bg-surface-subtle'
+                ? 'bg-white text-forest shadow-xs'
+                : 'text-text-secondary hover:text-text-primary hover:bg-white/60'
             }`}
           >
             {c.label}
@@ -141,7 +181,7 @@ export default function Reports() {
       </div>
 
       {/* Filter and Download Bar */}
-      <div className="bg-white p-4 rounded-lg border border-surface-border flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-xs">
+      <div className="bg-white p-4 rounded-xl border border-surface-border flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-xs">
         <div className="flex flex-wrap items-center gap-3">
           <div className="flex items-center space-x-2 text-xs">
             <span className="text-text-secondary font-medium">From:</span>
@@ -149,7 +189,7 @@ export default function Reports() {
               type="date"
               value={startDate}
               onChange={(e) => setStartDate(e.target.value)}
-              className="rounded border border-surface-border px-2.5 py-1.5 bg-white text-text-primary focus:outline-none focus:ring-1 focus:ring-forest text-xs"
+              className="rounded-lg border border-surface-border px-3 py-1.5 bg-white text-text-primary focus:outline-none focus:ring-2 focus:ring-forest/20 focus:border-forest text-xs transition-all"
             />
           </div>
           <div className="flex items-center space-x-2 text-xs">
@@ -158,12 +198,13 @@ export default function Reports() {
               type="date"
               value={endDate}
               onChange={(e) => setEndDate(e.target.value)}
-              className="rounded border border-surface-border px-2.5 py-1.5 bg-white text-text-primary focus:outline-none focus:ring-1 focus:ring-forest text-xs"
+              className="rounded-lg border border-surface-border px-3 py-1.5 bg-white text-text-primary focus:outline-none focus:ring-2 focus:ring-forest/20 focus:border-forest text-xs transition-all"
             />
           </div>
           <button
-            onClick={fetchReport}
-            className="px-3 py-1.5 text-xs font-medium rounded border border-surface-border bg-white text-text-primary hover:bg-surface-subtle transition-colors"
+            onClick={handleFilterClick}
+            disabled={loading}
+            className="px-4 py-1.5 text-xs font-semibold rounded-lg border border-surface-border bg-white text-text-primary hover:bg-surface-subtle transition-colors shadow-xs disabled:opacity-50"
           >
             Filter Dates
           </button>
@@ -173,13 +214,29 @@ export default function Reports() {
           <button
             onClick={handleExportCsv}
             disabled={exporting || reportData.length === 0}
-            className="inline-flex items-center space-x-2 px-3.5 py-2 rounded text-xs font-semibold bg-forest text-white hover:bg-forest-light transition-colors disabled:opacity-50 shadow-xs"
+            className="inline-flex items-center space-x-2 px-4 py-2 rounded-lg text-xs font-semibold bg-forest text-white hover:bg-forest-light transition-colors disabled:opacity-50 shadow-xs"
           >
             <Download className="w-3.5 h-3.5 text-lime-accent" />
             <span>{exporting ? 'Generating CSV...' : 'Download Official CSV'}</span>
           </button>
         </div>
       </div>
+
+      {/* Error Notice */}
+      {error && (
+        <div className="p-4 rounded-xl bg-rose-50 border border-rose-200/80 text-rose-800 text-xs flex items-center justify-between shadow-xs">
+          <div className="flex items-center space-x-2">
+            <AlertCircle className="w-4 h-4 flex-shrink-0 text-rose-600" />
+            <span>{error}</span>
+          </div>
+          <button
+            onClick={() => fetchReport()}
+            className="font-medium underline hover:text-rose-950 ml-3"
+          >
+            Retry
+          </button>
+        </div>
+      )}
 
       {/* Record Counter */}
       <div className="flex items-center justify-between text-xs text-text-secondary px-1">
@@ -198,7 +255,7 @@ export default function Reports() {
         data={reportData}
         total={totalRecords}
         page={1}
-        limit={totalRecords}
+        limit={totalRecords || 10}
         totalPages={1}
         isLoading={loading}
         emptyMessage="No historical records match the selected date filter."

@@ -5,10 +5,7 @@ import {
   UserX,
   UserCheck,
   RefreshCw,
-  Truck,
-  CreditCard,
   AlertCircle,
-  Navigation,
 } from 'lucide-react';
 import { adminService } from '../services/adminService';
 import DataTable from '../components/common/DataTable';
@@ -114,8 +111,8 @@ export default function Riders() {
       accessor: 'full_name',
       render: (row) => (
         <div>
-          <span className="font-semibold text-text-primary block">{row.full_name}</span>
-          <span className="text-xs text-text-secondary">{row.email}</span>
+          <span className="font-semibold text-text-primary block leading-tight">{row.full_name}</span>
+          <span className="text-[11px] text-text-secondary mt-0.5 block">{row.email}</span>
         </div>
       ),
     },
@@ -143,7 +140,7 @@ export default function Riders() {
       header: 'Operating Routes',
       accessor: 'operating_routes',
       render: (row) => (
-        <span className="truncate max-w-[150px] block" title={row.operating_routes}>
+        <span className="truncate max-w-[150px] block text-text-secondary" title={row.operating_routes}>
           {row.operating_routes || 'All Districts'}
         </span>
       ),
@@ -170,8 +167,9 @@ export default function Riders() {
         <div className="flex items-center justify-end space-x-1.5">
           <button
             onClick={() => openDetail(row)}
-            className="p-1 rounded text-text-secondary hover:text-forest hover:bg-surface-subtle transition-colors"
+            className="p-1.5 rounded-lg text-text-secondary hover:text-forest hover:bg-surface-subtle transition-colors"
             title="View Details"
+            aria-label="View Details"
           >
             <Eye className="w-4 h-4" />
           </button>
@@ -184,8 +182,9 @@ export default function Riders() {
                   targetActive: false,
                 })
               }
-              className="p-1 rounded text-rose-600 hover:bg-rose-50 transition-colors"
+              className="p-1.5 rounded-lg text-rose-600 hover:bg-rose-50 transition-colors"
               title="Suspend Rider Account"
+              aria-label="Suspend Rider Account"
             >
               <UserX className="w-4 h-4" />
             </button>
@@ -198,8 +197,9 @@ export default function Riders() {
                   targetActive: true,
                 })
               }
-              className="p-1 rounded text-emerald-700 hover:bg-emerald-50 transition-colors"
+              className="p-1.5 rounded-lg text-emerald-700 hover:bg-emerald-50 transition-colors"
               title="Reactivate Rider Account"
+              aria-label="Reactivate Rider Account"
             >
               <UserCheck className="w-4 h-4" />
             </button>
@@ -212,37 +212,37 @@ export default function Riders() {
   return (
     <div className="space-y-5">
       {/* Information Banner */}
-      <div className="p-3.5 bg-white rounded-lg border border-surface-border text-xs text-text-secondary flex items-start space-x-2.5 shadow-xs">
+      <div className="p-4 bg-white rounded-xl border border-surface-border text-xs text-text-secondary flex items-start space-x-3 shadow-xs">
         <AlertCircle className="w-4 h-4 text-forest shrink-0 mt-0.5" />
         <p className="leading-relaxed">
-          <strong className="text-text-primary">Policy Note:</strong> Rider registration is
+          <strong className="text-text-primary font-semibold">Policy Note:</strong> Rider registration is
           automatic based on driver mobile credentials and password authentication. No manual Admin
           approval. Administrative suspension locks active routing and trip dispatches immediately.
         </p>
       </div>
 
       {toastMessage && (
-        <div className="p-3 rounded-lg bg-emerald-50 border border-emerald-200 text-xs font-semibold text-emerald-900 animate-in fade-in">
+        <div className="p-3.5 rounded-xl bg-emerald-50 border border-emerald-200/80 text-xs font-semibold text-emerald-900 animate-in fade-in">
           {toastMessage}
         </div>
       )}
 
       {/* Filter and Search Bar */}
-      <div className="bg-white p-4 rounded-lg border border-surface-border flex flex-col md:flex-row md:items-center justify-between gap-3 shadow-xs">
+      <div className="bg-white p-4 rounded-xl border border-surface-border flex flex-col md:flex-row md:items-center justify-between gap-3 shadow-xs">
         <form onSubmit={handleSearchSubmit} className="flex-1 flex items-center space-x-2">
           <div className="relative flex-1 max-w-md">
-            <Search className="w-4 h-4 absolute left-3 top-2.5 text-text-secondary" />
+            <Search className="w-4 h-4 absolute left-3 top-2.5 text-text-muted" />
             <input
               type="text"
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
               placeholder="Search by rider name, license number, vehicle plate..."
-              className="w-full text-xs rounded border border-surface-border pl-9 pr-3 py-2 focus:outline-none focus:ring-1 focus:ring-forest text-text-primary"
+              className="w-full text-xs rounded-lg border border-surface-border pl-9 pr-3 py-2 bg-white text-text-primary placeholder:text-text-muted focus:outline-none focus:ring-2 focus:ring-forest/20 focus:border-forest transition-all"
             />
           </div>
           <button
             type="submit"
-            className="px-3.5 py-2 text-xs font-medium rounded bg-forest text-white hover:bg-forest-light transition-colors"
+            className="px-4 py-2 text-xs font-semibold rounded-lg bg-forest text-white hover:bg-forest-light transition-colors shadow-xs"
           >
             Search
           </button>
@@ -253,7 +253,7 @@ export default function Riders() {
           <select
             value={dutyStatus}
             onChange={(e) => setDutyStatus(e.target.value)}
-            className="text-xs rounded border border-surface-border px-3 py-2 bg-white text-text-primary focus:outline-none focus:ring-1 focus:ring-forest"
+            className="text-xs rounded-lg border border-surface-border px-3 py-2 bg-white text-text-primary focus:outline-none focus:ring-2 focus:ring-forest/20 focus:border-forest transition-all"
           >
             <option value="ALL">All Duty Statuses</option>
             <option value="ON_DUTY">On Duty</option>
@@ -264,7 +264,7 @@ export default function Riders() {
           <select
             value={statusFilter}
             onChange={(e) => setStatusFilter(e.target.value)}
-            className="text-xs rounded border border-surface-border px-3 py-2 bg-white text-text-primary focus:outline-none focus:ring-1 focus:ring-forest"
+            className="text-xs rounded-lg border border-surface-border px-3 py-2 bg-white text-text-primary focus:outline-none focus:ring-2 focus:ring-forest/20 focus:border-forest transition-all"
           >
             <option value="ALL">All Account Statuses</option>
             <option value="ACTIVE">Active Accounts</option>
@@ -273,10 +273,11 @@ export default function Riders() {
 
           <button
             onClick={() => fetchRiders(page)}
-            className="p-2 rounded border border-surface-border text-text-secondary hover:text-text-primary hover:bg-surface-subtle transition-colors"
+            className="p-2 rounded-lg border border-surface-border text-text-secondary hover:text-text-primary hover:bg-surface-subtle transition-colors shadow-xs"
             title="Refresh list"
+            aria-label="Refresh list"
           >
-            <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
+            <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin text-forest' : ''}`} />
           </button>
         </div>
       </div>
@@ -330,38 +331,42 @@ export default function Riders() {
         ) : selectedRider ? (
           <div className="space-y-6">
             {/* Highlights Grid */}
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 bg-surface-subtle p-3.5 rounded-lg border border-surface-border text-xs">
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 bg-surface-subtle/70 p-4 rounded-xl border border-surface-border text-xs">
               <div>
-                <span className="text-text-secondary block">Duty Status</span>
-                <Badge
-                  status={selectedRider.rider.is_on_duty ? 'ON_DUTY' : 'OFF_DUTY'}
-                  text={selectedRider.rider.is_on_duty ? 'On Duty' : 'Off Duty'}
-                />
+                <span className="text-text-secondary block font-medium">Duty Status</span>
+                <div className="mt-1">
+                  <Badge
+                    status={selectedRider.rider.is_on_duty ? 'ON_DUTY' : 'OFF_DUTY'}
+                    text={selectedRider.rider.is_on_duty ? 'On Duty' : 'Off Duty'}
+                  />
+                </div>
               </div>
               <div>
-                <span className="text-text-secondary block">Vehicle Capacity</span>
-                <span className="font-semibold text-text-primary block mt-0.5">
+                <span className="text-text-secondary block font-medium">Vehicle Capacity</span>
+                <span className="font-semibold text-text-primary block mt-1">
                   {selectedRider.rider.payload_capacity_kg ? `${selectedRider.rider.payload_capacity_kg} kg` : '-'}
                 </span>
               </div>
               <div>
-                <span className="text-text-secondary block">Driver Licence</span>
-                <span className="font-semibold text-text-primary block mt-0.5">
+                <span className="text-text-secondary block font-medium">Driver Licence</span>
+                <span className="font-semibold text-text-primary block mt-1">
                   {selectedRider.rider.license_number || '-'}
                 </span>
               </div>
               <div>
-                <span className="text-text-secondary block">Account Status</span>
-                <Badge status={selectedRider.rider.is_active ? 'ACTIVE' : 'SUSPENDED'} />
+                <span className="text-text-secondary block font-medium">Account Status</span>
+                <div className="mt-1">
+                  <Badge status={selectedRider.rider.is_active ? 'ACTIVE' : 'SUSPENDED'} />
+                </div>
               </div>
             </div>
 
             {/* Vehicle & Bank Specs */}
             <div>
-              <h4 className="text-xs font-bold uppercase tracking-wider text-text-secondary mb-2">
+              <h4 className="text-xs font-bold uppercase tracking-wider text-text-secondary mb-2.5">
                 Vehicle & Settlement Information
               </h4>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs bg-white p-3.5 rounded border border-surface-border">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5 text-xs bg-white p-4 rounded-xl border border-surface-border">
                 <div>
                   <span className="text-text-secondary">Vehicle Model / Type:</span>{' '}
                   <span className="font-medium text-text-primary">{selectedRider.rider.vehicle_type || '-'}</span>
@@ -393,13 +398,13 @@ export default function Riders() {
 
             {/* Recent Trips History */}
             <div>
-              <h4 className="text-xs font-bold uppercase tracking-wider text-text-secondary mb-2">
+              <h4 className="text-xs font-bold uppercase tracking-wider text-text-secondary mb-2.5">
                 Recent Trips Completed ({selectedRider.trips?.length || 0})
               </h4>
               <div className="space-y-2">
                 {selectedRider.trips?.length > 0 ? (
                   selectedRider.trips.slice(0, 5).map((t) => (
-                    <div key={t.id} className="p-2.5 rounded bg-surface-bg border border-surface-border text-xs flex justify-between items-center">
+                    <div key={t.id} className="p-3 rounded-lg bg-surface-subtle/50 border border-surface-border text-xs flex justify-between items-center">
                       <div>
                         <span className="font-semibold text-text-primary block">Trip #{t.id.slice(0, 8)}</span>
                         <span className="text-text-secondary text-[11px] block mt-0.5">{t.pickup_address || 'Origin'}</span>

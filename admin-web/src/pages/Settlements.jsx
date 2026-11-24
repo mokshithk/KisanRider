@@ -1,13 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import {
-  CircleDollarSign,
-  Search,
   Eye,
   CheckCircle,
   RefreshCw,
-  IndianRupee,
   AlertCircle,
-  FileText,
+  Loader2,
+  X,
 } from 'lucide-react';
 import { adminService } from '../services/adminService';
 import DataTable from '../components/common/DataTable';
@@ -125,8 +123,8 @@ export default function Settlements() {
       accessor: 'farmer_name',
       render: (row) => (
         <div>
-          <span className="font-semibold text-text-primary block">{row.farmer_name}</span>
-          <span className="text-[11px] text-text-secondary">
+          <span className="font-semibold text-text-primary block leading-tight">{row.farmer_name}</span>
+          <span className="text-[11px] text-text-secondary mt-0.5 block">
             {row.crop_name} ({row.quantity_kg || 0} kg)
           </span>
         </div>
@@ -136,7 +134,7 @@ export default function Settlements() {
       header: 'Rider Payee',
       accessor: 'rider_name',
       render: (row) => (
-        <span className="font-medium text-text-primary text-xs">{row.rider_name}</span>
+        <span className="font-medium text-text-primary text-xs">{row.rider_name || '-'}</span>
       ),
     },
     {
@@ -184,8 +182,9 @@ export default function Settlements() {
         <div className="flex items-center justify-end space-x-1.5">
           <button
             onClick={() => openDetail(row)}
-            className="p-1.5 rounded text-text-secondary hover:text-forest hover:bg-surface-subtle transition-colors"
+            className="p-1.5 rounded-lg text-text-secondary hover:text-forest hover:bg-surface-subtle transition-colors"
             title="Inspect Settlement"
+            aria-label="Inspect Settlement"
           >
             <Eye className="w-4 h-4" />
           </button>
@@ -197,8 +196,9 @@ export default function Settlements() {
                 setReconcileNotes('');
                 setReconcileError('');
               }}
-              className="p-1.5 rounded text-emerald-700 hover:bg-emerald-50 transition-colors"
+              className="p-1.5 rounded-lg text-emerald-700 hover:bg-emerald-50 transition-colors"
               title="Manual Reconciliation (Reconcile to PAID)"
+              aria-label="Manual Reconciliation"
             >
               <CheckCircle className="w-4 h-4" />
             </button>
@@ -211,10 +211,10 @@ export default function Settlements() {
   return (
     <div className="space-y-5">
       {/* Information Header */}
-      <div className="p-3.5 bg-white rounded-lg border border-surface-border text-xs text-text-secondary flex items-start space-x-2.5 shadow-xs">
+      <div className="p-4 bg-white rounded-xl border border-surface-border text-xs text-text-secondary flex items-start space-x-3 shadow-xs">
         <AlertCircle className="w-4 h-4 text-forest shrink-0 mt-0.5" />
         <p className="leading-relaxed">
-          <strong className="text-text-primary">Financial Protocol:</strong> Real calculations
+          <strong className="text-text-primary font-semibold">Financial Protocol:</strong> Real calculations
           based on base fare, distance rate (₹15/km), and crate load weight. Manual reconciliation
           requires an external bank transaction reference (UTR) and never claims automated funds
           transfer. All changes logged to audit trail.
@@ -222,18 +222,18 @@ export default function Settlements() {
       </div>
 
       {toastMessage && (
-        <div className="p-3 rounded-lg bg-emerald-50 border border-emerald-200 text-xs font-semibold text-emerald-900 animate-in fade-in">
+        <div className="p-3.5 rounded-xl bg-emerald-50 border border-emerald-200/80 text-xs font-semibold text-emerald-900 animate-in fade-in">
           {toastMessage}
         </div>
       )}
 
       {/* Filter Bar */}
-      <div className="bg-white p-4 rounded-lg border border-surface-border flex flex-col md:flex-row md:items-center justify-between gap-3 shadow-xs">
+      <div className="bg-white p-4 rounded-xl border border-surface-border flex flex-col md:flex-row md:items-center justify-between gap-3 shadow-xs">
         <div className="flex items-center space-x-3">
           <select
             value={statusFilter}
             onChange={(e) => setStatusFilter(e.target.value)}
-            className="text-xs rounded border border-surface-border px-3 py-2 bg-white text-text-primary focus:outline-none focus:ring-1 focus:ring-forest"
+            className="text-xs rounded-lg border border-surface-border px-3 py-2 bg-white text-text-primary focus:outline-none focus:ring-2 focus:ring-forest/20 focus:border-forest transition-all"
           >
             <option value="ALL">All Settlement Statuses</option>
             <option value="PENDING">Pending Reconciliation</option>
@@ -243,10 +243,11 @@ export default function Settlements() {
 
         <button
           onClick={() => fetchSettlements(page)}
-          className="p-2 rounded border border-surface-border text-text-secondary hover:text-text-primary hover:bg-surface-subtle transition-colors"
+          className="p-2 rounded-lg border border-surface-border text-text-secondary hover:text-text-primary hover:bg-surface-subtle transition-colors shadow-xs self-start md:self-auto"
           title="Refresh list"
+          aria-label="Refresh list"
         >
-          <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
+          <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin text-forest' : ''}`} />
         </button>
       </div>
 
@@ -260,82 +261,86 @@ export default function Settlements() {
         totalPages={totalPages}
         onPageChange={(p) => fetchSettlements(p)}
         isLoading={loading}
-        emptyMessage="No settlement records found."
+        emptyMessage="No settlement records match criteria."
       />
 
-      {/* Reconciliation Modal */}
+      {/* Reconcile Modal */}
       {reconcileModal.isOpen && (
-        <div className="fixed inset-0 z-50 overflow-y-auto bg-black/40 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white rounded-lg max-w-md w-full border border-surface-border shadow-xl overflow-hidden animate-in fade-in zoom-in-95 duration-150">
-            <div className="px-6 py-4 border-b border-surface-border bg-surface-subtle flex justify-between items-center">
-              <h3 className="text-base font-semibold text-text-primary">
-                Reconcile Settlement to PAID
-              </h3>
+        <div className="fixed inset-0 z-50 overflow-y-auto bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-xl max-w-lg w-full border border-surface-border shadow-modal overflow-hidden transition-all animate-in fade-in zoom-in-95 duration-150">
+            <div className="flex items-center justify-between px-6 py-4 border-b border-surface-border bg-surface-subtle/50">
+              <h3 className="text-base font-bold text-text-primary tracking-tight">Manual Reconciliation</h3>
               <button
                 onClick={() => setReconcileModal({ isOpen: false, settlement: null })}
-                className="text-text-secondary hover:text-text-primary"
+                disabled={reconcileLoading}
+                className="text-text-secondary hover:text-text-primary p-1.5 rounded-lg hover:bg-surface-subtle transition-colors"
+                aria-label="Close modal"
               >
-                ×
+                <X className="w-4 h-4" />
               </button>
             </div>
+
             <form onSubmit={handleReconcileSubmit} className="p-6 space-y-4">
-              <div className="p-3 bg-surface-bg rounded border border-surface-border text-xs">
-                <span className="text-text-secondary">Settlement ID:</span>{' '}
-                <span className="font-mono font-semibold text-text-primary block">
-                  #{reconcileModal.settlement?.id}
-                </span>
-                <span className="text-text-secondary mt-1 block">
-                  Payee: {reconcileModal.settlement?.rider_name} • Net Payout: ₹{reconcileModal.settlement?.net_payout}
-                </span>
+              <div className="bg-surface-subtle/70 p-3.5 rounded-lg border border-surface-border text-xs space-y-1">
+                <span className="text-text-secondary font-medium">Settlement Target:</span>
+                <p className="font-semibold text-text-primary">
+                  #{reconcileModal.settlement?.id?.slice(0, 8)} • Payee: {reconcileModal.settlement?.rider_name || 'Driver'}
+                </p>
+                <p className="font-bold text-forest">
+                  Net Amount: ₹{(reconcileModal.settlement?.net_payout || reconcileModal.settlement?.total_payout || 0).toLocaleString('en-IN')}
+                </p>
               </div>
 
-              {reconcileError && (
-                <div className="p-2.5 rounded bg-rose-50 border border-rose-200 text-xs text-rose-800">
-                  {reconcileError}
-                </div>
-              )}
-
               <div>
-                <label className="block text-xs font-semibold text-text-primary mb-1">
-                  External Payment Reference (UTR / Bank Ref) <span className="text-rose-600">*</span>
+                <label className="block text-xs font-semibold text-text-primary mb-1.5">
+                  Bank Reference / UTR Number <span className="text-rose-600">*</span>
                 </label>
                 <input
                   type="text"
-                  required
                   value={paymentRef}
-                  onChange={(e) => setPaymentRef(e.target.value)}
-                  placeholder="e.g. UTR-2026-HDFC-998822"
-                  className="w-full text-xs rounded border border-surface-border px-3 py-2 focus:outline-none focus:ring-1 focus:ring-forest text-text-primary font-mono"
+                  onChange={(e) => {
+                    setPaymentRef(e.target.value);
+                    if (reconcileError) setReconcileError('');
+                  }}
+                  placeholder="e.g. UTR1234567890 / IMPS / NEFT Ref"
+                  disabled={reconcileLoading}
+                  className="w-full text-xs rounded-lg border border-surface-border px-3.5 py-2.5 bg-white text-text-primary focus:outline-none focus:ring-2 focus:ring-forest/20 focus:border-forest transition-all"
                 />
+                {reconcileError && (
+                  <p className="text-xs text-rose-600 mt-1.5 font-medium">{reconcileError}</p>
+                )}
               </div>
 
               <div>
-                <label className="block text-xs font-semibold text-text-primary mb-1">
-                  Reconciliation Notes
+                <label className="block text-xs font-semibold text-text-primary mb-1.5">
+                  Internal Audit Notes (Optional)
                 </label>
                 <textarea
                   value={reconcileNotes}
                   onChange={(e) => setReconcileNotes(e.target.value)}
-                  placeholder="e.g. Verified with bank statement for batch dispatch #44"
+                  placeholder="Bank transfer verification notes..."
+                  disabled={reconcileLoading}
                   rows={2}
-                  className="w-full text-xs rounded border border-surface-border px-3 py-2 focus:outline-none focus:ring-1 focus:ring-forest text-text-primary"
+                  className="w-full text-xs rounded-lg border border-surface-border px-3.5 py-2.5 bg-white text-text-primary focus:outline-none focus:ring-2 focus:ring-forest/20 focus:border-forest transition-all"
                 />
               </div>
 
-              <div className="flex justify-end space-x-3 pt-3 border-t border-surface-border">
+              <div className="pt-2 border-t border-surface-border flex items-center justify-end space-x-3">
                 <button
                   type="button"
                   onClick={() => setReconcileModal({ isOpen: false, settlement: null })}
-                  className="px-4 py-2 text-xs font-medium rounded border border-surface-border bg-white text-text-primary hover:bg-surface-subtle"
+                  disabled={reconcileLoading}
+                  className="px-4 py-2 text-xs font-medium rounded-lg border border-surface-border bg-white text-text-primary hover:bg-surface-subtle transition-colors disabled:opacity-50"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
                   disabled={reconcileLoading}
-                  className="px-4 py-2 text-xs font-medium rounded bg-forest text-white hover:bg-forest-light transition-colors"
+                  className="inline-flex items-center space-x-2 px-4 py-2 text-xs font-semibold rounded-lg bg-forest text-white hover:bg-forest-light transition-all shadow-xs disabled:opacity-50"
                 >
-                  {reconcileLoading ? 'Saving...' : 'Confirm Paid Status'}
+                  {reconcileLoading && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                  <span>Mark as Reconciled (PAID)</span>
                 </button>
               </div>
             </form>
@@ -347,72 +352,90 @@ export default function Settlements() {
       <DetailModal
         isOpen={isDetailOpen}
         onClose={() => setIsDetailOpen(false)}
-        title={selectedSettlement ? `Settlement #${selectedSettlement.settlement.id.slice(0, 8)}` : 'Settlement'}
-        subtitle={`Created on ${selectedSettlement?.settlement.created_at ? new Date(selectedSettlement.settlement.created_at).toLocaleDateString() : ''}`}
-        maxWidth="max-w-2xl"
+        title={
+          selectedSettlement
+            ? `Settlement #${selectedSettlement.settlement.id.slice(0, 8)} Details`
+            : 'Settlement'
+        }
+        subtitle={`Audit breakdown • Payee: ${selectedSettlement?.rider?.full_name || 'Driver'}`}
+        maxWidth="max-w-3xl"
       >
         {detailLoading ? (
-          <div className="py-12 text-center text-text-secondary text-xs">Loading settlement...</div>
+          <div className="py-12 text-center text-text-secondary text-xs">Loading ledger details...</div>
         ) : selectedSettlement ? (
-          <div className="space-y-5">
-            {/* Highlights */}
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 bg-surface-subtle p-3.5 rounded-lg border border-surface-border text-xs">
+          <div className="space-y-6">
+            {/* Top Stat Overview */}
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 bg-surface-subtle/70 p-4 rounded-xl border border-surface-border text-xs">
               <div>
-                <span className="text-text-secondary block">Status</span>
-                <Badge status={selectedSettlement.settlement.status} />
+                <span className="text-text-secondary block font-medium">Status</span>
+                <div className="mt-1">
+                  <Badge status={selectedSettlement.settlement.status} />
+                </div>
               </div>
               <div>
-                <span className="text-text-secondary block">Gross Fare</span>
-                <span className="font-semibold text-text-primary block mt-0.5">₹{selectedSettlement.settlement.gross_amount}</span>
+                <span className="text-text-secondary block font-medium">Gross Fare</span>
+                <span className="font-semibold text-text-primary block mt-1">
+                  ₹{selectedSettlement.settlement.gross_amount}
+                </span>
               </div>
               <div>
-                <span className="text-text-secondary block">Platform Fee</span>
-                <span className="font-semibold text-text-primary block mt-0.5">₹{selectedSettlement.settlement.platform_fee}</span>
+                <span className="text-text-secondary block font-medium">Platform Fee</span>
+                <span className="font-semibold text-text-primary block mt-1">
+                  ₹{selectedSettlement.settlement.platform_fee}
+                </span>
               </div>
               <div>
-                <span className="text-text-secondary block">Net Driver Payout</span>
-                <span className="font-bold text-forest block mt-0.5">₹{selectedSettlement.settlement.net_payout}</span>
+                <span className="text-text-secondary block font-medium">Net Payout</span>
+                <span className="font-bold text-forest block mt-1">
+                  ₹{selectedSettlement.settlement.net_payout || selectedSettlement.settlement.total_payout}
+                </span>
               </div>
             </div>
 
-            {/* Fare Breakdown */}
-            <div className="p-3.5 bg-white rounded border border-surface-border text-xs space-y-2">
-              <span className="font-bold uppercase tracking-wider text-text-secondary block">
-                Calculated Distance & Weight Formula
-              </span>
-              <div className="flex justify-between py-1 border-b border-surface-border">
-                <span className="text-text-secondary">Base Fare:</span>
-                <span className="font-medium text-text-primary">₹{selectedSettlement.settlement.base_fare}</span>
-              </div>
-              <div className="flex justify-between py-1 border-b border-surface-border">
-                <span className="text-text-secondary">Distance Fare:</span>
-                <span className="font-medium text-text-primary">₹{selectedSettlement.settlement.distance_fare}</span>
-              </div>
-              <div className="flex justify-between py-1 border-b border-surface-border">
-                <span className="text-text-secondary">Weight Surcharge:</span>
-                <span className="font-medium text-text-primary">₹{selectedSettlement.settlement.weight_surcharge}</span>
-              </div>
-              <div className="flex justify-between py-1 pt-2 font-bold text-text-primary">
-                <span>Total Payout:</span>
-                <span className="text-forest">₹{selectedSettlement.settlement.total_payout}</span>
-              </div>
+            {/* Reconciliation Audit Info */}
+            <div className="p-4 bg-white rounded-xl border border-surface-border space-y-2.5 text-xs">
+              <h4 className="font-bold uppercase tracking-wider text-text-secondary text-[11px]">Bank Reconcile Audit</h4>
+              <p>
+                <strong className="text-text-primary font-semibold">Payment Reference (UTR):</strong>{' '}
+                <span className="font-mono">{selectedSettlement.settlement.payment_reference || 'Pending settlement transfer'}</span>
+              </p>
+              {selectedSettlement.settlement.reconciled_by && (
+                <p>
+                  <strong className="text-text-primary font-semibold">Reconciled By Admin:</strong>{' '}
+                  {selectedSettlement.settlement.reconciled_by}
+                </p>
+              )}
+              {selectedSettlement.settlement.notes && (
+                <p>
+                  <strong className="text-text-primary font-semibold">Notes:</strong> {selectedSettlement.settlement.notes}
+                </p>
+              )}
             </div>
 
-            {/* Linked Parties */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs bg-surface-bg p-3.5 rounded border border-surface-border">
-              <div>
-                <span className="font-bold text-text-primary block">Producer (Farmer)</span>
-                <p className="text-text-secondary mt-0.5">{selectedSettlement.farmer?.full_name}</p>
-                <p className="text-text-muted text-[11px]">Bank: {selectedSettlement.farmer?.bank_name || 'N/A'}</p>
-                <p className="text-text-muted text-[11px]">UPI: {selectedSettlement.farmer?.upi_id || 'N/A'}</p>
+            {/* Bank Credentials */}
+            {selectedSettlement.rider && (
+              <div className="p-4 bg-surface-subtle/70 rounded-xl border border-surface-border space-y-2 text-xs">
+                <h4 className="font-bold uppercase tracking-wider text-text-secondary text-[11px]">Payee Bank Account</h4>
+                <div className="grid grid-cols-2 gap-2 mt-1">
+                  <div>
+                    <span className="text-text-secondary">Bank:</span>{' '}
+                    <span className="font-medium text-text-primary">{selectedSettlement.rider.bank_name || '-'}</span>
+                  </div>
+                  <div>
+                    <span className="text-text-secondary">Account:</span>{' '}
+                    <span className="font-medium text-text-primary">{selectedSettlement.rider.account_number || '-'}</span>
+                  </div>
+                  <div>
+                    <span className="text-text-secondary">IFSC:</span>{' '}
+                    <span className="font-medium text-text-primary">{selectedSettlement.rider.ifsc_code || '-'}</span>
+                  </div>
+                  <div>
+                    <span className="text-text-secondary">UPI:</span>{' '}
+                    <span className="font-medium text-text-primary">{selectedSettlement.rider.upi_id || '-'}</span>
+                  </div>
+                </div>
               </div>
-              <div>
-                <span className="font-bold text-text-primary block">Transporter (Rider)</span>
-                <p className="text-text-secondary mt-0.5">{selectedSettlement.rider?.full_name}</p>
-                <p className="text-text-muted text-[11px]">Bank: {selectedSettlement.rider?.bank_name || 'N/A'}</p>
-                <p className="text-text-muted text-[11px]">UPI: {selectedSettlement.rider?.upi_id || 'N/A'}</p>
-              </div>
-            </div>
+            )}
           </div>
         ) : null}
       </DetailModal>

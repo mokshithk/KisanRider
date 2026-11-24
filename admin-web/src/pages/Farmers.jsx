@@ -1,15 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import {
   Search,
-  Filter,
   Eye,
   UserX,
   UserCheck,
   RefreshCw,
-  MapPin,
-  Calendar,
   AlertCircle,
-  FileText,
 } from 'lucide-react';
 import { adminService } from '../services/adminService';
 import DataTable from '../components/common/DataTable';
@@ -115,8 +111,8 @@ export default function Farmers() {
       accessor: 'full_name',
       render: (row) => (
         <div>
-          <span className="font-semibold text-text-primary block">{row.full_name}</span>
-          <span className="text-xs text-text-secondary">{row.email}</span>
+          <span className="font-semibold text-text-primary block leading-tight">{row.full_name}</span>
+          <span className="text-[11px] text-text-secondary mt-0.5 block">{row.email}</span>
         </div>
       ),
     },
@@ -130,7 +126,7 @@ export default function Farmers() {
       accessor: 'district',
       render: (row) => (
         <div>
-          <span className="block text-text-primary">{row.district || 'Karnataka'}</span>
+          <span className="block font-medium text-text-primary">{row.district || 'Karnataka'}</span>
           {row.taluk_village && (
             <span className="text-[11px] text-text-secondary">{row.taluk_village}</span>
           )}
@@ -146,7 +142,7 @@ export default function Farmers() {
       header: 'Primary Crops',
       accessor: 'primary_crops',
       render: (row) => (
-        <span className="truncate max-w-[140px] block" title={row.primary_crops}>
+        <span className="truncate max-w-[140px] block text-text-secondary" title={row.primary_crops}>
           {row.primary_crops || '-'}
         </span>
       ),
@@ -171,8 +167,9 @@ export default function Farmers() {
         <div className="flex items-center justify-end space-x-1.5">
           <button
             onClick={() => openDetail(row)}
-            className="p-1 rounded text-text-secondary hover:text-forest hover:bg-surface-subtle transition-colors"
+            className="p-1.5 rounded-lg text-text-secondary hover:text-forest hover:bg-surface-subtle transition-colors"
             title="View Details"
+            aria-label="View Details"
           >
             <Eye className="w-4 h-4" />
           </button>
@@ -185,8 +182,9 @@ export default function Farmers() {
                   targetActive: false,
                 })
               }
-              className="p-1 rounded text-rose-600 hover:bg-rose-50 transition-colors"
+              className="p-1.5 rounded-lg text-rose-600 hover:bg-rose-50 transition-colors"
               title="Suspend Farmer Account"
+              aria-label="Suspend Farmer Account"
             >
               <UserX className="w-4 h-4" />
             </button>
@@ -199,8 +197,9 @@ export default function Farmers() {
                   targetActive: true,
                 })
               }
-              className="p-1 rounded text-emerald-700 hover:bg-emerald-50 transition-colors"
+              className="p-1.5 rounded-lg text-emerald-700 hover:bg-emerald-50 transition-colors"
               title="Reactivate Farmer Account"
+              aria-label="Reactivate Farmer Account"
             >
               <UserCheck className="w-4 h-4" />
             </button>
@@ -213,10 +212,10 @@ export default function Farmers() {
   return (
     <div className="space-y-5">
       {/* Informational callout regarding automatic registration */}
-      <div className="p-3.5 bg-white rounded-lg border border-surface-border text-xs text-text-secondary flex items-start space-x-2.5 shadow-xs">
+      <div className="p-4 bg-white rounded-xl border border-surface-border text-xs text-text-secondary flex items-start space-x-3 shadow-xs">
         <AlertCircle className="w-4 h-4 text-forest shrink-0 mt-0.5" />
         <p className="leading-relaxed">
-          <strong className="text-text-primary">Policy Note:</strong> Farmer registration is
+          <strong className="text-text-primary font-semibold">Policy Note:</strong> Farmer registration is
           automatic based on mobile credentials and OTP verification. Admins may inspect verified
           producer accounts, review farm profiles, and perform account suspension or reactivation
           with full audit trail recording.
@@ -224,27 +223,27 @@ export default function Farmers() {
       </div>
 
       {toastMessage && (
-        <div className="p-3 rounded-lg bg-emerald-50 border border-emerald-200 text-xs font-semibold text-emerald-900 animate-in fade-in">
+        <div className="p-3.5 rounded-xl bg-emerald-50 border border-emerald-200/80 text-xs font-semibold text-emerald-900 animate-in fade-in">
           {toastMessage}
         </div>
       )}
 
       {/* Filter and Search Bar */}
-      <div className="bg-white p-4 rounded-lg border border-surface-border flex flex-col md:flex-row md:items-center justify-between gap-3 shadow-xs">
+      <div className="bg-white p-4 rounded-xl border border-surface-border flex flex-col md:flex-row md:items-center justify-between gap-3 shadow-xs">
         <form onSubmit={handleSearchSubmit} className="flex-1 flex items-center space-x-2">
           <div className="relative flex-1 max-w-md">
-            <Search className="w-4 h-4 absolute left-3 top-2.5 text-text-secondary" />
+            <Search className="w-4 h-4 absolute left-3 top-2.5 text-text-muted" />
             <input
               type="text"
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
               placeholder="Search by farmer name, email, phone, village..."
-              className="w-full text-xs rounded border border-surface-border pl-9 pr-3 py-2 focus:outline-none focus:ring-1 focus:ring-forest text-text-primary"
+              className="w-full text-xs rounded-lg border border-surface-border pl-9 pr-3 py-2 bg-white text-text-primary placeholder:text-text-muted focus:outline-none focus:ring-2 focus:ring-forest/20 focus:border-forest transition-all"
             />
           </div>
           <button
             type="submit"
-            className="px-3.5 py-2 text-xs font-medium rounded bg-forest text-white hover:bg-forest-light transition-colors"
+            className="px-4 py-2 text-xs font-semibold rounded-lg bg-forest text-white hover:bg-forest-light transition-colors shadow-xs"
           >
             Search
           </button>
@@ -255,7 +254,7 @@ export default function Farmers() {
           <select
             value={statusFilter}
             onChange={(e) => setStatusFilter(e.target.value)}
-            className="text-xs rounded border border-surface-border px-3 py-2 bg-white text-text-primary focus:outline-none focus:ring-1 focus:ring-forest"
+            className="text-xs rounded-lg border border-surface-border px-3 py-2 bg-white text-text-primary focus:outline-none focus:ring-2 focus:ring-forest/20 focus:border-forest transition-all"
           >
             <option value="ALL">All Statuses</option>
             <option value="ACTIVE">Active Accounts</option>
@@ -264,10 +263,11 @@ export default function Farmers() {
 
           <button
             onClick={() => fetchFarmers(page)}
-            className="p-2 rounded border border-surface-border text-text-secondary hover:text-text-primary hover:bg-surface-subtle transition-colors"
+            className="p-2 rounded-lg border border-surface-border text-text-secondary hover:text-text-primary hover:bg-surface-subtle transition-colors shadow-xs"
             title="Refresh list"
+            aria-label="Refresh list"
           >
-            <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
+            <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin text-forest' : ''}`} />
           </button>
         </div>
       </div>
@@ -325,37 +325,39 @@ export default function Farmers() {
         ) : selectedFarmer ? (
           <div className="space-y-6">
             {/* Top Overview Cards */}
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 bg-surface-subtle p-3.5 rounded-lg border border-surface-border text-xs">
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 bg-surface-subtle/70 p-4 rounded-xl border border-surface-border text-xs">
               <div>
-                <span className="text-text-secondary block">Account Status</span>
-                <Badge status={selectedFarmer.farmer.is_active ? 'ACTIVE' : 'SUSPENDED'} />
+                <span className="text-text-secondary block font-medium">Account Status</span>
+                <div className="mt-1">
+                  <Badge status={selectedFarmer.farmer.is_active ? 'ACTIVE' : 'SUSPENDED'} />
+                </div>
               </div>
               <div>
-                <span className="text-text-secondary block">District</span>
-                <span className="font-semibold text-text-primary block mt-0.5">
+                <span className="text-text-secondary block font-medium">District</span>
+                <span className="font-semibold text-text-primary block mt-1">
                   {selectedFarmer.farmer.district || 'Karnataka'}
                 </span>
               </div>
               <div>
-                <span className="text-text-secondary block">Farm Size</span>
-                <span className="font-semibold text-text-primary block mt-0.5">
+                <span className="text-text-secondary block font-medium">Farm Size</span>
+                <span className="font-semibold text-text-primary block mt-1">
                   {selectedFarmer.farmer.farm_size_acres ? `${selectedFarmer.farmer.farm_size_acres} Acres` : '-'}
                 </span>
               </div>
               <div>
-                <span className="text-text-secondary block">Phone</span>
-                <span className="font-semibold text-text-primary block mt-0.5">
-                  {selectedFarmer.farmer.phone_number || '-'}
+                <span className="text-text-secondary block font-medium">Phone</span>
+                <span className="font-semibold text-text-primary block mt-1">
+                  {selectedFarmer.farmer.phone_number || selectedFarmer.farmer.phone || '-'}
                 </span>
               </div>
             </div>
 
             {/* Farm & Contact Information */}
             <div>
-              <h4 className="text-xs font-bold uppercase tracking-wider text-text-secondary mb-2">
+              <h4 className="text-xs font-bold uppercase tracking-wider text-text-secondary mb-2.5">
                 Farm & Banking Details
               </h4>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs bg-white p-3.5 rounded border border-surface-border">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5 text-xs bg-white p-4 rounded-xl border border-surface-border">
                 <div>
                   <span className="text-text-secondary">Primary Crops:</span>{' '}
                   <span className="font-medium text-text-primary">{selectedFarmer.farmer.primary_crops || '-'}</span>
@@ -387,13 +389,13 @@ export default function Farmers() {
 
             {/* Saved Addresses */}
             <div>
-              <h4 className="text-xs font-bold uppercase tracking-wider text-text-secondary mb-2">
+              <h4 className="text-xs font-bold uppercase tracking-wider text-text-secondary mb-2.5">
                 Saved Pickup Addresses ({selectedFarmer.saved_addresses?.length || 0})
               </h4>
               <div className="space-y-2">
                 {selectedFarmer.saved_addresses?.length > 0 ? (
                   selectedFarmer.saved_addresses.map((addr) => (
-                    <div key={addr.id} className="p-2.5 rounded bg-surface-bg border border-surface-border text-xs">
+                    <div key={addr.id} className="p-3 rounded-lg bg-surface-subtle/50 border border-surface-border text-xs">
                       <span className="font-semibold text-text-primary block">{addr.title}</span>
                       <p className="text-text-secondary mt-0.5">{addr.address_text}</p>
                     </div>
@@ -406,19 +408,19 @@ export default function Farmers() {
 
             {/* Recent Transport Requests */}
             <div>
-              <h4 className="text-xs font-bold uppercase tracking-wider text-text-secondary mb-2">
+              <h4 className="text-xs font-bold uppercase tracking-wider text-text-secondary mb-2.5">
                 Recent Transportation History ({selectedFarmer.requests?.length || 0})
               </h4>
               <div className="space-y-2">
                 {selectedFarmer.requests?.length > 0 ? (
                   selectedFarmer.requests.slice(0, 5).map((r) => (
-                    <div key={r.id} className="p-2.5 rounded bg-surface-bg border border-surface-border text-xs flex justify-between items-center">
+                    <div key={r.id} className="p-3 rounded-lg bg-surface-subtle/50 border border-surface-border text-xs flex justify-between items-center">
                       <div>
                         <span className="font-semibold text-text-primary block">
                           {r.crop_type} • {r.weight_kg} kg
                         </span>
                         <span className="text-text-secondary text-[11px] block mt-0.5">
-                          To: {r.dropoff_mandi_name}
+                          To: {r.dropoff_mandi_name || '-'}
                         </span>
                       </div>
                       <Badge status={r.status} />

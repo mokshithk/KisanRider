@@ -1,41 +1,106 @@
 import React from 'react';
 
-const statusStyles = {
+const statusConfig = {
   // Positive / Active / Completed
-  ACTIVE: 'bg-emerald-50 text-emerald-800 border-emerald-200',
-  DELIVERED: 'bg-emerald-50 text-emerald-800 border-emerald-200',
-  COMPLETED: 'bg-emerald-50 text-emerald-800 border-emerald-200',
-  PAID: 'bg-emerald-50 text-emerald-800 border-emerald-200',
-  OPEN: 'bg-emerald-50 text-emerald-800 border-emerald-200',
-  APPROVED: 'bg-emerald-50 text-emerald-800 border-emerald-200',
-  ACCEPTED: 'bg-emerald-50 text-emerald-800 border-emerald-200',
-  LIVE: 'bg-emerald-50 text-emerald-800 border-emerald-200',
-  ON_DUTY: 'bg-emerald-50 text-emerald-800 border-emerald-200',
+  ACTIVE: {
+    style: 'bg-emerald-50 text-emerald-800 border-emerald-200/80',
+    dot: 'bg-emerald-500',
+  },
+  DELIVERED: {
+    style: 'bg-emerald-50 text-emerald-800 border-emerald-200/80',
+    dot: 'bg-emerald-500',
+  },
+  COMPLETED: {
+    style: 'bg-emerald-50 text-emerald-800 border-emerald-200/80',
+    dot: 'bg-emerald-500',
+  },
+  PAID: {
+    style: 'bg-emerald-50 text-emerald-800 border-emerald-200/80',
+    dot: 'bg-emerald-500',
+  },
+  APPROVED: {
+    style: 'bg-emerald-50 text-emerald-800 border-emerald-200/80',
+    dot: 'bg-emerald-500',
+  },
+  ACCEPTED: {
+    style: 'bg-emerald-50 text-emerald-800 border-emerald-200/80',
+    dot: 'bg-emerald-500',
+  },
+  LIVE: {
+    style: 'bg-emerald-50 text-emerald-800 border-emerald-200/80',
+    dot: 'bg-emerald-500',
+  },
+  ON_DUTY: {
+    style: 'bg-emerald-50 text-emerald-800 border-emerald-200/80',
+    dot: 'bg-emerald-500',
+  },
+  OPEN: {
+    style: 'bg-teal-50 text-teal-800 border-teal-200/80',
+    dot: 'bg-teal-500',
+  },
 
-  // Pending / In Transit / Warning
-  PENDING: 'bg-amber-50 text-amber-800 border-amber-200',
-  IN_PROGRESS: 'bg-sky-50 text-sky-800 border-sky-200',
-  IN_TRANSIT: 'bg-sky-50 text-sky-800 border-sky-200',
-  DRIVER_ASSIGNED: 'bg-indigo-50 text-indigo-800 border-indigo-200',
-  LOCKED: 'bg-purple-50 text-purple-800 border-purple-200',
-  OFF_DUTY: 'bg-slate-100 text-slate-700 border-slate-200',
-  MOCK: 'bg-amber-50 text-amber-800 border-amber-200',
+  // Pending / In Transit / Information
+  PENDING: {
+    style: 'bg-amber-50 text-amber-800 border-amber-200/80',
+    dot: 'bg-amber-500',
+  },
+  IN_PROGRESS: {
+    style: 'bg-sky-50 text-sky-800 border-sky-200/80',
+    dot: 'bg-sky-500',
+  },
+  IN_TRANSIT: {
+    style: 'bg-sky-50 text-sky-800 border-sky-200/80',
+    dot: 'bg-sky-500',
+  },
+  DRIVER_ASSIGNED: {
+    style: 'bg-indigo-50 text-indigo-800 border-indigo-200/80',
+    dot: 'bg-indigo-500',
+  },
+  LOCKED: {
+    style: 'bg-purple-50 text-purple-800 border-purple-200/80',
+    dot: 'bg-purple-500',
+  },
+  OFF_DUTY: {
+    style: 'bg-slate-100 text-slate-700 border-slate-200',
+    dot: 'bg-slate-400',
+  },
+  MOCK: {
+    style: 'bg-amber-50 text-amber-800 border-amber-200/80',
+    dot: 'bg-amber-500',
+  },
 
   // Negative / Cancelled / Suspended
-  SUSPENDED: 'bg-rose-50 text-rose-800 border-rose-200',
-  CANCELLED: 'bg-rose-50 text-rose-800 border-rose-200',
-  REJECTED: 'bg-rose-50 text-rose-800 border-rose-200',
+  SUSPENDED: {
+    style: 'bg-rose-50 text-rose-800 border-rose-200/80',
+    dot: 'bg-rose-500',
+  },
+  CANCELLED: {
+    style: 'bg-rose-50 text-rose-800 border-rose-200/80',
+    dot: 'bg-rose-500',
+  },
+  REJECTED: {
+    style: 'bg-rose-50 text-rose-800 border-rose-200/80',
+    dot: 'bg-rose-500',
+  },
 };
 
-export default function Badge({ status, text }) {
+const defaultStatus = {
+  style: 'bg-slate-100 text-slate-700 border-slate-200',
+  dot: 'bg-slate-400',
+};
+
+export default function Badge({ status, text, showDot = true }) {
   const normalized = (status || '').toUpperCase().replace(/\s+/g, '_');
-  const style = statusStyles[normalized] || 'bg-slate-100 text-slate-700 border-slate-200';
+  const config = statusConfig[normalized] || defaultStatus;
 
   return (
     <span
-      className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium border ${style}`}
+      className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] font-semibold border tracking-wide shrink-0 ${config.style}`}
     >
-      {text || status}
+      {showDot && (
+        <span className={`w-1.5 h-1.5 rounded-full mr-1.5 shrink-0 ${config.dot}`} />
+      )}
+      <span>{text || status || '-'}</span>
     </span>
   );
 }

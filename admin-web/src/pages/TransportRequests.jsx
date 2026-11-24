@@ -3,11 +3,6 @@ import {
   Search,
   Eye,
   RefreshCw,
-  Package,
-  MapPin,
-  Calendar,
-  AlertCircle,
-  Truck,
 } from 'lucide-react';
 import { adminService } from '../services/adminService';
 import DataTable from '../components/common/DataTable';
@@ -91,8 +86,8 @@ export default function TransportRequests() {
       accessor: 'farmer_name',
       render: (row) => (
         <div>
-          <span className="font-medium text-text-primary block">{row.farmer_name}</span>
-          <span className="text-[11px] text-text-secondary">{row.farmer_phone || '-'}</span>
+          <span className="font-medium text-text-primary block leading-tight">{row.farmer_name}</span>
+          <span className="text-[11px] text-text-secondary mt-0.5 block">{row.farmer_phone || '-'}</span>
         </div>
       ),
     },
@@ -102,7 +97,7 @@ export default function TransportRequests() {
       render: (row) => (
         <div>
           <span className="font-semibold text-forest block">{row.crop_type}</span>
-          <span className="text-xs text-text-secondary">{row.weight_kg} kg</span>
+          <span className="text-[11px] text-text-secondary mt-0.5 block">{row.weight_kg} kg</span>
         </div>
       ),
     },
@@ -110,7 +105,7 @@ export default function TransportRequests() {
       header: 'Pickup Location',
       accessor: 'pickup_address',
       render: (row) => (
-        <span className="truncate max-w-[160px] block" title={row.pickup_address}>
+        <span className="truncate max-w-[160px] block text-text-secondary" title={row.pickup_address}>
           {row.pickup_address || 'Farm Gate'}
         </span>
       ),
@@ -153,8 +148,9 @@ export default function TransportRequests() {
       render: (row) => (
         <button
           onClick={() => openDetail(row)}
-          className="p-1.5 rounded text-text-secondary hover:text-forest hover:bg-surface-subtle transition-colors"
+          className="p-1.5 rounded-lg text-text-secondary hover:text-forest hover:bg-surface-subtle transition-colors"
           title="Inspect Request"
+          aria-label="Inspect Request"
         >
           <Eye className="w-4 h-4" />
         </button>
@@ -165,21 +161,21 @@ export default function TransportRequests() {
   return (
     <div className="space-y-5">
       {/* Search and Filters */}
-      <div className="bg-white p-4 rounded-lg border border-surface-border flex flex-col md:flex-row md:items-center justify-between gap-3 shadow-xs">
+      <div className="bg-white p-4 rounded-xl border border-surface-border flex flex-col md:flex-row md:items-center justify-between gap-3 shadow-xs">
         <form onSubmit={handleSearchSubmit} className="flex-1 flex items-center space-x-2">
           <div className="relative flex-1 max-w-md">
-            <Search className="w-4 h-4 absolute left-3 top-2.5 text-text-secondary" />
+            <Search className="w-4 h-4 absolute left-3 top-2.5 text-text-muted" />
             <input
               type="text"
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
               placeholder="Search by crop, farmer, pickup address..."
-              className="w-full text-xs rounded border border-surface-border pl-9 pr-3 py-2 focus:outline-none focus:ring-1 focus:ring-forest text-text-primary"
+              className="w-full text-xs rounded-lg border border-surface-border pl-9 pr-3 py-2 bg-white text-text-primary placeholder:text-text-muted focus:outline-none focus:ring-2 focus:ring-forest/20 focus:border-forest transition-all"
             />
           </div>
           <button
             type="submit"
-            className="px-3.5 py-2 text-xs font-medium rounded bg-forest text-white hover:bg-forest-light transition-colors"
+            className="px-4 py-2 text-xs font-semibold rounded-lg bg-forest text-white hover:bg-forest-light transition-colors shadow-xs"
           >
             Search
           </button>
@@ -190,7 +186,7 @@ export default function TransportRequests() {
           <select
             value={statusFilter}
             onChange={(e) => setStatusFilter(e.target.value)}
-            className="text-xs rounded border border-surface-border px-3 py-2 bg-white text-text-primary focus:outline-none focus:ring-1 focus:ring-forest"
+            className="text-xs rounded-lg border border-surface-border px-3 py-2 bg-white text-text-primary focus:outline-none focus:ring-2 focus:ring-forest/20 focus:border-forest transition-all"
           >
             <option value="ALL">All Statuses</option>
             <option value="PENDING">Pending</option>
@@ -202,10 +198,11 @@ export default function TransportRequests() {
 
           <button
             onClick={() => fetchRequests(page)}
-            className="p-2 rounded border border-surface-border text-text-secondary hover:text-text-primary hover:bg-surface-subtle transition-colors"
+            className="p-2 rounded-lg border border-surface-border text-text-secondary hover:text-text-primary hover:bg-surface-subtle transition-colors shadow-xs"
             title="Refresh list"
+            aria-label="Refresh list"
           >
-            <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
+            <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin text-forest' : ''}`} />
           </button>
         </div>
       </div>
@@ -243,71 +240,73 @@ export default function TransportRequests() {
         ) : selectedReq ? (
           <div className="space-y-5">
             {/* Highlights */}
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 bg-surface-subtle p-3.5 rounded-lg border border-surface-border text-xs">
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 bg-surface-subtle/70 p-4 rounded-xl border border-surface-border text-xs">
               <div>
-                <span className="text-text-secondary block">Status</span>
-                <Badge status={selectedReq.request.status} />
+                <span className="text-text-secondary block font-medium">Status</span>
+                <div className="mt-1">
+                  <Badge status={selectedReq.request.status} />
+                </div>
               </div>
               <div>
-                <span className="text-text-secondary block">Crop Type</span>
-                <span className="font-semibold text-text-primary block mt-0.5">{selectedReq.request.crop_type}</span>
+                <span className="text-text-secondary block font-medium">Crop Type</span>
+                <span className="font-semibold text-text-primary block mt-1">{selectedReq.request.crop_type}</span>
               </div>
               <div>
-                <span className="text-text-secondary block">Weight</span>
-                <span className="font-semibold text-text-primary block mt-0.5">{selectedReq.request.weight_kg} kg</span>
+                <span className="text-text-secondary block font-medium">Weight</span>
+                <span className="font-semibold text-text-primary block mt-1">{selectedReq.request.weight_kg} kg</span>
               </div>
               <div>
-                <span className="text-text-secondary block">Handoff OTP</span>
-                <span className="font-mono font-bold text-forest block mt-0.5">{selectedReq.request.pickup_otp || 'N/A'}</span>
+                <span className="text-text-secondary block font-medium">Handoff OTP</span>
+                <span className="font-mono font-bold text-forest block mt-1">{selectedReq.request.pickup_otp || 'N/A'}</span>
               </div>
             </div>
 
             {/* Farmer & Pickup */}
-            <div className="p-3.5 bg-white rounded border border-surface-border space-y-2 text-xs">
-              <h4 className="font-bold uppercase tracking-wider text-text-secondary">Producer & Pickup Point</h4>
+            <div className="p-4 bg-white rounded-xl border border-surface-border space-y-2.5 text-xs">
+              <h4 className="font-bold uppercase tracking-wider text-text-secondary text-[11px]">Producer & Pickup Point</h4>
               <p>
-                <strong className="text-text-primary">Farmer:</strong> {selectedReq.farmer?.full_name} ({selectedReq.farmer?.phone || 'No phone'})
+                <strong className="text-text-primary font-semibold">Farmer:</strong> {selectedReq.farmer?.full_name} ({selectedReq.farmer?.phone || 'No phone'})
               </p>
               <p>
-                <strong className="text-text-primary">Pickup Address:</strong> {selectedReq.request.pickup_address || 'Farm Gate'}
+                <strong className="text-text-primary font-semibold">Pickup Address:</strong> {selectedReq.request.pickup_address || 'Farm Gate'}
               </p>
               {selectedReq.request.pickup_landmark && (
                 <p>
-                  <strong className="text-text-primary">Landmark:</strong> {selectedReq.request.pickup_landmark}
+                  <strong className="text-text-primary font-semibold">Landmark:</strong> {selectedReq.request.pickup_landmark}
                 </p>
               )}
             </div>
 
             {/* Destination Mandi */}
-            <div className="p-3.5 bg-white rounded border border-surface-border space-y-2 text-xs">
-              <h4 className="font-bold uppercase tracking-wider text-text-secondary">Dropoff APMC Market</h4>
+            <div className="p-4 bg-white rounded-xl border border-surface-border space-y-2.5 text-xs">
+              <h4 className="font-bold uppercase tracking-wider text-text-secondary text-[11px]">Dropoff APMC Market</h4>
               <p>
-                <strong className="text-text-primary">Mandi:</strong> {selectedReq.request.dropoff_mandi_name || 'APMC Yard'}
+                <strong className="text-text-primary font-semibold">Mandi:</strong> {selectedReq.request.dropoff_mandi_name || 'APMC Yard'}
               </p>
               <p>
-                <strong className="text-text-primary">District:</strong> {selectedReq.request.dropoff_district || 'Karnataka'}
+                <strong className="text-text-primary font-semibold">District:</strong> {selectedReq.request.dropoff_district || 'Karnataka'}
               </p>
               {selectedReq.request.dropoff_stall_number && (
                 <p>
-                  <strong className="text-text-primary">Stall / Platform:</strong> {selectedReq.request.dropoff_stall_number}
+                  <strong className="text-text-primary font-semibold">Stall / Platform:</strong> {selectedReq.request.dropoff_stall_number}
                 </p>
               )}
             </div>
 
             {/* Linked Trip */}
             {selectedReq.trip ? (
-              <div className="p-3.5 bg-surface-subtle rounded border border-surface-border space-y-2 text-xs">
-                <h4 className="font-bold uppercase tracking-wider text-text-secondary">Assigned Trip & Driver</h4>
+              <div className="p-4 bg-surface-subtle/70 rounded-xl border border-surface-border space-y-2.5 text-xs">
+                <h4 className="font-bold uppercase tracking-wider text-text-secondary text-[11px]">Assigned Trip & Driver</h4>
                 <div className="flex justify-between items-center">
-                  <span>Trip #{selectedReq.trip.id?.slice(0, 8)}</span>
+                  <span className="font-mono font-medium">Trip #{selectedReq.trip.id?.slice(0, 8)}</span>
                   <Badge status={selectedReq.trip.status} />
                 </div>
                 <p>
-                  <strong className="text-text-primary">Driver:</strong> {selectedReq.trip.rider_name || 'Unassigned'} ({selectedReq.trip.rider_phone || '-'})
+                  <strong className="text-text-primary font-semibold">Driver:</strong> {selectedReq.trip.rider_name || 'Unassigned'} ({selectedReq.trip.rider_phone || '-'})
                 </p>
               </div>
             ) : (
-              <div className="p-3 bg-surface-bg rounded border border-surface-border text-xs text-text-secondary italic">
+              <div className="p-3.5 bg-surface-subtle/50 rounded-xl border border-surface-border text-xs text-text-secondary italic">
                 No driver trip currently dispatched for this produce request.
               </div>
             )}
