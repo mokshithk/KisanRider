@@ -405,7 +405,20 @@ class _PoolCard extends StatelessWidget {
                       style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: _kTextPrimary),
                     ),
                   ),
-                  if (isFull)
+                  if (pool.status.toUpperCase() == 'COMPLETED' || pool.status.toUpperCase() == 'DELIVERED')
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                      decoration: BoxDecoration(
+                        color: const Color(0x2616A34A),
+                        borderRadius: BorderRadius.circular(20),
+                        border: Border.all(color: const Color(0xFF166534)),
+                      ),
+                      child: const Text(
+                        'DELIVERED',
+                        style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Color(0xFF166534)),
+                      ),
+                    )
+                  else if (isFull)
                     Container(
                       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                       decoration: BoxDecoration(

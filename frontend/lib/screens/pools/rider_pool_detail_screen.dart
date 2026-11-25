@@ -183,6 +183,38 @@ class _RiderPoolDetailScreenState extends State<RiderPoolDetailScreen> {
     }
   }
 
+  Future<void> _openDeliveryProofDialog(double totalDistanceKm) async {
+    final auth = context.read<AuthProvider>();
+    if (auth.token == null) return;
+
+    final result = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => DeliveryProofDialog(
+        subtitleText:
+            'Take a photo of the delivered pooled produce at the mandi. '
+            'This marks all pooled pickups as delivered.',
+        onSubmit: (bytes, filename) => deliverPoolWithProof(
+          token: auth.token!,
+          poolId: widget.poolId,
+          imageBytes: bytes,
+          sourceFilename: filename,
+          distanceKm: totalDistanceKm > 0 ? totalDistanceKm : null,
+        ),
+      ),
+    );
+
+    if (result == true && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Pool marked as delivered!'),
+          backgroundColor: kRiderGreen,
+        ),
+      );
+      await _loadData();
+    }
+  }
+
   Future<void> _showVerifyOtpDialog(Map<String, dynamic> stop) async {
     final farmerName = (stop['farmer_name'] ?? 'Farmer').toString();
     final produceRequestId = (stop['produce_request_id'] ?? '').toString();
@@ -437,6 +469,22 @@ class _RiderPoolDetailScreenState extends State<RiderPoolDetailScreen> {
     // Rider registered capacity validation
     final riderCapKg = _riderCapacityKg;
     final bool exceedsCapacity = riderCapKg != null && riderCapKg > 0 && totalWeightKg > riderCapKg;
+
+    final String poolStatus = (data['pool_status'] ?? 'OPEN').toString().toUpperCase();
+    final bool isPoolDelivered = poolStatus == 'COMPLETED' ||
+        poolStatus == 'DELIVERED' ||
+        data['all_delivered'] == true ||
+        (stops.isNotEmpty &&
+            stops.every((s) {
+              final st = ((s as Map<String, dynamic>)['status'] ?? '').toString().toUpperCase();
+              return st == 'DELIVERED' || st == 'COMPLETED';
+            }));
+    final int pickedUpCount = stops.where((s) {
+      final st = ((s as Map<String, dynamic>)['status'] ?? '').toString().toUpperCase();
+      return st == 'PICKED_UP' || st == 'IN_TRANSIT' || st == 'DELIVERED' || st == 'COMPLETED';
+    }).length;
+    final bool allPickedUp = data['all_picked_up'] == true ||
+        (stops.isNotEmpty && pickedUpCount == stops.length);
 
     // Build Map Markers
     final List<Marker> markers = [];
@@ -767,6 +815,61 @@ class _RiderPoolDetailScreenState extends State<RiderPoolDetailScreen> {
                 ),
               ),
             ),
+          )
+        else
+          Container(
+            padding: const EdgeInsets.all(16),
+            decoration: const BoxDecoration(
+              color: Colors.white,
+              boxShadow: [BoxShadow(color: Colors.black12, blurRadius: 8, offset: Offset(0, -2))],
+            ),
+            child: SafeArea(
+              child: isPoolDelivered
+                  ? Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFE8F5E9),
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(color: const Color(0xFFA5D6A7)),
+                      ),
+                      child: const Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Icon(Icons.verified_outlined, color: Color(0xFF166534), size: 22),
+                          SizedBox(width: 8),
+                          Text(
+                            'Pool Delivered — Completed',
+                            style: TextStyle(
+                              color: Color(0xFF166534),
+                              fontWeight: FontWeight.bold,
+                              fontSize: 15,
+                            ),
+                          ),
+                        ],
+                      ),
+                    )
+                  : SizedBox(
+                      width: double.infinity,
+                      child: FilledButton.icon(
+                        onPressed: allPickedUp
+                            ? () => _openDeliveryProofDialog(totalDistanceKm)
+                            : null,
+                        icon: const Icon(Icons.check_circle_outline),
+                        label: Text(
+                          allPickedUp
+                              ? '✅ Mark as Delivered / Unloaded'
+                              : 'Verify Pickups ($pickedUpCount/${stops.length}) to Deliver',
+                          style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold),
+                        ),
+                        style: FilledButton.styleFrom(
+                          backgroundColor: kRiderGreen,
+                          disabledBackgroundColor: Colors.grey.shade300,
+                          disabledForegroundColor: Colors.grey.shade700,
+                          padding: const EdgeInsets.symmetric(vertical: 14),
+                        ),
+                      ),
+                    ),
+            ),
           ),
       ],
     );
@@ -916,7 +1019,8 @@ class _FarmerStopCard extends StatelessWidget {
               Builder(
                 builder: (context) {
                   final status = (stop['status'] ?? 'ACCEPTED').toString().toUpperCase();
-                  final bool isPickedUp = status == 'PICKED_UP' || status == 'DELIVERED';
+                  final bool isDelivered = status == 'DELIVERED' || status == 'COMPLETED';
+                  final bool isPickedUp = status == 'PICKED_UP' || isDelivered;
                   return Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
@@ -939,7 +1043,7 @@ class _FarmerStopCard extends StatelessWidget {
                             ),
                             const SizedBox(width: 4),
                             Text(
-                              isPickedUp ? 'Picked Up' : 'Pending Pickup',
+                              isDelivered ? 'Delivered' : (isPickedUp ? 'Picked Up' : 'Pending Pickup'),
                               style: TextStyle(
                                 fontSize: 12,
                                 fontWeight: FontWeight.bold,

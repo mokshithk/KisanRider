@@ -1,14 +1,11 @@
 import 'pools/rider_pool_detail_screen.dart';
 import 'dart:async';
 import 'dart:convert';
-import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
-import 'package:http_parser/http_parser.dart';
-import 'package:image_picker/image_picker.dart';
 import 'package:provider/provider.dart';
 
 import '../providers/auth_provider.dart';
@@ -18,19 +15,7 @@ import 'rider_common.dart';
 const Set<String> _kCompletableTripStatuses = {'PICKED_UP', 'IN_TRANSIT'};
 
 /// Upload + status-PATCH timeout.
-const Duration _kUploadTimeout = Duration(seconds: 15);
-
-/// Outcome of a proof-of-delivery upload.
-class DeliveryResult {
-  const DeliveryResult.success()
-      : success = true,
-        errorMessage = null;
-
-  const DeliveryResult.failure(this.errorMessage) : success = false;
-
-  final bool success;
-  final String? errorMessage;
-}
+const Duration _kUploadTimeout = kDeliveryUploadTimeout;
 
 // ============================================================================
 // Model — mirrors the compact list shape returned by
@@ -429,39 +414,20 @@ class _RiderActiveTabState extends State<RiderActiveTab>
       return const DeliveryResult.failure('Not signed in.');
     }
 
+    final uploaded = await uploadDeliveryProofPhoto(
+      token: auth.token!,
+      imageBytes: imageBytes,
+      sourceFilename: sourceFilename,
+      timeout: _kUploadTimeout,
+    );
+
+    if (uploaded.imageUrl == null) {
+      return DeliveryResult.failure(
+        uploaded.errorMessage ?? 'Photo upload failed.',
+      );
+    }
+
     try {
-      // ----- Step 1: upload the photo -------------------------------
-      final request = http.MultipartRequest(
-        'POST',
-        Uri.parse('$kApiBaseUrl/uploads/delivery-photo'),
-      );
-      request.headers['Authorization'] = 'Bearer ${auth.token}';
-      request.headers['Accept'] = 'application/json';
-
-      final extension = _mimeSubtypeFromFilename(sourceFilename);
-
-      request.files.add(
-        http.MultipartFile.fromBytes(
-          'file',
-          imageBytes,
-          filename: 'proof.$extension',
-          contentType: MediaType('image', extension),
-        ),
-      );
-
-      final streamed = await request.send().timeout(_kUploadTimeout);
-      final uploadResp =
-          await http.Response.fromStream(streamed).timeout(_kUploadTimeout);
-
-      if (uploadResp.statusCode != 200 && uploadResp.statusCode != 201) {
-        return DeliveryResult.failure(
-          _extractErrorDetail(
-            uploadResp,
-            'Photo upload failed (HTTP ${uploadResp.statusCode}).',
-          ),
-        );
-      }
-
       // ----- Step 2: transition the trip to DELIVERED ---------------
       final patchResp = await http
           .patch(
@@ -483,36 +449,12 @@ class _RiderActiveTabState extends State<RiderActiveTab>
       return const DeliveryResult.success();
     } on TimeoutException catch (e) {
       debugPrint('Upload Error (timeout): $e');
-      // ignore: avoid_print
-      print('Upload Error (timeout): $e');
       return const DeliveryResult.failure(
         'Connection timed out. Please check backend server.',
       );
     } catch (e) {
       debugPrint('Upload Error: $e');
-      // ignore: avoid_print
-      print('Upload Error: $e');
       return DeliveryResult.failure('Error: $e');
-    }
-  }
-
-  /// Maps a source filename to the MIME subtype the backend expects.
-  String _mimeSubtypeFromFilename(String filename) {
-    final lower = filename.toLowerCase();
-    final dot = lower.lastIndexOf('.');
-    if (dot == -1 || dot == lower.length - 1) return 'jpeg';
-
-    final ext = lower.substring(dot + 1);
-    switch (ext) {
-      case 'jpg':
-      case 'jpeg':
-        return 'jpeg';
-      case 'png':
-        return 'png';
-      case 'webp':
-        return 'webp';
-      default:
-        return 'jpeg';
     }
   }
 
@@ -573,12 +515,55 @@ class _RiderActiveTabState extends State<RiderActiveTab>
     final result = await showDialog<bool>(
       context: context,
       barrierDismissible: false,
-      builder: (_) => _DeliveryProofDialog(
+      builder: (_) => DeliveryProofDialog(
         onSubmit: (bytes, filename) =>
             _uploadProofAndDeliver(trip, bytes, filename),
       ),
     );
     return result == true;
+  }
+
+  Future<void> _openPoolDeliveryProofDialog(
+    String poolId,
+    List<RiderActiveTrip> poolTrips,
+  ) async {
+    final allPickedUp = poolTrips.isNotEmpty &&
+        poolTrips.every((t) =>
+            t.status == 'PICKED_UP' ||
+            t.status == 'COMPLETED' ||
+            t.status == 'DELIVERED');
+    final isDelivered = poolTrips.every(
+        (t) => t.status == 'COMPLETED' || t.status == 'DELIVERED');
+    if (!allPickedUp || isDelivered) return;
+
+    final auth = context.read<AuthProvider>();
+    if (auth.token == null) return;
+
+    final result = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => DeliveryProofDialog(
+        subtitleText:
+            'Take a photo of the delivered pooled produce at the mandi. '
+            'This marks all pooled pickups as delivered.',
+        onSubmit: (bytes, filename) => deliverPoolWithProof(
+          token: auth.token!,
+          poolId: poolId,
+          imageBytes: bytes,
+          sourceFilename: filename,
+        ),
+      ),
+    );
+
+    if (result == true && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Pool marked as delivered!'),
+          backgroundColor: kRiderGreen,
+        ),
+      );
+      await _fetch();
+    }
   }
 
   // -------------------------------------------------------------------------
@@ -719,6 +704,7 @@ class _RiderActiveTabState extends State<RiderActiveTab>
             return _GroupedPoolCard(
               poolId: pid,
               trips: poolTrips,
+              onMarkDelivered: () => _openPoolDeliveryProofDialog(pid, poolTrips),
               onTap: () async {
                 await Navigator.of(context).push(
                   MaterialPageRoute(
@@ -1884,274 +1870,6 @@ class _SheetInfoRow extends StatelessWidget {
 }
 
 // ============================================================================
-// Delivery proof-of-photo dialog
-// ============================================================================
-
-class _DeliveryProofDialog extends StatefulWidget {
-  const _DeliveryProofDialog({required this.onSubmit});
-
-  final Future<DeliveryResult> Function(
-    Uint8List photoBytes,
-    String sourceFilename,
-  ) onSubmit;
-
-  @override
-  State<_DeliveryProofDialog> createState() => _DeliveryProofDialogState();
-}
-
-class _DeliveryProofDialogState extends State<_DeliveryProofDialog> {
-  final ImagePicker _picker = ImagePicker();
-
-  XFile? _pickedFile;
-  Uint8List? _imageBytes;
-
-  bool _isUploading = false;
-  String? _error;
-
-  Future<void> _pick(ImageSource source) async {
-    try {
-      final picked = await _picker.pickImage(
-        source: source,
-        maxWidth: 1600,
-        imageQuality: 85,
-      );
-      if (picked == null) return;
-
-      final bytes = await picked.readAsBytes();
-      if (!mounted) return;
-
-      setState(() {
-        _pickedFile = picked;
-        _imageBytes = bytes;
-        _error = null;
-      });
-    } catch (e) {
-      if (!mounted) return;
-      final hint = kIsWeb
-          ? ' (if using Camera, try Gallery instead — browsers often block '
-              'camera access on non-HTTPS origins or desktops without a webcam)'
-          : '';
-      setState(() => _error = 'Could not pick image: $e$hint');
-    }
-  }
-
-  Future<void> _submit() async {
-    final bytes = _imageBytes;
-    if (bytes == null || bytes.isEmpty) {
-      setState(() => _error = 'Please attach a photo first.');
-      return;
-    }
-
-    setState(() {
-      _isUploading = true;
-      _error = null;
-    });
-
-    final filename = _pickedFile?.name ?? 'proof.jpg';
-
-    try {
-      final result = await widget.onSubmit(bytes, filename);
-
-      if (!mounted) return;
-
-      if (result.success) {
-        Navigator.of(context).pop(true);
-        return;
-      }
-
-      setState(() {
-        _error = result.errorMessage ??
-            'Could not complete delivery. Please try again.';
-      });
-    } catch (e) {
-      debugPrint('Dialog submit error: $e');
-      // ignore: avoid_print
-      print('Dialog submit error: $e');
-      if (!mounted) return;
-      setState(() => _error = 'Error: $e');
-    } finally {
-      if (mounted) {
-        setState(() => _isUploading = false);
-      }
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-
-    return AlertDialog(
-      title: const Text('Upload Delivery Proof'),
-      content: SizedBox(
-        width: 320,
-        child: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              const Text(
-                'Take a photo of the delivered crates at the mandi. '
-                'This is required before the trip can be completed.',
-                style: TextStyle(fontSize: 13),
-              ),
-              const SizedBox(height: 16),
-
-              if (_imageBytes == null)
-                Container(
-                  height: 180,
-                  decoration: BoxDecoration(
-                    color: theme.colorScheme.surfaceContainerHighest
-                        .withOpacity(0.4),
-                    borderRadius: BorderRadius.circular(12),
-                    border: Border.all(color: Colors.grey.shade300),
-                  ),
-                  child: const Center(
-                    child: Icon(
-                      Icons.image_outlined,
-                      size: 48,
-                      color: Colors.black26,
-                    ),
-                  ),
-                )
-              else
-                ClipRRect(
-                  borderRadius: BorderRadius.circular(12),
-                  child: Image.memory(
-                    _imageBytes!,
-                    height: 200,
-                    width: 320,
-                    fit: BoxFit.cover,
-                    gaplessPlayback: true,
-                    errorBuilder: (_, __, ___) => Container(
-                      height: 200,
-                      width: 320,
-                      color: Colors.grey.shade200,
-                      alignment: Alignment.center,
-                      child: const Icon(
-                        Icons.broken_image_outlined,
-                        size: 48,
-                        color: Colors.black26,
-                      ),
-                    ),
-                  ),
-                ),
-
-              const SizedBox(height: 12),
-
-              Row(
-                children: [
-                  Expanded(
-                    child: OutlinedButton.icon(
-                      onPressed: _isUploading
-                          ? null
-                          : () => _pick(ImageSource.camera),
-                      icon: const Icon(
-                        Icons.camera_alt_outlined,
-                        size: 18,
-                      ),
-                      label: const Text('Camera'),
-                    ),
-                  ),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: OutlinedButton.icon(
-                      onPressed: _isUploading
-                          ? null
-                          : () => _pick(ImageSource.gallery),
-                      icon: const Icon(
-                        Icons.photo_library_outlined,
-                        size: 18,
-                      ),
-                      label: const Text('Gallery'),
-                    ),
-                  ),
-                ],
-              ),
-
-              if (_isUploading) ...[
-                const SizedBox(height: 16),
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    const SizedBox(
-                      width: 18,
-                      height: 18,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    ),
-                    const SizedBox(width: 10),
-                    Text(
-                      'Uploading proof of delivery…',
-                      style: theme.textTheme.bodySmall,
-                    ),
-                  ],
-                ),
-              ],
-
-              if (_error != null) ...[
-                const SizedBox(height: 12),
-                Container(
-                  padding: const EdgeInsets.all(10),
-                  decoration: BoxDecoration(
-                    color: theme.colorScheme.errorContainer
-                        .withOpacity(0.4),
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                  child: Row(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Icon(
-                        Icons.error_outline,
-                        size: 16,
-                        color: theme.colorScheme.error,
-                      ),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: Text(
-                          _error!,
-                          style: TextStyle(
-                            color: theme.colorScheme.error,
-                            fontSize: 12,
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ],
-            ],
-          ),
-        ),
-      ),
-      actionsPadding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
-      actions: [
-        TextButton(
-          onPressed:
-              _isUploading ? null : () => Navigator.of(context).pop(),
-          child: const Text('Cancel'),
-        ),
-        FilledButton.icon(
-          onPressed: _isUploading ? null : _submit,
-          icon: _isUploading
-              ? const SizedBox(
-                  width: 16,
-                  height: 16,
-                  child: CircularProgressIndicator(
-                    strokeWidth: 2,
-                    color: Colors.white,
-                  ),
-                )
-              : const Icon(Icons.check, size: 18),
-          label: Text(
-            _isUploading ? 'Uploading…' : 'Upload Proof of Delivery',
-          ),
-          style: FilledButton.styleFrom(backgroundColor: kRiderGreen),
-        ),
-      ],
-    );
-  }
-}
-
-// ============================================================================
 // Grouped Pool Card for Active Trips
 // ============================================================================
 
@@ -2160,11 +1878,13 @@ class _GroupedPoolCard extends StatelessWidget {
     required this.poolId,
     required this.trips,
     required this.onTap,
+    required this.onMarkDelivered,
   });
 
   final String poolId;
   final List<RiderActiveTrip> trips;
   final VoidCallback onTap;
+  final VoidCallback onMarkDelivered;
 
   @override
   Widget build(BuildContext context) {
@@ -2172,9 +1892,16 @@ class _GroupedPoolCard extends StatelessWidget {
     final cropName = trips.isNotEmpty ? trips.first.cropName : 'Produce';
     final totalWeight = trips.fold<double>(0.0, (acc, t) => acc + t.weightKg);
     final totalFarmers = trips.length;
-    final completedPickups = trips.where((t) => t.status == 'PICKED_UP').length;
+    final completedPickups = trips
+        .where((t) =>
+            t.status == 'PICKED_UP' ||
+            t.status == 'COMPLETED' ||
+            t.status == 'DELIVERED')
+        .length;
     final dropoff = trips.isNotEmpty ? (trips.first.dropoffMandi ?? 'Mandi Destination') : '—';
-    final isDelivered = trips.every((t) => t.status == 'COMPLETED' || t.status == 'DELIVERED');
+    final isDelivered =
+        trips.isNotEmpty && trips.every((t) => t.status == 'COMPLETED' || t.status == 'DELIVERED');
+    final allPickedUp = totalFarmers > 0 && completedPickups == totalFarmers;
 
     return Card(
       elevation: 1,
@@ -2202,12 +1929,12 @@ class _GroupedPoolCard extends StatelessWidget {
                   Container(
                     padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
                     decoration: BoxDecoration(
-                      color: kRiderGreen.withOpacity(0.12),
+                      color: kRiderGreen.withValues(alpha: 0.12),
                       borderRadius: BorderRadius.circular(20),
                       border: Border.all(color: kRiderGreen),
                     ),
                     child: Text(
-                      isDelivered ? 'COMPLETED' : 'ACTIVE POOL',
+                      isDelivered ? 'DELIVERED' : 'ACTIVE POOL',
                       style: const TextStyle(
                         color: kRiderGreen,
                         fontWeight: FontWeight.bold,
@@ -2266,6 +1993,27 @@ class _GroupedPoolCard extends StatelessWidget {
                   ),
                 ],
               ),
+              if (allPickedUp && !isDelivered) ...[
+                const SizedBox(height: 12),
+                SizedBox(
+                  width: double.infinity,
+                  child: FilledButton.icon(
+                    onPressed: onMarkDelivered,
+                    icon: const Icon(Icons.check_circle_outline, size: 18),
+                    label: const Text(
+                      '✅ Mark as Delivered / Unloaded',
+                      style: TextStyle(fontWeight: FontWeight.bold),
+                    ),
+                    style: FilledButton.styleFrom(
+                      backgroundColor: kRiderGreen,
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                    ),
+                  ),
+                ),
+              ],
               const SizedBox(height: 12),
               Row(
                 mainAxisAlignment: MainAxisAlignment.end,

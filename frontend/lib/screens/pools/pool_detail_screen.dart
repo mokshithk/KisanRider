@@ -282,7 +282,15 @@ class _PoolDetailScreenState extends State<PoolDetailScreen> {
     final isMember = pool.members.any((m) => m.farmerId.trim().toLowerCase() == currentUserId);
     final myMember = pool.members.where((m) => m.farmerId.trim().toLowerCase() == currentUserId).firstOrNull;
     final isFull = pool.isFull;
+    final upperStatus = pool.status.toUpperCase();
+    final isDelivered = upperStatus == 'COMPLETED' || upperStatus == 'DELIVERED';
     final canJoin = pool.status == 'OPEN' && !isMember && !isFull;
+
+    final myStop = myMember == null
+        ? null
+        : pool.stops.where((s) => s.produceRequestId == myMember.produceRequestId).firstOrNull;
+    final myStopStatus = (myStop?.status ?? '').toUpperCase();
+    final myPickedUp = myStopStatus == 'PICKED_UP' || myStopStatus == 'DELIVERED' || myStopStatus == 'COMPLETED';
 
     // Calculate my share
     double myShare = 0.0;
@@ -310,15 +318,23 @@ class _PoolDetailScreenState extends State<PoolDetailScreen> {
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
                   _buildHeaderCard(pool, isFull),
-                  
-                  // Driver Card
-                  if (pool.status == 'DRIVER_ASSIGNED' && pool.driverName != null) ...[
+
+                  if (isDelivered) ...[
                     const SizedBox(height: 16),
-                    _buildDriverCard(pool),
+                    _buildDeliveredCard(pool),
+                  ] else if (myPickedUp) ...[
+                    const SizedBox(height: 16),
+                    _buildInTransitCard(pool),
+                  ],
+
+                  // Driver Card
+                  if ((pool.status == 'DRIVER_ASSIGNED' || isDelivered) && pool.driverName != null) ...[
+                    const SizedBox(height: 16),
+                    _buildDriverCard(pool, isDelivered: isDelivered),
                   ],
 
                   // Farmer Pickup OTP Banner (each farmer sees only their own individual OTP)
-                  if (myMember != null && myMember.pickupOtp != null && myMember.pickupOtp!.isNotEmpty) ...[
+                  if (!isDelivered && !myPickedUp && myMember != null && myMember.pickupOtp != null && myMember.pickupOtp!.isNotEmpty) ...[
                     const SizedBox(height: 16),
                     _buildPickupOtpBanner(myMember.pickupOtp!),
                   ],
@@ -428,17 +444,27 @@ class _PoolDetailScreenState extends State<PoolDetailScreen> {
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
                 decoration: BoxDecoration(
-                  color: isFull ? Colors.red.shade50 : Colors.green.shade50,
+                  color: (pool.status.toUpperCase() == 'COMPLETED' || pool.status.toUpperCase() == 'DELIVERED')
+                      ? const Color(0x2616A34A)
+                      : (isFull ? Colors.red.shade50 : Colors.green.shade50),
                   borderRadius: BorderRadius.circular(20),
-                  border: Border.all(color: isFull ? Colors.red.shade300 : Colors.green.shade300),
+                  border: Border.all(
+                    color: (pool.status.toUpperCase() == 'COMPLETED' || pool.status.toUpperCase() == 'DELIVERED')
+                        ? const Color(0xFF166534)
+                        : (isFull ? Colors.red.shade300 : Colors.green.shade300),
+                  ),
                 ),
                 child: Text(
-                  isFull ? 'FULL' : pool.status, 
+                  (pool.status.toUpperCase() == 'COMPLETED' || pool.status.toUpperCase() == 'DELIVERED')
+                      ? 'DELIVERED'
+                      : (isFull ? 'FULL' : pool.status),
                   style: TextStyle(
-                    color: isFull ? Colors.red.shade800 : Colors.green.shade800, 
-                    fontWeight: FontWeight.bold, 
-                    fontSize: 11
-                  )
+                    color: (pool.status.toUpperCase() == 'COMPLETED' || pool.status.toUpperCase() == 'DELIVERED')
+                        ? const Color(0xFF166534)
+                        : (isFull ? Colors.red.shade800 : Colors.green.shade800),
+                    fontWeight: FontWeight.bold,
+                    fontSize: 11,
+                  ),
                 ),
               ),
             ],
@@ -513,7 +539,83 @@ class _PoolDetailScreenState extends State<PoolDetailScreen> {
     );
   }
 
-  Widget _buildDriverCard(PoolDetail pool) {
+  Widget _buildDeliveredCard(PoolDetail pool) {
+    final dest = pool.dropoffMandiName ?? 'Mandi Destination';
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: const Color(0xFFE8F5E9),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: const Color(0xFFA5D6A7), width: 1.5),
+      ),
+      child: Row(
+        children: [
+          const Icon(Icons.verified_outlined, color: Color(0xFF166534), size: 26),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'Delivered',
+                  style: TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.bold,
+                    color: Color(0xFF166534),
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  'Your pooled produce has been delivered to $dest.',
+                  style: const TextStyle(fontSize: 12.5, color: Color(0xFF166534)),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildInTransitCard(PoolDetail pool) {
+    final dest = pool.dropoffMandiName ?? 'Mandi Destination';
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF3E8FF),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: const Color(0xFFD8B4FE), width: 1.5),
+      ),
+      child: Row(
+        children: [
+          const Icon(Icons.local_shipping_outlined, color: Color(0xFF6D28D9), size: 24),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'In Transit to Mandi',
+                  style: TextStyle(
+                    fontSize: 15,
+                    fontWeight: FontWeight.bold,
+                    color: Color(0xFF6D28D9),
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  'Your produce was picked up and is on the way to $dest.',
+                  style: const TextStyle(fontSize: 12.5, color: Color(0xFF6D28D9)),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildDriverCard(PoolDetail pool, {bool isDelivered = false}) {
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
@@ -528,7 +630,10 @@ class _PoolDetailScreenState extends State<PoolDetailScreen> {
             children: [
               Icon(Icons.local_shipping, color: Colors.blue.shade800, size: 20),
               const SizedBox(width: 8),
-              Text('Driver Assigned', style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: Colors.blue.shade800)),
+              Text(
+                isDelivered ? 'Delivered By' : 'Driver Assigned',
+                style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: Colors.blue.shade800),
+              ),
             ],
           ),
           const SizedBox(height: 12),

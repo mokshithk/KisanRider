@@ -182,7 +182,7 @@ def get_pool_detail(
     is_open = pool.status == pool_models.PoolStatus.OPEN.value
     is_member = any(
         str(m.farmer_id).lower() == str(current_user.id).lower()
-        and m.status in ("REQUESTED", "ACCEPTED", "APPROVED", "PENDING")
+        and m.status in ("REQUESTED", "ACCEPTED", "APPROVED", "PENDING", "COMPLETED")
         for m in pool.members
     )
     is_rider = current_user.role == "RIDER"
@@ -431,5 +431,36 @@ def verify_pool_farmer_otp(
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except SQLAlchemyError as e:
+        raise HTTPException(status_code=500, detail=f"Database error: {e}")
+
+
+@router.post(
+    "/{pool_id}/deliver",
+    response_model=pool_schemas.PoolDeliverResult,
+    summary="Mark a pool as delivered after uploading delivery proof photo",
+)
+def deliver_pool(
+    pool_id: UUID,
+    payload: pool_schemas.PoolDeliverPayload,
+    current_user: models.User = Depends(auth.require_role("RIDER")),
+    db: Session = Depends(get_db),
+):
+    """
+    Mark an entire pool as delivered after verifying all farmer pickups and
+    uploading proof-of-delivery photo.
+    """
+    try:
+        return pool_crud.deliver_pool(
+            db=db,
+            pool_id=pool_id,
+            rider_id=current_user.id,
+            delivery_photo_url=payload.delivery_photo_url,
+            distance_km=payload.distance_km,
+        )
+    except ValueError as e:
+        msg = str(e)
+        status_code = 403 if "not the assigned rider" in msg.lower() else 400
+        raise HTTPException(status_code=status_code, detail=msg)
     except SQLAlchemyError as e:
         raise HTTPException(status_code=500, detail=f"Database error: {e}")

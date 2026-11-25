@@ -146,7 +146,7 @@ def to_pool_out(
         db.query(func.count(pool_models.PoolMember.id))
         .filter(
             pool_models.PoolMember.pool_id == pool.id,
-            pool_models.PoolMember.status.in_(("ACCEPTED", "APPROVED")),
+            pool_models.PoolMember.status.in_(("ACCEPTED", "APPROVED", "COMPLETED")),
         )
         .scalar()
     ) or 0
@@ -170,7 +170,11 @@ def to_pool_out(
     driver_name = None
     driver_phone = None
     driver_vehicle = None
-    if pool.status == pool_models.PoolStatus.DRIVER_ASSIGNED.value:
+    if pool.status in (
+        pool_models.PoolStatus.DRIVER_ASSIGNED.value,
+        pool_models.PoolStatus.COMPLETED.value,
+        "DELIVERED",
+    ):
         trip = db.query(models.Trip).filter(models.Trip.pool_id == pool.id).first()
         if trip and trip.rider:
             driver_name = trip.rider.full_name
@@ -379,7 +383,7 @@ def get_my_pools(db: Session, farmer_id: UUID) -> List[pool_schemas.PoolOut]:
         .join(pm, pm.pool_id == pool.id)
         .filter(
             pm.farmer_id == farmer_id,
-            pm.status.in_(_ACTIVE_MEMBER_STATUSES)
+            pm.status.in_(_ACTIVE_MEMBER_STATUSES + (pool_models.PoolMemberStatus.COMPLETED.value,))
         )
         .order_by(pool.created_at.desc())
         .all()
@@ -648,7 +652,7 @@ def accept_pool(
         if rider_expected_pickup_at is not None:
             if rider_expected_pickup_at.tzinfo is None:
                 rider_expected_pickup_at = rider_expected_pickup_at.replace(tzinfo=timezone.utc)
-            if rider_expected_pickup_at < p_start:
+            if rider_expected_pickup_at < p_start - timedelta(seconds=59):
                 raise ValueError(f"Expected pickup time cannot be earlier than pool pickup window start ({p_start.isoformat()}).")
             if rider_expected_pickup_at > p_end:
                 raise ValueError(f"Expected pickup time cannot be later than pool pickup window end ({p_end.isoformat()}).")
@@ -931,6 +935,7 @@ def get_pool_route_optimization(
             pool_models.PoolMemberStatus.REQUESTED.value,
             pool_models.PoolMemberStatus.APPROVED.value,
             pool_models.PoolMemberStatus.PENDING.value,
+            pool_models.PoolMemberStatus.COMPLETED.value,
         )))
         .order_by(pool_models.PoolMember.requested_at.asc())
         .all()
@@ -1023,6 +1028,16 @@ def get_pool_route_optimization(
     result["max_qty"] = pool.max_qty
     result["current_qty"] = pool.current_qty
 
+    stops = result.get("ordered_stops") or []
+    result["all_picked_up"] = (
+        all((s.get("status") or "").upper() in ("PICKED_UP", "IN_TRANSIT", "DELIVERED", "COMPLETED") for s in stops)
+        if stops else False
+    )
+    result["all_delivered"] = (
+        pool.status in (pool_models.PoolStatus.COMPLETED.value, "DELIVERED")
+        or (all((s.get("status") or "").upper() in ("DELIVERED", "COMPLETED") for s in stops) if stops else False)
+    )
+
     return result
 
 
@@ -1056,12 +1071,15 @@ def verify_pooled_farmer_otp(
         raise ValueError("You are not the assigned rider for this trip")
 
     if trip.status == "PICKED_UP":
+        pool_trips = db.query(models.Trip).filter(models.Trip.pool_id == pool_id).all()
+        all_picked_up = all(t.status in ("PICKED_UP", "DELIVERED") for t in pool_trips) if pool_trips else False
         return {
             "success": True,
             "message": "Pickup already verified for this farmer",
             "produce_request_id": str(produce_request_id),
             "status": "PICKED_UP",
             "already_verified": True,
+            "all_picked_up": all_picked_up,
         }
     if trip.status != "ACCEPTED":
         raise ValueError(f"Trip cannot be verified from status {trip.status}")
@@ -1093,6 +1111,19 @@ def verify_pooled_farmer_otp(
 
     pr.status = "PICKED_UP"
     trip.status = "PICKED_UP"
+    stop = (
+        db.query(pool_models.PoolStop)
+        .filter(
+            pool_models.PoolStop.pool_id == pool_id,
+            pool_models.PoolStop.produce_request_id == produce_request_id,
+            pool_models.PoolStop.status != "SKIPPED",
+        )
+        .first()
+    )
+    if stop:
+        stop.status = "PICKED_UP"
+        if stop.picked_up_at is None:
+            stop.picked_up_at = _now()
     db.commit()
 
     pool_trips = db.query(models.Trip).filter(models.Trip.pool_id == pool_id).all()
@@ -1105,3 +1136,118 @@ def verify_pooled_farmer_otp(
         "status": "PICKED_UP",
         "all_picked_up": all_picked_up,
     }
+
+
+def deliver_pool(
+    db: Session,
+    pool_id: UUID,
+    rider_id: UUID,
+    delivery_photo_url: str,
+    distance_km: Optional[float] = None,
+) -> dict:
+    """
+    Marks an entire pool as delivered once all farmers' pickups have been verified.
+    Requires a delivery proof image URL (uploaded via POST /uploads/delivery-photo).
+    Transitions all active trips to DELIVERED, ProduceRequests to COMPLETED,
+    creates Settlement rows for each member, and sets Pool.status = COMPLETED.
+    """
+    photo_url = (delivery_photo_url or "").strip()
+    if not photo_url:
+        raise ValueError("Delivery proof photo is required before marking pool delivered.")
+
+    try:
+        pool = _get_locked_pool(db, pool_id)
+        if pool is None:
+            raise ValueError("Pool not found")
+        if pool.status == pool_models.PoolStatus.CANCELLED.value:
+            raise ValueError("Cannot deliver a cancelled pool")
+        if pool.status == pool_models.PoolStatus.COMPLETED.value:
+            raise ValueError("Pool has already been marked as delivered")
+
+        trips = (
+            db.query(models.Trip)
+            .filter(models.Trip.pool_id == pool_id)
+            .with_for_update()
+            .all()
+        )
+        active_trips = [t for t in trips if t.status not in ("CANCELLED", "MISSED")]
+        if not active_trips:
+            raise ValueError("No active trips found for this pool")
+
+        if any(t.rider_id != rider_id for t in active_trips):
+            raise ValueError("You are not the assigned rider for this pool")
+
+        unpicked = [t for t in active_trips if t.status not in ("PICKED_UP", "IN_TRANSIT", "DELIVERED")]
+        if unpicked:
+            raise ValueError("All farmers' pickup OTPs must be verified before marking the pool as delivered.")
+
+        from crud import _ensure_settlement_for_trip
+
+        completed_at = datetime.now(timezone.utc)
+        trips_delivered = 0
+
+        for trip in active_trips:
+            pr = (
+                db.query(models.ProduceRequest)
+                .filter(models.ProduceRequest.id == trip.produce_request_id)
+                .with_for_update()
+                .first()
+            )
+            if trip.status != "DELIVERED":
+                trip.status = "DELIVERED"
+                trip.completed_at = completed_at
+                trips_delivered += 1
+            elif trip.completed_at is None:
+                trip.completed_at = completed_at
+
+            if pr is not None:
+                pr.status = "COMPLETED"
+
+            _ensure_settlement_for_trip(db, trip, pr, distance_km)
+
+        members = (
+            db.query(pool_models.PoolMember)
+            .filter(
+                pool_models.PoolMember.pool_id == pool_id,
+                pool_models.PoolMember.status.in_(_ACTIVE_MEMBER_STATUSES),
+            )
+            .with_for_update()
+            .all()
+        )
+        for m in members:
+            m.status = pool_models.PoolMemberStatus.COMPLETED.value
+
+        stops = (
+            db.query(pool_models.PoolStop)
+            .filter(
+                pool_models.PoolStop.pool_id == pool_id,
+                pool_models.PoolStop.status != "SKIPPED",
+            )
+            .with_for_update()
+            .all()
+        )
+        for s in stops:
+            s.status = "DELIVERED"
+
+        pool.status = pool_models.PoolStatus.COMPLETED.value
+        if pool.locked_at is None:
+            pool.locked_at = _now()
+
+        db.commit()
+        db.refresh(pool)
+
+        return {
+            "success": True,
+            "message": "Pool delivered successfully",
+            "pool_id": pool.id,
+            "pool_status": pool.status,
+            "trips_delivered": trips_delivered,
+            "completed_at": completed_at,
+            "delivery_photo_url": photo_url,
+        }
+    except ValueError:
+        db.rollback()
+        raise
+    except SQLAlchemyError:
+        db.rollback()
+        raise

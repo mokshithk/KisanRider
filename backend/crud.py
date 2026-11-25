@@ -532,25 +532,30 @@ def get_nearby_produce_requests(
     # Exclude produce requests committed to an active pool
     from pools.models import PoolMember as _PM
     pooled_sub = select(_PM.produce_request_id).where(
-        _PM.status.in_(("REQUESTED", "ACCEPTED", "PENDING", "APPROVED"))
+        _PM.produce_request_id.isnot(None),
+        _PM.status.in_(("REQUESTED", "ACCEPTED", "PENDING", "APPROVED")),
     )
     query = query.filter(~pr.id.in_(pooled_sub))
 
     if status_filter:
         query = query.filter(pr.status == status_filter)
 
-    # Exclude expired requests (pickup_window_end <= NOW or requested_pickup_at <= NOW)
+    # Exclude expired requests: active if pickup_window_end > now_utc,
+    # or (when pickup_window_end is absent) requested_pickup_at is None or > now_utc.
     now_utc = datetime.now(timezone.utc)
     query = query.filter(
-        and_(
-            or_(
-                pr.pickup_window_end.is_(None),
+        or_(
+            and_(
+                pr.pickup_window_end.isnot(None),
                 pr.pickup_window_end > now_utc,
             ),
-            or_(
-                pr.requested_pickup_at.is_(None),
-                pr.requested_pickup_at > now_utc,
-            )
+            and_(
+                pr.pickup_window_end.is_(None),
+                or_(
+                    pr.requested_pickup_at.is_(None),
+                    pr.requested_pickup_at > now_utc,
+                ),
+            ),
         )
     )
 
@@ -681,7 +686,7 @@ def accept_produce_request(
         if rider_expected_pickup_at is not None:
             if rider_expected_pickup_at.tzinfo is None:
                 rider_expected_pickup_at = rider_expected_pickup_at.replace(tzinfo=timezone.utc)
-            if win_start and rider_expected_pickup_at < win_start:
+            if win_start and rider_expected_pickup_at < win_start - timedelta(seconds=59):
                 raise ValueError(f"Expected pickup time cannot be earlier than pickup window starts ({win_start.isoformat()}).")
             if win_end and rider_expected_pickup_at > win_end:
                 raise ValueError(f"Expected pickup time cannot be later than pickup window ends ({win_end.isoformat()}).")
@@ -794,6 +799,50 @@ def update_trip_status(
 
         if status == "DELIVERED":
             _ensure_settlement_for_trip(db, trip, pr, distance_km)
+            if trip.pool_id is not None:
+                from pools import models as _pool_models
+                pm = (
+                    db.query(_pool_models.PoolMember)
+                    .filter(
+                        _pool_models.PoolMember.pool_id == trip.pool_id,
+                        _pool_models.PoolMember.produce_request_id == trip.produce_request_id,
+                    )
+                    .first()
+                )
+                if pm and pm.status in ("REQUESTED", "ACCEPTED", "APPROVED", "PENDING"):
+                    pm.status = _pool_models.PoolMemberStatus.COMPLETED.value
+                stop = (
+                    db.query(_pool_models.PoolStop)
+                    .filter(
+                        _pool_models.PoolStop.pool_id == trip.pool_id,
+                        _pool_models.PoolStop.produce_request_id == trip.produce_request_id,
+                        _pool_models.PoolStop.status != "SKIPPED",
+                    )
+                    .first()
+                )
+                if stop:
+                    stop.status = "DELIVERED"
+
+                other_open = (
+                    db.query(models.Trip.id)
+                    .filter(
+                        models.Trip.pool_id == trip.pool_id,
+                        models.Trip.id != trip.id,
+                        models.Trip.status.notin_(("DELIVERED", "CANCELLED", "MISSED")),
+                    )
+                    .first()
+                )
+                if other_open is None:
+                    pool_obj = (
+                        db.query(_pool_models.Pool)
+                        .filter(_pool_models.Pool.id == trip.pool_id)
+                        .with_for_update()
+                        .first()
+                    )
+                    if pool_obj and pool_obj.status not in ("COMPLETED", "CANCELLED"):
+                        pool_obj.status = _pool_models.PoolStatus.COMPLETED.value
+                        if pool_obj.locked_at is None:
+                            pool_obj.locked_at = datetime.utcnow()
 
         db.commit()
         db.refresh(trip)

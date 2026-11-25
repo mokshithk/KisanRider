@@ -135,3 +135,18 @@ class PoolAcceptPayload(BaseModel):
         None,
         description="Expected pickup date and time entered by rider, must fall within pool pickup window."
     )
+
+
+class PoolDeliverPayload(BaseModel):
+    delivery_photo_url: str = Field(..., min_length=1, max_length=500)
+    distance_km: Optional[float] = Field(None, gt=0, le=1000)
+
+
+class PoolDeliverResult(BaseModel):
+    success: bool
+    message: str
+    pool_id: UUID
+    pool_status: str
+    trips_delivered: int
+    completed_at: datetime
+    delivery_photo_url: Optional[str] = None
