@@ -30,10 +30,10 @@ class FarmerEarningsTab extends StatefulWidget {
   const FarmerEarningsTab({super.key});
 
   @override
-  State<FarmerEarningsTab> createState() => _FarmerEarningsTabState();
+  FarmerEarningsTabState createState() => FarmerEarningsTabState();
 }
 
-class _FarmerEarningsTabState extends State<FarmerEarningsTab>
+class FarmerEarningsTabState extends State<FarmerEarningsTab>
     with AutomaticKeepAliveClientMixin {
   /// Raw settlement rows from the backend. Kept as maps rather than a
   /// typed model because the schema is still evolving (new farmer fields
@@ -52,6 +52,9 @@ class _FarmerEarningsTabState extends State<FarmerEarningsTab>
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) => _fetch());
   }
+
+  /// Refreshes sales settlement list (used when switching to Earnings tab).
+  void refresh() => _fetch();
 
   // -------------------------------------------------------------------------
   // Networking
@@ -234,6 +237,14 @@ class _FarmerEarningsTabState extends State<FarmerEarningsTab>
     final fallbackPayout = _num(s['total_payout']);
     final status = (s['status'] ?? 'PENDING').toString();
     final createdAt = s['created_at'];
+    final ratePerKg = _num(s['rate_per_kg']);
+    final paymentRef = s['payment_reference']?.toString();
+
+    final subtitleParts = <String>[
+      _shortDate(createdAt),
+      if (ratePerKg != null) '₹${ratePerKg.round()}/kg',
+      if (paymentRef != null && paymentRef.isNotEmpty) 'Ref: $paymentRef',
+    ];
 
     return _SettlementCard(
       cropName: cropName,
@@ -244,7 +255,7 @@ class _FarmerEarningsTabState extends State<FarmerEarningsTab>
       netPayout: netPayout ?? fallbackPayout,
       isNetEstimated: netPayout == null && fallbackPayout != null,
       status: status,
-      dateLabel: _shortDate(createdAt),
+      dateLabel: subtitleParts.join(' · '),
       rupees: _rupees,
     );
   }

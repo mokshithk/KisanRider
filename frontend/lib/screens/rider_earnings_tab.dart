@@ -13,10 +13,10 @@ class RiderEarningsTab extends StatefulWidget {
   const RiderEarningsTab({super.key});
 
   @override
-  State<RiderEarningsTab> createState() => _RiderEarningsTabState();
+  RiderEarningsTabState createState() => RiderEarningsTabState();
 }
 
-class _RiderEarningsTabState extends State<RiderEarningsTab>
+class RiderEarningsTabState extends State<RiderEarningsTab>
     with AutomaticKeepAliveClientMixin {
   /// Raw settlement rows as returned by the backend. Kept as maps rather
   /// than typed models because the field set is small and stable, and the
@@ -33,9 +33,23 @@ class _RiderEarningsTabState extends State<RiderEarningsTab>
   @override
   void initState() {
     super.initState();
+    kPaymentEventsNotifier.addListener(_onPaymentEvent);
     // Provider/context is only safe after the first frame.
     WidgetsBinding.instance.addPostFrameCallback((_) => _fetch());
   }
+
+  @override
+  void dispose() {
+    kPaymentEventsNotifier.removeListener(_onPaymentEvent);
+    super.dispose();
+  }
+
+  void _onPaymentEvent() {
+    if (mounted) _fetch();
+  }
+
+  /// Triggers an immediate refresh (used when switching to Earnings tab).
+  void refresh() => _fetch();
 
   // -------------------------------------------------------------------------
   // Networking
@@ -216,13 +230,23 @@ class _RiderEarningsTabState extends State<RiderEarningsTab>
             const _EmptyEarningsState()
           else
             ..._settlements.map(
-              (s) => _SettlementTile(
-                payoutLabel: _formatRupees(
-                  ((s['total_payout'] ?? 0) as num).toDouble(),
-                ),
-                timestampLabel: _formatTimestamp(s['created_at']),
-                status: (s['status'] ?? 'PENDING').toString(),
-              ),
+              (s) {
+                final crop = (s['crop_name'] ?? '').toString().trim();
+                final kg = (s['quantity_kg'] as num?)?.round();
+                final ref = (s['payment_reference'] ?? '').toString().trim();
+                final metaParts = <String>[
+                  if (crop.isNotEmpty) kg != null ? '$crop · $kg kg' : crop,
+                  _formatTimestamp(s['created_at']),
+                  if (ref.isNotEmpty) 'Ref: $ref',
+                ];
+                return _SettlementTile(
+                  payoutLabel: _formatRupees(
+                    ((s['total_payout'] ?? 0) as num).toDouble(),
+                  ),
+                  timestampLabel: metaParts.join(' · '),
+                  status: (s['status'] ?? 'PENDING').toString(),
+                );
+              },
             ),
         ],
       ),

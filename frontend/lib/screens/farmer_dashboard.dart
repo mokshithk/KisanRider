@@ -80,12 +80,17 @@ class _FarmerDashboardState extends State<FarmerDashboard> {
   int _currentIndex = 0;
   final GlobalKey<FarmerOrdersTabState> _ordersKey =
       GlobalKey<FarmerOrdersTabState>();
+  final GlobalKey<FarmerEarningsTabState> _earningsKey =
+      GlobalKey<FarmerEarningsTabState>();
 
   static const List<String> _titles = [
     'KisanRider', 'My Orders', 'Earnings', 'Account',
   ];
 
   void _goToTab(int index) {
+    if (index == 2) {
+      _earningsKey.currentState?.refresh();
+    }
     if (index == _currentIndex) return;
     setState(() => _currentIndex = index);
   }
@@ -149,7 +154,7 @@ class _FarmerDashboardState extends State<FarmerDashboard> {
             key: _ordersKey,
             onBookTransport: _openBookTransport,
           ),
-          const FarmerEarningsTab(),
+          FarmerEarningsTab(key: _earningsKey),
           const FarmerAccountScreen(),
         ],
       ),

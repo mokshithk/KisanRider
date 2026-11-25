@@ -9,6 +9,7 @@ import 'package:http/http.dart' as http;
 import 'package:provider/provider.dart';
 
 import '../providers/auth_provider.dart';
+import 'payment_qr_dialog.dart';
 import 'rider_common.dart';
 
 /// Statuses from which a rider may complete a delivery.
@@ -65,6 +66,16 @@ class RiderActiveTrip {
     this.riderExpectedPickupAt,
     this.pickupWindowStart,
     this.pickupWindowEnd,
+    this.settlementId,
+    this.paymentStatus,
+    this.grossAmount,
+    this.riderFare,
+    this.platformFee,
+    this.netPayout,
+    this.ratePerKg,
+    this.rateSource,
+    this.paymentReference,
+    this.paidAt,
   });
 
   factory RiderActiveTrip.fromJson(Map<String, dynamic> json) {
@@ -96,6 +107,16 @@ class RiderActiveTrip {
       riderExpectedPickupAt: parseDate(json['rider_expected_pickup_at']),
       pickupWindowStart: parseDate(json['pickup_window_start']),
       pickupWindowEnd: parseDate(json['pickup_window_end']),
+      settlementId: json['settlement_id']?.toString(),
+      paymentStatus: json['payment_status']?.toString(),
+      grossAmount: (json['gross_amount'] as num?)?.toDouble(),
+      riderFare: (json['rider_fare'] as num?)?.toDouble(),
+      platformFee: (json['platform_fee'] as num?)?.toDouble(),
+      netPayout: (json['net_payout'] as num?)?.toDouble(),
+      ratePerKg: (json['rate_per_kg'] as num?)?.toDouble(),
+      rateSource: json['rate_source']?.toString(),
+      paymentReference: json['payment_reference']?.toString(),
+      paidAt: parseDate(json['paid_at']),
     );
   }
 
@@ -139,6 +160,18 @@ class RiderActiveTrip {
   final DateTime? riderExpectedPickupAt;
   final DateTime? pickupWindowStart;
   final DateTime? pickupWindowEnd;
+  final String? settlementId;
+  final String? paymentStatus;
+  final double? grossAmount;
+  final double? riderFare;
+  final double? platformFee;
+  final double? netPayout;
+  final double? ratePerKg;
+  final String? rateSource;
+  final String? paymentReference;
+  final DateTime? paidAt;
+
+  bool get isPaid => (paymentStatus ?? '').toUpperCase() == 'PAID';
 
   // ---------------------------------------------------------------------
   // Convenience accessors
@@ -251,7 +284,18 @@ class _RiderActiveTabState extends State<RiderActiveTab>
   @override
   void initState() {
     super.initState();
+    kPaymentEventsNotifier.addListener(_onExternalPaymentEvent);
     WidgetsBinding.instance.addPostFrameCallback((_) => _fetch());
+  }
+
+  @override
+  void dispose() {
+    kPaymentEventsNotifier.removeListener(_onExternalPaymentEvent);
+    super.dispose();
+  }
+
+  void _onExternalPaymentEvent() {
+    if (mounted) _fetch();
   }
 
   Map<String, String> _headers(AuthProvider auth, {bool json = false}) {
@@ -500,10 +544,50 @@ class _RiderActiveTabState extends State<RiderActiveTab>
         onVerifyOtp: (otp) => _submitOtp(trip, otp),
         onCancel: () => _cancelTrip(trip),
         onMarkDelivered: () => _openDeliveryProofDialog(trip),
+        onGenerateQr: () => _openTripPaymentQr(trip),
       ),
     );
     if (!mounted) return;
     await _fetch();
+  }
+
+  Future<bool> _openTripPaymentQr(RiderActiveTrip trip) async {
+    final auth = context.read<AuthProvider>();
+    if (auth.token == null) return false;
+    final paid = await showTripPaymentQrDialog(
+      context,
+      token: auth.token!,
+      tripId: trip.id,
+    );
+    if (paid && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Payment received! Rider & Farmer accounts updated.'),
+          backgroundColor: kRiderGreen,
+        ),
+      );
+      await _fetch();
+    }
+    return paid;
+  }
+
+  Future<void> _openPoolPaymentQr(String poolId) async {
+    final auth = context.read<AuthProvider>();
+    if (auth.token == null) return;
+    final paid = await showPoolPaymentQrDialog(
+      context,
+      token: auth.token!,
+      poolId: poolId,
+    );
+    if (paid && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Pool payment received! Auto-split complete.'),
+          backgroundColor: kRiderGreen,
+        ),
+      );
+      await _fetch();
+    }
   }
 
   /// Shows the photo-upload proof dialog, returns `true` on a successful
@@ -705,6 +789,7 @@ class _RiderActiveTabState extends State<RiderActiveTab>
               poolId: pid,
               trips: poolTrips,
               onMarkDelivered: () => _openPoolDeliveryProofDialog(pid, poolTrips),
+              onGeneratePaymentQr: () => _openPoolPaymentQr(pid),
               onTap: () async {
                 await Navigator.of(context).push(
                   MaterialPageRoute(
@@ -918,12 +1003,40 @@ class _TripCard extends StatelessWidget {
                       height: 14,
                       child: CircularProgressIndicator(strokeWidth: 2),
                     )
-                  else
+                  else ...[
+                    if (trip.status == 'COMPLETED')
+                      Container(
+                        margin: const EdgeInsets.only(right: 6),
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 8, vertical: 2),
+                        decoration: BoxDecoration(
+                          color: trip.isPaid
+                              ? const Color(0xFFE8F5E9)
+                              : Colors.amber.shade50,
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(
+                            color: trip.isPaid
+                                ? const Color(0xFFA5D6A7)
+                                : Colors.amber.shade300,
+                          ),
+                        ),
+                        child: Text(
+                          trip.isPaid ? 'PAID' : 'QR PAY',
+                          style: TextStyle(
+                            fontSize: 10,
+                            fontWeight: FontWeight.bold,
+                            color: trip.isPaid
+                                ? const Color(0xFF166534)
+                                : Colors.amber.shade900,
+                          ),
+                        ),
+                      ),
                     Icon(
                       Icons.chevron_right,
                       size: 16,
                       color: theme.colorScheme.onSurfaceVariant,
                     ),
+                  ],
                 ],
               ),
             ],
@@ -1004,12 +1117,14 @@ class _TripOperationalSheet extends StatefulWidget {
     required this.onVerifyOtp,
     required this.onCancel,
     required this.onMarkDelivered,
+    required this.onGenerateQr,
   });
 
   final RiderActiveTrip trip;
   final Future<OtpSubmitResult> Function(String otp) onVerifyOtp;
   final Future<bool> Function() onCancel;
   final Future<bool> Function() onMarkDelivered;
+  final Future<bool> Function() onGenerateQr;
 
   @override
   State<_TripOperationalSheet> createState() => _TripOperationalSheetState();
@@ -1019,6 +1134,8 @@ class _TripOperationalSheetState extends State<_TripOperationalSheet> {
   final TextEditingController _otpController = TextEditingController();
 
   bool _isSubmitting = false;
+  bool _deliveredNow = false;
+  bool _paidNow = false;
   String? _error;
 
   @override
@@ -1115,7 +1232,12 @@ class _TripOperationalSheetState extends State<_TripOperationalSheet> {
     if (!mounted) return;
 
     if (success) {
-      Navigator.of(context).pop();
+      // Transition in-place to Delivered so the QR payment button
+      // immediately replaces "Mark as Delivered".
+      setState(() {
+        _isSubmitting = false;
+        _deliveredNow = true;
+      });
       return;
     }
 
@@ -1123,6 +1245,19 @@ class _TripOperationalSheetState extends State<_TripOperationalSheet> {
     // the user probably cancelled the dialog. Just reset the loading
     // state without surfacing an error.
     setState(() => _isSubmitting = false);
+  }
+
+  Future<void> _generateQr() async {
+    setState(() {
+      _isSubmitting = true;
+      _error = null;
+    });
+    final paid = await widget.onGenerateQr();
+    if (!mounted) return;
+    setState(() {
+      _isSubmitting = false;
+      if (paid) _paidNow = true;
+    });
   }
 
   // -------------------------------------------------------------------------
@@ -1190,15 +1325,17 @@ class _TripOperationalSheetState extends State<_TripOperationalSheet> {
                       ),
                     ),
                     const SizedBox(width: 8),
-                    _TripStatusBadge(status: widget.trip.status),
+                    _TripStatusBadge(
+                      status: _deliveredNow ? 'COMPLETED' : widget.trip.status,
+                    ),
                   ],
                 ),
                 const SizedBox(height: 16),
 
                 // ----- State-specific body --------------------------
-                if (widget.trip.status == 'ACCEPTED')
+                if (!_deliveredNow && widget.trip.status == 'ACCEPTED')
                   _buildAcceptedBody(theme)
-                else if (widget.trip.status == 'PICKED_UP')
+                else if (!_deliveredNow && widget.trip.status == 'PICKED_UP')
                   _buildPickedUpBody(theme)
                 else
                   _buildCompletedBody(theme),
@@ -1568,6 +1705,11 @@ class _TripOperationalSheetState extends State<_TripOperationalSheet> {
   Widget _buildCompletedBody(ThemeData theme) {
     final mandi = (widget.trip.dropoffMandi ?? '').trim();
     final completedAt = widget.trip.completedAt;
+    final isPaid = widget.trip.isPaid || _paidNow;
+    final gross = widget.trip.grossAmount;
+    final riderFare = widget.trip.riderFare;
+    final platformFee = widget.trip.platformFee;
+    final netPayout = widget.trip.netPayout;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -1590,11 +1732,13 @@ class _TripOperationalSheetState extends State<_TripOperationalSheet> {
                     size: 22,
                   ),
                   const SizedBox(width: 8),
-                  Text(
-                    'Delivery Complete',
-                    style: theme.textTheme.titleSmall?.copyWith(
-                      fontWeight: FontWeight.bold,
-                      color: const Color(0xFF166534),
+                  Expanded(
+                    child: Text(
+                      isPaid ? 'Delivery & Payment Complete' : 'Delivery Complete',
+                      style: theme.textTheme.titleSmall?.copyWith(
+                        fontWeight: FontWeight.bold,
+                        color: const Color(0xFF166534),
+                      ),
                     ),
                   ),
                 ],
@@ -1626,40 +1770,136 @@ class _TripOperationalSheetState extends State<_TripOperationalSheet> {
                 label: 'Reference',
                 value: widget.trip.shortRef,
               ),
+              if (widget.trip.paymentReference != null) ...[
+                const SizedBox(height: 8),
+                _SheetInfoRow(
+                  icon: Icons.qr_code_2_outlined,
+                  label: 'Payment Ref',
+                  value: widget.trip.paymentReference!,
+                ),
+              ],
             ],
           ),
         ),
-        const SizedBox(height: 20),
-        Container(
-          padding: const EdgeInsets.symmetric(
-            horizontal: 12,
-            vertical: 10,
+        if (gross != null) ...[
+          const SizedBox(height: 14),
+          Container(
+            padding: const EdgeInsets.all(14),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(color: Colors.grey.shade200),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    const Expanded(
+                      child: Text(
+                        'PAYMENT BREAKDOWN',
+                        style: TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w700,
+                          color: Color(0xFF6B7280),
+                          letterSpacing: 0.8,
+                        ),
+                      ),
+                    ),
+                    Text(
+                      isPaid ? 'PAID ✅' : 'PENDING QR',
+                      style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.bold,
+                        color: isPaid ? kRiderGreen : Colors.amber.shade900,
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                _SheetInfoRow(
+                  icon: Icons.payments_outlined,
+                  label: 'Total Value',
+                  value: formatIndianRupees(gross),
+                ),
+                if (riderFare != null)
+                  _SheetInfoRow(
+                    icon: Icons.local_shipping_outlined,
+                    label: 'Rider Fare',
+                    value: formatIndianRupees(riderFare),
+                  ),
+                if (platformFee != null)
+                  _SheetInfoRow(
+                    icon: Icons.account_balance_outlined,
+                    label: 'Platform Fee',
+                    value: formatIndianRupees(platformFee),
+                  ),
+                if (netPayout != null)
+                  _SheetInfoRow(
+                    icon: Icons.agriculture_outlined,
+                    label: 'Farmer Gets',
+                    value: formatIndianRupees(netPayout),
+                  ),
+              ],
+            ),
           ),
-          decoration: BoxDecoration(
-            color: Colors.grey.shade100,
-            borderRadius: BorderRadius.circular(10),
-            border: Border.all(color: Colors.grey.shade300),
-          ),
-          child: Row(
-            children: [
-              Icon(
-                Icons.lock_outline,
-                size: 16,
-                color: Colors.grey.shade700,
+        ],
+        const SizedBox(height: 16),
+        if (!isPaid)
+          FilledButton.icon(
+            onPressed: _isSubmitting ? null : _generateQr,
+            style: FilledButton.styleFrom(
+              backgroundColor: kRiderGreen,
+              padding: const EdgeInsets.symmetric(vertical: 15),
+              textStyle: const TextStyle(
+                fontSize: 14.5,
+                fontWeight: FontWeight.w700,
+                letterSpacing: 0.4,
               ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Text(
-                  'This trip is closed. Full earnings live under '
-                  'Trip History in your Account.',
-                  style: theme.textTheme.bodySmall?.copyWith(
-                    color: Colors.grey.shade800,
+            ),
+            icon: _isSubmitting
+                ? const SizedBox(
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      color: Colors.white,
+                    ),
+                  )
+                : const Icon(Icons.qr_code_2_rounded, size: 22),
+            label: const Text('Generate Payment QR'),
+          )
+        else
+          Container(
+            padding: const EdgeInsets.symmetric(
+              horizontal: 12,
+              vertical: 12,
+            ),
+            decoration: BoxDecoration(
+              color: const Color(0xFFE8F5E9),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: const Color(0xFFA5D6A7)),
+            ),
+            child: Row(
+              children: [
+                const Icon(
+                  Icons.check_circle,
+                  size: 18,
+                  color: Color(0xFF166534),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    'Payment done! Earnings updated under your Earnings tab.',
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: const Color(0xFF166534),
+                      fontWeight: FontWeight.w600,
+                    ),
                   ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
-        ),
       ],
     );
   }
@@ -1879,12 +2119,14 @@ class _GroupedPoolCard extends StatelessWidget {
     required this.trips,
     required this.onTap,
     required this.onMarkDelivered,
+    required this.onGeneratePaymentQr,
   });
 
   final String poolId;
   final List<RiderActiveTrip> trips;
   final VoidCallback onTap;
   final VoidCallback onMarkDelivered;
+  final VoidCallback onGeneratePaymentQr;
 
   @override
   Widget build(BuildContext context) {
@@ -1901,6 +2143,8 @@ class _GroupedPoolCard extends StatelessWidget {
     final dropoff = trips.isNotEmpty ? (trips.first.dropoffMandi ?? 'Mandi Destination') : '—';
     final isDelivered =
         trips.isNotEmpty && trips.every((t) => t.status == 'COMPLETED' || t.status == 'DELIVERED');
+    final allPaid =
+        trips.isNotEmpty && trips.every((t) => t.isPaid);
     final allPickedUp = totalFarmers > 0 && completedPickups == totalFarmers;
 
     return Card(
@@ -2011,6 +2255,51 @@ class _GroupedPoolCard extends StatelessWidget {
                         borderRadius: BorderRadius.circular(10),
                       ),
                     ),
+                  ),
+                ),
+              ] else if (isDelivered && !allPaid) ...[
+                const SizedBox(height: 12),
+                SizedBox(
+                  width: double.infinity,
+                  child: FilledButton.icon(
+                    onPressed: onGeneratePaymentQr,
+                    icon: const Icon(Icons.qr_code_2_rounded, size: 19),
+                    label: const Text(
+                      'Generate Payment QR',
+                      style: TextStyle(fontWeight: FontWeight.bold),
+                    ),
+                    style: FilledButton.styleFrom(
+                      backgroundColor: kRiderGreen,
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                    ),
+                  ),
+                ),
+              ] else if (isDelivered && allPaid) ...[
+                const SizedBox(height: 12),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFE8F5E9),
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(color: const Color(0xFFA5D6A7)),
+                  ),
+                  child: const Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(Icons.check_circle, size: 16, color: Color(0xFF166534)),
+                      SizedBox(width: 6),
+                      Text(
+                        'Payment Done ✅',
+                        style: TextStyle(
+                          fontSize: 12.5,
+                          fontWeight: FontWeight.bold,
+                          color: Color(0xFF166534),
+                        ),
+                      ),
+                    ],
                   ),
                 ),
               ],

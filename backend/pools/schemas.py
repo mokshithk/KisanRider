@@ -102,9 +102,30 @@ class PoolStopOut(BaseModel):
     status: str
 
 
+class PoolMemberSettlementInfo(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    status: str
+    crop_name: Optional[str] = None
+    quantity_kg: Optional[float] = None
+    rate_per_kg: Optional[float] = None
+    rate_source: Optional[str] = None
+    gross_amount: Optional[float] = None
+    rider_fare: Optional[float] = None
+    platform_fee: Optional[float] = None
+    net_payout: Optional[float] = None
+    payment_reference: Optional[str] = None
+    paid_at: Optional[datetime] = None
+
+
 class PoolDetailOut(PoolOut):
     members: List[PoolMemberOut] = Field(default_factory=list)
     stops: List[PoolStopOut] = Field(default_factory=list)
+    my_settlement: Optional[PoolMemberSettlementInfo] = None
+    pool_payment_status: Optional[str] = None
+    pool_total_crop_value: Optional[float] = None
+    pool_payment_reference: Optional[str] = None
 
 
 class PoolAcceptResult(BaseModel):

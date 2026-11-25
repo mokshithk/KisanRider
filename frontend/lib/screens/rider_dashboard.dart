@@ -1,7 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:provider/provider.dart';
 
-import '../providers/auth_provider.dart';
 import 'rider_account_screen.dart';
 import 'rider_active_tab.dart';
 import 'rider_available_tab.dart';
@@ -19,6 +17,8 @@ class RiderDashboard extends StatefulWidget {
 
 class _RiderDashboardState extends State<RiderDashboard> {
   int _currentIndex = 0;
+  final GlobalKey<RiderEarningsTabState> _earningsKey =
+      GlobalKey<RiderEarningsTabState>();
 
   static const List<String> _titles = [
     'Available Requests',
@@ -28,6 +28,9 @@ class _RiderDashboardState extends State<RiderDashboard> {
   ];
 
   void _goToTab(int index) {
+    if (index == 2) {
+      _earningsKey.currentState?.refresh();
+    }
     if (_currentIndex == index) return;
     setState(() => _currentIndex = index);
   }
@@ -57,11 +60,11 @@ class _RiderDashboardState extends State<RiderDashboard> {
       // a trip to Earnings and back.
       body: IndexedStack(
         index: _currentIndex,
-        children: const [
-          RiderAvailableTab(),
-          RiderActiveTab(),
-          RiderEarningsTab(),
-          RiderAccountScreen(),
+        children: [
+          const RiderAvailableTab(),
+          const RiderActiveTab(),
+          RiderEarningsTab(key: _earningsKey),
+          const RiderAccountScreen(),
         ],
       ),
       bottomNavigationBar: BottomNavigationBar(

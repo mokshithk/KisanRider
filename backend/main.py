@@ -34,6 +34,7 @@ import pools.models  # noqa: F401  -- registers Pool/PoolMember/PoolStop on Base
 from pools.router import router as pools_router  # PHASE 2 -- pools endpoints
 from admin_router import router as admin_router
 import otp_service
+import payment_service
 import schemas
 from database import engine, get_db
 
@@ -212,6 +213,14 @@ async def lifespan(app: FastAPI):
             conn.commit()
         except Exception as mig_err:
             print(f"[lifespan] Note on column check: {mig_err}")
+
+        # Additive migration: ensure payment / QR split columns exist on settlements
+        try:
+            payment_service.ensure_settlement_payment_columns(conn)
+            conn.commit()
+            print("[startup] Checked/added payment QR columns on settlements.")
+        except Exception as pay_mig_err:
+            print(f"[startup] Migration note (settlements payment cols): {pay_mig_err}")
 
     # Launch background worker for unaccepted produce request expiry
     expiry_task = asyncio.create_task(_request_expiry_worker())
@@ -2284,6 +2293,7 @@ def get_rider_active_trips_compact(
                     models.ProduceRequest.farmer
                 ),
                 joinedload(models.Trip.rider),
+                joinedload(models.Trip.settlement),
             )
             .filter(
                 models.Trip.rider_id == current_user.id,
@@ -2403,6 +2413,38 @@ def get_rider_active_trips_compact(
                 if pr.pickup_window_end is not None else (
                     pr.requested_pickup_at.isoformat() if pr.requested_pickup_at is not None else None
                 )
+            ),
+            "settlement_id": (
+                str(trip.settlement.id) if trip.settlement is not None else None
+            ),
+            "payment_status": (
+                trip.settlement.status if trip.settlement is not None else None
+            ),
+            "gross_amount": (
+                trip.settlement.gross_amount if trip.settlement is not None else None
+            ),
+            "rider_fare": (
+                trip.settlement.rider_fare if trip.settlement is not None else None
+            ),
+            "platform_fee": (
+                trip.settlement.platform_fee if trip.settlement is not None else None
+            ),
+            "net_payout": (
+                trip.settlement.net_payout if trip.settlement is not None else None
+            ),
+            "rate_per_kg": (
+                trip.settlement.rate_per_kg if trip.settlement is not None else None
+            ),
+            "rate_source": (
+                trip.settlement.rate_source if trip.settlement is not None else None
+            ),
+            "payment_reference": (
+                trip.settlement.payment_reference if trip.settlement is not None else None
+            ),
+            "paid_at": (
+                trip.settlement.paid_at.isoformat()
+                if trip.settlement is not None and trip.settlement.paid_at is not None
+                else None
             ),
         })
 
@@ -3074,6 +3116,154 @@ def get_my_settlements(
     Role-based payout history for the authenticated user.
     """
     return crud.get_settlements_for_user(db, current_user.id, current_user.role)
+
+
+@app.post(
+    "/settlements/{settlement_id}/generate-qr",
+    response_model=schemas.PaymentQrOut,
+)
+def generate_settlement_payment_qr(
+    settlement_id: UUID,
+    current_user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Generate (or retrieve) the payment QR code for a delivered settlement."""
+    try:
+        return payment_service.generate_settlement_qr(
+            db, settlement_id, actor_user=current_user
+        )
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except (SQLAlchemyError, ValueError) as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get(
+    "/settlements/{settlement_id}/status",
+    response_model=schemas.PaymentQrOut,
+)
+def get_settlement_payment_status(
+    settlement_id: UUID,
+    current_user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Poll payment status and split breakdown for a settlement."""
+    try:
+        return payment_service.get_settlement_payment_status(
+            db, settlement_id, actor_user=current_user
+        )
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post(
+    "/settlements/{settlement_id}/pay",
+    response_model=schemas.PaymentReceiptOut,
+)
+def pay_settlement_qr(
+    settlement_id: UUID,
+    payload: schemas.PaymentPayRequest,
+    db: Session = Depends(get_db),
+):
+    """Complete mandi payment for a single settlement and mark it PAID."""
+    try:
+        return payment_service.pay_settlement(
+            db, settlement_id, pin=payload.pin, qr_data=payload.qr_data
+        )
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except (SQLAlchemyError, ValueError) as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post(
+    "/trips/{trip_id}/generate-qr",
+    response_model=schemas.PaymentQrOut,
+)
+def generate_trip_payment_qr(
+    trip_id: UUID,
+    current_user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Generate (or retrieve) the payment QR code for a delivered trip."""
+    try:
+        return payment_service.generate_trip_qr(db, trip_id, actor_user=current_user)
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except (SQLAlchemyError, ValueError) as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get(
+    "/trips/{trip_id}/payment-status",
+    response_model=schemas.PaymentQrOut,
+)
+def get_trip_payment_status(
+    trip_id: UUID,
+    current_user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Poll payment status and split breakdown by trip_id."""
+    try:
+        return payment_service.get_trip_payment_status(
+            db, trip_id, actor_user=current_user
+        )
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get(
+    "/payments/qr/inspect",
+    response_model=schemas.PaymentQrOut,
+    summary="Inspect a scanned KisanRider payment QR code",
+)
+def inspect_payment_qr(
+    qr_data: str = Query(..., min_length=5, description="Decoded QR string"),
+    db: Session = Depends(get_db),
+):
+    """
+    Validate a scanned KisanRider QR payload and return total payable amount,
+    crop/mandi summary, and auto-split breakdown (for individual or pooled orders).
+    """
+    try:
+        return payment_service.inspect_qr_payment(db, qr_data)
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post(
+    "/payments/qr/pay",
+    response_model=schemas.PaymentReceiptOut,
+    summary="Pay a scanned KisanRider payment QR code with numeric PIN",
+)
+def pay_scanned_payment_qr(
+    payload: schemas.QrScanPayRequest,
+    db: Session = Depends(get_db),
+):
+    """
+    Verify numeric PIN and complete QR payment for either a single settlement
+    or an entire pool, atomically splitting funds across Rider, Platform, and Farmer(s).
+    """
+    try:
+        return payment_service.pay_via_qr(db, qr_data=payload.qr_data, pin=payload.pin)
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except (SQLAlchemyError, ValueError) as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 # ---------------------------------------------------------------------------

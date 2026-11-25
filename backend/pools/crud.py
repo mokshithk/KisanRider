@@ -248,10 +248,51 @@ def to_pool_detail_out(
                 m_out.pickup_otp = pr.pickup_otp
         member_outs.append(m_out)
 
+    my_settlement_out = None
+    if requesting_user_id:
+        my_member = next(
+            (m for m in members if str(m.farmer_id).lower() == str(requesting_user_id).lower()),
+            None,
+        )
+        if my_member:
+            my_trip = db.query(models.Trip).filter(
+                models.Trip.produce_request_id == my_member.produce_request_id
+            ).first()
+            if my_trip:
+                s = db.query(models.Settlement).filter(
+                    models.Settlement.trip_id == my_trip.id
+                ).first()
+                if s is not None:
+                    my_settlement_out = pool_schemas.PoolMemberSettlementInfo.model_validate(s)
+
+    pool_payment_status = None
+    pool_total_crop_value = None
+    pool_payment_reference = None
+    if pool.status in (pool_models.PoolStatus.COMPLETED.value, "DELIVERED"):
+        pool_trips = db.query(models.Trip).filter(models.Trip.pool_id == pool.id).all()
+        trip_ids = [t.id for t in pool_trips]
+        if trip_ids:
+            pool_settlements = db.query(models.Settlement).filter(
+                models.Settlement.trip_id.in_(trip_ids)
+            ).all()
+            if pool_settlements:
+                pool_payment_status = (
+                    "PAID" if all(ps.status == "PAID" for ps in pool_settlements) else "PENDING"
+                )
+                pool_total_crop_value = round(
+                    sum(float(ps.gross_amount or 0.0) for ps in pool_settlements), 2
+                )
+                refs = [ps.payment_reference for ps in pool_settlements if ps.payment_reference]
+                pool_payment_reference = refs[0] if refs else None
+
     return pool_schemas.PoolDetailOut(
         **base.model_dump(),
         members=member_outs,
         stops=[pool_schemas.PoolStopOut.model_validate(s) for s in stops],
+        my_settlement=my_settlement_out,
+        pool_payment_status=pool_payment_status,
+        pool_total_crop_value=pool_total_crop_value,
+        pool_payment_reference=pool_payment_reference,
     )
 
 
@@ -1038,6 +1079,23 @@ def get_pool_route_optimization(
         or (all((s.get("status") or "").upper() in ("DELIVERED", "COMPLETED") for s in stops) if stops else False)
     )
 
+    if result["all_delivered"]:
+        from payment_service import _build_pool_qr_response
+        try:
+            pay_info = _build_pool_qr_response(db, pool.id, ensure_token=False)
+            result["payment_status"] = pay_info["status"]
+            result["payment_reference"] = pay_info["payment_reference"]
+            result["paid_at"] = pay_info["paid_at"].isoformat() if pay_info["paid_at"] else None
+            result["total_crop_value"] = pay_info["total_amount"]
+            result["total_rider_fare"] = pay_info["rider_fare"]
+            result["total_platform_fee"] = pay_info["platform_fee"]
+            result["total_net_payout"] = pay_info["farmers_net_payout"]
+            result["rate_per_kg"] = pay_info["rate_per_kg"]
+            result["rate_source"] = pay_info["rate_source"]
+            result["qr_data"] = pay_info["qr_data"]
+        except Exception:
+            pass
+
     return result
 
 
@@ -1182,17 +1240,29 @@ def deliver_pool(
             raise ValueError("All farmers' pickup OTPs must be verified before marking the pool as delivered.")
 
         from crud import _ensure_settlement_for_trip
+        from payment_service import resolve_delivery_crop_rate_per_kg
 
         completed_at = datetime.now(timezone.utc)
         trips_delivered = 0
 
+        # Resolve per-trip ProduceRequests up front so we know total weight & rate per crop
+        trip_prs = {}
         for trip in active_trips:
-            pr = (
+            trip_prs[trip.id] = (
                 db.query(models.ProduceRequest)
                 .filter(models.ProduceRequest.id == trip.produce_request_id)
                 .with_for_update()
                 .first()
             )
+        total_pool_weight = sum(
+            float(pr.weight_kg or 0.0)
+            for pr in trip_prs.values()
+            if pr is not None
+        )
+
+        rate_cache: dict[tuple, tuple[float, str]] = {}
+        for trip in active_trips:
+            pr = trip_prs.get(trip.id)
             if trip.status != "DELIVERED":
                 trip.status = "DELIVERED"
                 trip.completed_at = completed_at
@@ -1203,7 +1273,29 @@ def deliver_pool(
             if pr is not None:
                 pr.status = "COMPLETED"
 
-            _ensure_settlement_for_trip(db, trip, pr, distance_km)
+            cache_key = (
+                (pr.crop_type or pool.crop_type or "").strip().lower(),
+                (pr.dropoff_district or pool.dropoff_district or "").strip().lower(),
+                (pr.dropoff_mandi_name or pool.dropoff_mandi_name or "").strip().lower(),
+            )
+            if cache_key not in rate_cache:
+                resolved_rate, resolved_source, _ = resolve_delivery_crop_rate_per_kg(
+                    pr.crop_type if pr else pool.crop_type,
+                    district=(pr.dropoff_district if pr else pool.dropoff_district),
+                    mandi_name=(pr.dropoff_mandi_name if pr else pool.dropoff_mandi_name),
+                )
+                rate_cache[cache_key] = (resolved_rate, resolved_source)
+            r_kg, r_src = rate_cache[cache_key]
+
+            _ensure_settlement_for_trip(
+                db,
+                trip,
+                pr,
+                distance_km,
+                rate_per_kg=r_kg,
+                rate_source=r_src,
+                fare_share_weight_total=total_pool_weight if total_pool_weight > 0 else None,
+            )
 
         members = (
             db.query(pool_models.PoolMember)

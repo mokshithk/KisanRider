@@ -1344,11 +1344,17 @@ def get_farmer_order_detail(
         ),
         settlement=(
             schemas.OrderSettlementInfo(
+                id=settlement.id,
                 status=settlement.status,
                 gross_amount=settlement.gross_amount,
                 rider_fare=settlement.rider_fare,
                 platform_fee=settlement.platform_fee,
                 net_payout=settlement.net_payout,
+                rate_per_kg=settlement.rate_per_kg,
+                rate_source=settlement.rate_source,
+                payment_reference=settlement.payment_reference,
+                payment_method=settlement.payment_method,
+                paid_at=settlement.paid_at,
                 created_at=settlement.created_at,
             )
             if settlement is not None
@@ -1623,6 +1629,13 @@ def get_rider_trip_detail(
             platform_commission=commission,
             net_earnings=net,
             payment_method=_rider_trip_payment_method_detail(trip, settlement),
+            crop_gross_amount=settlement.gross_amount,
+            farmer_platform_fee=settlement.platform_fee,
+            farmer_net_payout=settlement.net_payout,
+            rate_per_kg=settlement.rate_per_kg,
+            rate_source=settlement.rate_source,
+            payment_reference=settlement.payment_reference,
+            settlement_status=settlement.status,
         )
 
     return schemas.RiderTripDetailResponse(
@@ -1707,13 +1720,13 @@ def _compute_settlement_values(
     rate_per_kg: float,
 ) -> dict:
     base_fare = 50.0
-    distance_fare = distance_km * _DISTANCE_FARE_PER_KM
-    weight_surcharge = max(0.0, weight_kg - 50.0) * 2.0
-    rider_fare = base_fare + distance_fare + weight_surcharge
+    distance_fare = round(distance_km * _DISTANCE_FARE_PER_KM, 2)
+    weight_surcharge = round(max(0.0, weight_kg - 50.0) * 2.0, 2)
+    rider_fare = round(base_fare + distance_fare + weight_surcharge, 2)
 
-    gross_amount = weight_kg * rate_per_kg
-    platform_fee = gross_amount * _PLATFORM_FEE_RATE
-    net_payout = gross_amount - (rider_fare + platform_fee)
+    gross_amount = round(weight_kg * rate_per_kg, 2)
+    platform_fee = round(gross_amount * _PLATFORM_FEE_RATE, 2)
+    net_payout = round(gross_amount - (rider_fare + platform_fee), 2)
 
     return {
         "base_fare": base_fare,
@@ -1731,6 +1744,10 @@ def _ensure_settlement_for_trip(
     trip: models.Trip,
     pr: Optional[models.ProduceRequest],
     distance_km: Optional[float],
+    *,
+    rate_per_kg: Optional[float] = None,
+    rate_source: Optional[str] = None,
+    fare_share_weight_total: Optional[float] = None,
 ) -> Optional[models.Settlement]:
     existing = (
         db.query(models.Settlement.id)
@@ -1745,11 +1762,50 @@ def _ensure_settlement_for_trip(
         if pr is not None and pr.weight_kg is not None
         else 0.0
     )
-    values = _compute_settlement_values(
-        weight_kg,
-        distance_km if distance_km is not None else _DEFAULT_DISTANCE_KM,
-        _DEFAULT_RATE_PER_KG,
-    )
+
+    if rate_per_kg is None:
+        from payment_service import resolve_delivery_crop_rate_per_kg
+        resolved_rate, resolved_source, _ = resolve_delivery_crop_rate_per_kg(
+            pr.crop_type if pr is not None else None,
+            district=pr.dropoff_district if pr is not None else None,
+            mandi_name=pr.dropoff_mandi_name if pr is not None else None,
+        )
+    else:
+        resolved_rate = float(rate_per_kg)
+        resolved_source = rate_source or "mandi_api"
+
+    effective_distance = distance_km if distance_km is not None else _DEFAULT_DISTANCE_KM
+
+    if fare_share_weight_total is not None and fare_share_weight_total > 0 and weight_kg > 0:
+        pool_values = _compute_settlement_values(
+            fare_share_weight_total,
+            effective_distance,
+            resolved_rate,
+        )
+        ratio = weight_kg / fare_share_weight_total
+        base_fare = round(pool_values["base_fare"] * ratio, 2)
+        distance_fare = round(pool_values["distance_fare"] * ratio, 2)
+        weight_surcharge = round(pool_values["weight_surcharge"] * ratio, 2)
+        rider_fare = round(base_fare + distance_fare + weight_surcharge, 2)
+
+        gross_amount = round(weight_kg * resolved_rate, 2)
+        platform_fee = round(gross_amount * _PLATFORM_FEE_RATE, 2)
+        net_payout = round(gross_amount - (rider_fare + platform_fee), 2)
+        values = {
+            "base_fare": base_fare,
+            "distance_fare": distance_fare,
+            "weight_surcharge": weight_surcharge,
+            "rider_fare": rider_fare,
+            "gross_amount": gross_amount,
+            "platform_fee": platform_fee,
+            "net_payout": net_payout,
+        }
+    else:
+        values = _compute_settlement_values(
+            weight_kg,
+            effective_distance,
+            resolved_rate,
+        )
 
     db_settlement = models.Settlement(
         trip_id=trip.id,
@@ -1757,6 +1813,8 @@ def _ensure_settlement_for_trip(
         farmer_id=pr.farmer_id if pr is not None else None,
         crop_name=pr.crop_type if pr is not None else None,
         quantity_kg=weight_kg,
+        rate_per_kg=resolved_rate,
+        rate_source=resolved_source,
         base_fare=values["base_fare"],
         distance_fare=values["distance_fare"],
         weight_surcharge=values["weight_surcharge"],
@@ -1816,6 +1874,8 @@ def create_settlement(
         farmer_id=pr.farmer_id if pr is not None else None,
         crop_name=pr.crop_type if pr is not None else None,
         quantity_kg=weight_kg,
+        rate_per_kg=settlement_in.rate_per_kg,
+        rate_source="manual",
         base_fare=values["base_fare"],
         distance_fare=values["distance_fare"],
         weight_surcharge=values["weight_surcharge"],

@@ -8,6 +8,7 @@ import 'package:provider/provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../../providers/auth_provider.dart';
+import '../payment_qr_dialog.dart';
 import '../rider_common.dart';
 
 class RiderPoolDetailScreen extends StatefulWidget {
@@ -207,7 +208,26 @@ class _RiderPoolDetailScreenState extends State<RiderPoolDetailScreen> {
     if (result == true && mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('Pool marked as delivered!'),
+          content: Text('Pool marked as delivered! Tap Generate Payment QR to collect payment.'),
+          backgroundColor: kRiderGreen,
+        ),
+      );
+      await _loadData();
+    }
+  }
+
+  Future<void> _openPoolPaymentQr() async {
+    final auth = context.read<AuthProvider>();
+    if (auth.token == null) return;
+    final paid = await showPoolPaymentQrDialog(
+      context,
+      token: auth.token!,
+      poolId: widget.poolId,
+    );
+    if (paid && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Pool payment received! Auto-split complete.'),
           backgroundColor: kRiderGreen,
         ),
       );
@@ -471,6 +491,15 @@ class _RiderPoolDetailScreenState extends State<RiderPoolDetailScreen> {
     final bool exceedsCapacity = riderCapKg != null && riderCapKg > 0 && totalWeightKg > riderCapKg;
 
     final String poolStatus = (data['pool_status'] ?? 'OPEN').toString().toUpperCase();
+    final String paymentStatus = (data['payment_status'] ?? '').toString().toUpperCase();
+    final bool isPoolPaid = paymentStatus == 'PAID';
+    final double? totalCropValue = (data['total_crop_value'] as num?)?.toDouble();
+    final double? totalRiderFare = (data['total_rider_fare'] as num?)?.toDouble();
+    final double? totalPlatformFee = (data['total_platform_fee'] as num?)?.toDouble();
+    final double? totalNetPayout = (data['total_net_payout'] as num?)?.toDouble();
+    final double? ratePerKg = (data['rate_per_kg'] as num?)?.toDouble();
+    final String rateSource = (data['rate_source'] ?? '').toString();
+    final String? paymentRef = data['payment_reference']?.toString();
     final bool isPoolDelivered = poolStatus == 'COMPLETED' ||
         poolStatus == 'DELIVERED' ||
         data['all_delivered'] == true ||
@@ -747,6 +776,82 @@ class _RiderPoolDetailScreenState extends State<RiderPoolDetailScreen> {
                   ),
                 ),
 
+                if (isPoolDelivered && totalCropValue != null)
+                  Container(
+                    margin: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+                    padding: const EdgeInsets.all(14),
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(
+                        color: isPoolPaid ? const Color(0xFFA5D6A7) : Colors.amber.shade300,
+                      ),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            Icon(
+                              isPoolPaid ? Icons.verified_rounded : Icons.qr_code_2_rounded,
+                              size: 18,
+                              color: isPoolPaid ? const Color(0xFF166534) : Colors.amber.shade900,
+                            ),
+                            const SizedBox(width: 8),
+                            const Expanded(
+                              child: Text(
+                                'POOL PAYMENT BREAKDOWN',
+                                style: TextStyle(
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.w700,
+                                  color: Color(0xFF6B7280),
+                                  letterSpacing: 0.8,
+                                ),
+                              ),
+                            ),
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                              decoration: BoxDecoration(
+                                color: isPoolPaid ? const Color(0xFFE8F5E9) : Colors.amber.shade50,
+                                borderRadius: BorderRadius.circular(12),
+                                border: Border.all(
+                                  color: isPoolPaid ? kRiderGreen : Colors.amber.shade400,
+                                ),
+                              ),
+                              child: Text(
+                                isPoolPaid ? 'PAID' : 'PENDING QR',
+                                style: TextStyle(
+                                  fontSize: 10,
+                                  fontWeight: FontWeight.bold,
+                                  color: isPoolPaid ? const Color(0xFF166534) : Colors.amber.shade900,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 10),
+                        _PoolPayRow(label: 'Total Crop Sale', value: formatIndianRupees(totalCropValue), bold: true),
+                        if (totalRiderFare != null)
+                          _PoolPayRow(label: 'Rider Transport Fare', value: formatIndianRupees(totalRiderFare), color: kRiderGreen, bold: true),
+                        if (totalPlatformFee != null)
+                          _PoolPayRow(label: 'Platform Fee (2%)', value: '- ${formatIndianRupees(totalPlatformFee)}', color: Colors.red.shade700),
+                        if (totalNetPayout != null) ...[
+                          const Divider(height: 12),
+                          _PoolPayRow(label: 'Farmers Net Payout', value: formatIndianRupees(totalNetPayout), color: const Color(0xFF166534), bold: true),
+                        ],
+                        if (ratePerKg != null)
+                          Padding(
+                            padding: const EdgeInsets.only(top: 6),
+                            child: Text(
+                              'Rate: ₹${ratePerKg.toStringAsFixed(0)}/kg (${rateSource == 'mandi_api' ? 'Mandi API Rate' : 'Standard ₹50/kg Fallback'})'
+                              '${paymentRef != null ? ' · Ref: $paymentRef' : ''}',
+                              style: const TextStyle(fontSize: 11, color: Colors.black54),
+                            ),
+                          ),
+                      ],
+                    ),
+                  ),
+
                 // Ordered Pickup Sequence Section
                 Padding(
                   padding: const EdgeInsets.fromLTRB(16, 20, 16, 8),
@@ -825,29 +930,50 @@ class _RiderPoolDetailScreenState extends State<RiderPoolDetailScreen> {
             ),
             child: SafeArea(
               child: isPoolDelivered
-                  ? Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFFE8F5E9),
-                        borderRadius: BorderRadius.circular(12),
-                        border: Border.all(color: const Color(0xFFA5D6A7)),
-                      ),
-                      child: const Row(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          Icon(Icons.verified_outlined, color: Color(0xFF166534), size: 22),
-                          SizedBox(width: 8),
-                          Text(
-                            'Pool Delivered — Completed',
-                            style: TextStyle(
-                              color: Color(0xFF166534),
-                              fontWeight: FontWeight.bold,
-                              fontSize: 15,
+                  ? (isPoolPaid
+                      ? Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFFE8F5E9),
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(color: const Color(0xFFA5D6A7)),
+                          ),
+                          child: Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              const Icon(Icons.verified_outlined, color: Color(0xFF166534), size: 22),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: Text(
+                                  paymentRef != null
+                                      ? 'Pool Delivered & Paid ($paymentRef)'
+                                      : 'Pool Delivered — Payment Done',
+                                  textAlign: TextAlign.center,
+                                  style: const TextStyle(
+                                    color: Color(0xFF166534),
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 14.5,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        )
+                      : SizedBox(
+                          width: double.infinity,
+                          child: FilledButton.icon(
+                            onPressed: _openPoolPaymentQr,
+                            icon: const Icon(Icons.qr_code_2_rounded, size: 22),
+                            label: const Text(
+                              'Generate Payment QR',
+                              style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold),
+                            ),
+                            style: FilledButton.styleFrom(
+                              backgroundColor: kRiderGreen,
+                              padding: const EdgeInsets.symmetric(vertical: 14),
                             ),
                           ),
-                        ],
-                      ),
-                    )
+                        ))
                   : SizedBox(
                       width: double.infinity,
                       child: FilledButton.icon(
@@ -897,6 +1023,48 @@ class _MetricItem extends StatelessWidget {
         const SizedBox(height: 2),
         Text(value, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Colors.black87)),
       ],
+    );
+  }
+}
+
+class _PoolPayRow extends StatelessWidget {
+  const _PoolPayRow({
+    required this.label,
+    required this.value,
+    this.color,
+    this.bold = false,
+  });
+
+  final String label;
+  final String value;
+  final Color? color;
+  final bool bold;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 2),
+      child: Row(
+        children: [
+          Expanded(
+            child: Text(
+              label,
+              style: TextStyle(
+                fontSize: 12.5,
+                fontWeight: bold ? FontWeight.w600 : FontWeight.normal,
+              ),
+            ),
+          ),
+          Text(
+            value,
+            style: TextStyle(
+              fontSize: 13,
+              fontWeight: bold ? FontWeight.bold : FontWeight.w600,
+              color: color ?? Colors.black87,
+            ),
+          ),
+        ],
+      ),
     );
   }
 }

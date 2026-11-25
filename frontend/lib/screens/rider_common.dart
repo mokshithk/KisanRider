@@ -20,6 +20,10 @@ const double kSearchRadiusKm = 50.0;
 /// Brand green used across the rider UI.
 const Color kRiderGreen = Color(0xFF2E7D32);
 
+/// Notifier incremented whenever a QR payment succeeds so Earnings and Active
+/// tabs refresh cleanly without stale cache.
+final ValueNotifier<int> kPaymentEventsNotifier = ValueNotifier<int>(0);
+
 // ---------------------------------------------------------------------------
 // Google Maps helper
 // ---------------------------------------------------------------------------

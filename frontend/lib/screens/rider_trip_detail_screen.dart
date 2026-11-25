@@ -7,6 +7,7 @@ import 'package:provider/provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../providers/auth_provider.dart';
+import 'payment_qr_dialog.dart';
 
 /// Base URL of the FastAPI backend.
 String get _kApiBaseUrl {
@@ -200,6 +201,13 @@ class RiderTripFareBreakdown {
     required this.platformCommission,
     required this.netEarnings,
     required this.paymentMethod,
+    this.cropGrossAmount,
+    this.farmerPlatformFee,
+    this.farmerNetPayout,
+    this.ratePerKg,
+    this.rateSource,
+    this.paymentReference,
+    this.settlementStatus,
   });
 
   factory RiderTripFareBreakdown.fromJson(Map<String, dynamic> json) {
@@ -210,6 +218,13 @@ class RiderTripFareBreakdown {
           ((json['platform_commission'] ?? 0) as num).toDouble(),
       netEarnings: ((json['net_earnings'] ?? 0) as num).toDouble(),
       paymentMethod: (json['payment_method'] ?? '—').toString(),
+      cropGrossAmount: (json['crop_gross_amount'] as num?)?.toDouble(),
+      farmerPlatformFee: (json['farmer_platform_fee'] as num?)?.toDouble(),
+      farmerNetPayout: (json['farmer_net_payout'] as num?)?.toDouble(),
+      ratePerKg: (json['rate_per_kg'] as num?)?.toDouble(),
+      rateSource: json['rate_source']?.toString(),
+      paymentReference: json['payment_reference']?.toString(),
+      settlementStatus: json['settlement_status']?.toString(),
     );
   }
 
@@ -220,6 +235,13 @@ class RiderTripFareBreakdown {
   /// "QR Payment at Mandi" (settlement PAID) or "Cash in Hand"
   /// (settlement PENDING).
   final String paymentMethod;
+  final double? cropGrossAmount;
+  final double? farmerPlatformFee;
+  final double? farmerNetPayout;
+  final double? ratePerKg;
+  final String? rateSource;
+  final String? paymentReference;
+  final String? settlementStatus;
 }
 
 // ============================================================================
@@ -370,7 +392,24 @@ class _RiderTripDetailScreenState extends State<RiderTripDetailScreen> {
           const SizedBox(height: 16),
           _CropCard(crop: trip.crop),
           const SizedBox(height: 16),
-          _FareCard(fare: trip.fare, isCancelled: trip.isCancelled),
+          _FareCard(
+            fare: trip.fare,
+            isCancelled: trip.isCancelled,
+            onGenerateQr: (!trip.isCancelled &&
+                    trip.fare != null &&
+                    (trip.fare!.settlementStatus ?? '').toUpperCase() != 'PAID')
+                ? () async {
+                    final auth = context.read<AuthProvider>();
+                    if (auth.token == null) return;
+                    final paid = await showTripPaymentQrDialog(
+                      context,
+                      token: auth.token!,
+                      tripId: trip.id,
+                    );
+                    if (paid && mounted) _fetch();
+                  }
+                : null,
+          ),
         ],
       ),
     );
@@ -694,10 +733,15 @@ class _CropCard extends StatelessWidget {
 // ============================================================================
 
 class _FareCard extends StatelessWidget {
-  const _FareCard({required this.fare, required this.isCancelled});
+  const _FareCard({
+    required this.fare,
+    required this.isCancelled,
+    this.onGenerateQr,
+  });
 
   final RiderTripFareBreakdown? fare;
   final bool isCancelled;
+  final VoidCallback? onGenerateQr;
 
   /// Indian-style digit grouping: 12,34,567 not 1,234,567.
   static String _rupees(double amount) {
@@ -787,6 +831,64 @@ class _FareCard extends StatelessWidget {
             valueColor: _kRiderGreen,
             bold: true,
           ),
+          if (f.cropGrossAmount != null) ...[
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 10),
+              child: Divider(height: 1),
+            ),
+            Text(
+              'MANDI SALE SPLIT',
+              style: theme.textTheme.labelSmall?.copyWith(
+                fontWeight: FontWeight.w700,
+                color: const Color(0xFF6B7280),
+                letterSpacing: 1.0,
+              ),
+            ),
+            const SizedBox(height: 6),
+            _DetailRow(
+              label: 'Total Crop Value',
+              value: _rupees(f.cropGrossAmount!),
+            ),
+            if (f.farmerPlatformFee != null)
+              _DetailRow(
+                label: 'Platform Fee (2%)',
+                value: '- ${_rupees(f.farmerPlatformFee!)}',
+                valueColor: Colors.red.shade700,
+              ),
+            if (f.farmerNetPayout != null)
+              _DetailRow(
+                label: 'Farmer Net Payout',
+                value: _rupees(f.farmerNetPayout!),
+                valueColor: _kRiderGreen,
+                bold: true,
+              ),
+            if (f.ratePerKg != null)
+              _DetailRow(
+                label: 'Crop Rate Applied',
+                value:
+                    '₹${f.ratePerKg!.toStringAsFixed(0)}/kg (${f.rateSource == 'mandi_api' ? 'Mandi API' : 'Fallback ₹50'})',
+              ),
+            if (f.paymentReference != null && f.paymentReference!.isNotEmpty)
+              _DetailRow(
+                label: 'Payment Ref',
+                value: f.paymentReference!,
+              ),
+          ],
+          if (onGenerateQr != null) ...[
+            const SizedBox(height: 14),
+            SizedBox(
+              width: double.infinity,
+              child: FilledButton.icon(
+                onPressed: onGenerateQr,
+                style: FilledButton.styleFrom(
+                  backgroundColor: _kRiderGreen,
+                  padding: const EdgeInsets.symmetric(vertical: 12),
+                ),
+                icon: const Icon(Icons.qr_code_2_rounded, size: 20),
+                label: const Text('Generate Payment QR'),
+              ),
+            ),
+          ],
         ],
       ),
     );

@@ -322,6 +322,10 @@ class _PoolDetailScreenState extends State<PoolDetailScreen> {
                   if (isDelivered) ...[
                     const SizedBox(height: 16),
                     _buildDeliveredCard(pool),
+                    if (pool.mySettlement != null) ...[
+                      const SizedBox(height: 16),
+                      _buildPoolSettlementCard(pool.mySettlement!, pool.poolPaymentReference),
+                    ],
                   ] else if (myPickedUp) ...[
                     const SizedBox(height: 16),
                     _buildInTransitCard(pool),
@@ -539,6 +543,175 @@ class _PoolDetailScreenState extends State<PoolDetailScreen> {
     );
   }
 
+  Widget _buildPoolSettlementCard(
+    PoolMemberSettlement s,
+    String? poolPaymentRef,
+  ) {
+    final isPaid = s.isPaid;
+    final badgeColor = isPaid ? _kFarmerGreen : Colors.amber.shade900;
+    final badgeBg = isPaid
+        ? _kFarmerGreen.withValues(alpha: 0.12)
+        : Colors.amber.withValues(alpha: 0.15);
+    final ref = s.paymentReference ?? poolPaymentRef;
+
+    String _rs(double? v) {
+      if (v == null) return '—';
+      final n = v.round();
+      final sign = n < 0 ? '-' : '';
+      final str = n.abs().toString();
+      if (str.length <= 3) return '$sign₹$str';
+      final last3 = str.substring(str.length - 3);
+      final rest = str.substring(0, str.length - 3);
+      final groups = <String>[];
+      var tail = rest;
+      while (tail.length > 2) {
+        groups.insert(0, tail.substring(tail.length - 2));
+        tail = tail.substring(0, tail.length - 2);
+      }
+      if (tail.isNotEmpty) groups.insert(0, tail);
+      return '$sign₹${groups.join(',')},$last3';
+    }
+
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.grey.shade300),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.account_balance_wallet_outlined,
+                  size: 18, color: _kFarmerGreen),
+              const SizedBox(width: 8),
+              const Expanded(
+                child: Text(
+                  'Your Pool Payout Breakdown',
+                  style: TextStyle(
+                    fontSize: 15,
+                    fontWeight: FontWeight.bold,
+                    color: _kTextPrimary,
+                  ),
+                ),
+              ),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
+                decoration: BoxDecoration(
+                  color: badgeBg,
+                  borderRadius: BorderRadius.circular(20),
+                  border: Border.all(color: badgeColor),
+                ),
+                child: Text(
+                  isPaid ? 'SETTLED' : 'PENDING QR',
+                  style: TextStyle(
+                    color: badgeColor,
+                    fontWeight: FontWeight.bold,
+                    fontSize: 10,
+                    letterSpacing: 0.5,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          _poolBreakdownRow('Gross Sale Amount', _rs(s.grossAmount)),
+          _poolBreakdownRow(
+            'Your Transport Share',
+            s.riderFare == null ? '—' : '- ${_rs(s.riderFare)}',
+            color: Colors.red.shade700,
+          ),
+          _poolBreakdownRow(
+            'Platform Fee (2%)',
+            s.platformFee == null ? '—' : '- ${_rs(s.platformFee)}',
+            color: Colors.red.shade700,
+          ),
+          const Padding(
+            padding: EdgeInsets.symmetric(vertical: 8),
+            child: Divider(height: 1),
+          ),
+          _poolBreakdownRow(
+            'Your Net Payout',
+            _rs(s.netPayout),
+            color: _kFarmerGreen,
+            bold: true,
+          ),
+          if (s.ratePerKg != null) ...[
+            const SizedBox(height: 6),
+            _poolBreakdownRow(
+              'Crop Rate Applied',
+              '₹${s.ratePerKg!.toStringAsFixed(0)}/kg (${s.rateSource == 'mandi_api' ? 'Mandi API Rate' : 'Standard ₹50/kg'})',
+            ),
+          ],
+          if (isPaid) ...[
+            const SizedBox(height: 10),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+              decoration: BoxDecoration(
+                color: const Color(0xFFE8F5E9),
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: const Color(0xFFA5D6A7)),
+              ),
+              child: Row(
+                children: [
+                  const Icon(Icons.verified, size: 17, color: _kFarmerGreen),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      ref != null
+                          ? 'Payment Received ($ref)'
+                          : 'Payment Received & Credited',
+                      style: const TextStyle(
+                        fontSize: 12.5,
+                        fontWeight: FontWeight.w600,
+                        color: Color(0xFF166534),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _poolBreakdownRow(
+    String label,
+    String value, {
+    Color? color,
+    bool bold = false,
+  }) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 3),
+      child: Row(
+        children: [
+          Expanded(
+            child: Text(
+              label,
+              style: TextStyle(
+                fontSize: 13,
+                color: bold ? _kTextPrimary : _kTextSecondary,
+                fontWeight: bold ? FontWeight.bold : FontWeight.normal,
+              ),
+            ),
+          ),
+          Text(
+            value,
+            style: TextStyle(
+              fontSize: bold ? 15 : 13.5,
+              fontWeight: bold ? FontWeight.bold : FontWeight.w600,
+              color: color ?? _kTextPrimary,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildDeliveredCard(PoolDetail pool) {
     final dest = pool.dropoffMandiName ?? 'Mandi Destination';
     return Container(
@@ -565,10 +738,12 @@ class _PoolDetailScreenState extends State<PoolDetailScreen> {
                   ),
                 ),
                 const SizedBox(height: 4),
-                Text(
-                  'Your pooled produce has been delivered to $dest.',
-                  style: const TextStyle(fontSize: 12.5, color: Color(0xFF166534)),
-                ),
+                  Text(
+                    (pool.mySettlement?.isPaid ?? false)
+                        ? 'Delivered & settled to your account at $dest.'
+                        : 'Your pooled produce has been delivered to $dest.',
+                    style: const TextStyle(fontSize: 12.5, color: Color(0xFF166534)),
+                  ),
               ],
             ),
           ),

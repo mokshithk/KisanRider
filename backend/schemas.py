@@ -1140,11 +1140,17 @@ class OrderSettlementInfo(BaseModel):
     """
     model_config = ConfigDict(from_attributes=True)
 
+    id: Optional[UUID] = None
     status: str
     gross_amount: Optional[float] = None
     rider_fare: Optional[float] = None
     platform_fee: Optional[float] = None
     net_payout: Optional[float] = None
+    rate_per_kg: Optional[float] = None
+    rate_source: Optional[str] = None
+    payment_reference: Optional[str] = None
+    payment_method: Optional[str] = None
+    paid_at: Optional[datetime] = None
     created_at: Optional[datetime] = None
 
 
@@ -1298,6 +1304,13 @@ class RiderTripFareBreakdown(BaseModel):
     platform_commission: float
     net_earnings: float
     payment_method: str
+    crop_gross_amount: Optional[float] = None
+    farmer_platform_fee: Optional[float] = None
+    farmer_net_payout: Optional[float] = None
+    rate_per_kg: Optional[float] = None
+    rate_source: Optional[str] = None
+    payment_reference: Optional[str] = None
+    settlement_status: Optional[str] = None
 
 
 class RiderTripDetailResponse(BaseModel):
@@ -1378,13 +1391,76 @@ class SettlementResponse(BaseModel):
 
     crop_name: Optional[str] = None
     quantity_kg: Optional[float] = None
+    rate_per_kg: Optional[float] = None
+    rate_source: Optional[str] = None
     gross_amount: Optional[float] = None
     rider_fare: Optional[float] = None
     platform_fee: Optional[float] = None
     net_payout: Optional[float] = None
 
+    qr_code_token: Optional[str] = None
+    qr_amount: Optional[float] = None
+    payment_reference: Optional[str] = None
+    payment_method: Optional[str] = None
+    paid_at: Optional[datetime] = None
+
     status: Literal["PENDING", "PAID"]
     created_at: datetime
+
+
+class PaymentQrItemOut(BaseModel):
+    settlement_id: UUID
+    trip_id: UUID
+    farmer_id: Optional[UUID] = None
+    farmer_name: str
+    crop_name: str
+    weight_kg: float
+    rate_per_kg: float
+    rate_source: str
+    gross_amount: float
+    rider_fare: float
+    platform_fee: float
+    net_payout: float
+    status: str
+
+
+class PaymentQrOut(BaseModel):
+    kind: Literal["INDIVIDUAL", "POOL"]
+    target_id: UUID
+    settlement_id: Optional[UUID] = None
+    pool_id: Optional[UUID] = None
+    trip_id: Optional[UUID] = None
+    qr_data: str
+    status: str
+    total_amount: float
+    rider_fare: float
+    platform_fee: float
+    farmers_net_payout: float
+    rate_per_kg: float
+    rate_source: str
+    crop_name: str
+    total_weight_kg: float
+    mandi_name: Optional[str] = None
+    rider_name: str
+    payment_reference: Optional[str] = None
+    payment_method: Optional[str] = None
+    paid_at: Optional[datetime] = None
+    items: list[PaymentQrItemOut] = Field(default_factory=list)
+
+
+class PaymentPayRequest(BaseModel):
+    pin: str = Field(..., min_length=4, max_length=8)
+    qr_data: Optional[str] = None
+
+
+class QrScanPayRequest(BaseModel):
+    qr_data: str = Field(..., min_length=5)
+    pin: str = Field(..., min_length=4, max_length=8)
+
+
+class PaymentReceiptOut(PaymentQrOut):
+    success: bool
+    message: str
 
 
 # ---------------------------------------------------------------------------

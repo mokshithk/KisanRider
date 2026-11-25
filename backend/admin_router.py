@@ -1453,6 +1453,11 @@ def list_settlements(
             "rider_fare": s.rider_fare or 0.0,
             "net_payout": s.net_payout or s.total_payout,
             "total_payout": s.total_payout,
+            "rate_per_kg": s.rate_per_kg,
+            "rate_source": s.rate_source,
+            "payment_reference": s.payment_reference,
+            "payment_method": s.payment_method,
+            "paid_at": s.paid_at.isoformat() if s.paid_at else None,
             "status": s.status,
             "created_at": s.created_at.isoformat() if s.created_at else None,
         })
@@ -1497,6 +1502,11 @@ def get_settlement_detail(
             "platform_fee": s.platform_fee,
             "net_payout": s.net_payout,
             "total_payout": s.total_payout,
+            "rate_per_kg": s.rate_per_kg,
+            "rate_source": s.rate_source,
+            "payment_reference": s.payment_reference,
+            "payment_method": s.payment_method,
+            "paid_at": s.paid_at.isoformat() if s.paid_at else None,
             "status": s.status,
             "created_at": s.created_at.isoformat() if s.created_at else None,
         },
@@ -1545,6 +1555,9 @@ def reconcile_settlement_status(
 
     old_status = s.status
     s.status = "PAID"
+    s.payment_reference = payload.payment_reference
+    s.payment_method = "MANUAL_RECONCILE"
+    s.paid_at = datetime.now(timezone.utc)
 
     client_ip = request.client.host if request.client else None
     desc = f"Admin {current_admin.email} marked Settlement {s.id} as PAID (Ext Ref: {payload.payment_reference}). Notes: {payload.notes or 'None'}"

@@ -16,6 +16,8 @@ from database import get_db
 from pools import crud as pool_crud
 from pools import models as pool_models
 from pools import schemas as pool_schemas
+import payment_service
+import schemas as root_schemas
 
 
 router = APIRouter(prefix="/pools", tags=["pools"])
@@ -462,5 +464,69 @@ def deliver_pool(
         msg = str(e)
         status_code = 403 if "not the assigned rider" in msg.lower() else 400
         raise HTTPException(status_code=status_code, detail=msg)
+    except SQLAlchemyError as e:
+        raise HTTPException(status_code=500, detail=f"Database error: {e}")
+
+
+@router.post(
+    "/{pool_id}/generate-qr",
+    response_model=root_schemas.PaymentQrOut,
+    summary="Generate a single payment QR for an entire delivered pool",
+)
+def generate_pool_payment_qr(
+    pool_id: UUID,
+    current_user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
+):
+    try:
+        return payment_service.generate_pool_qr(db, pool_id, actor_user=current_user)
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except SQLAlchemyError as e:
+        raise HTTPException(status_code=500, detail=f"Database error: {e}")
+
+
+@router.get(
+    "/{pool_id}/payment-status",
+    response_model=root_schemas.PaymentQrOut,
+    summary="Poll payment status and split breakdown for a delivered pool",
+)
+def get_pool_payment_status(
+    pool_id: UUID,
+    current_user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
+):
+    try:
+        return payment_service.get_pool_payment_status(db, pool_id, actor_user=current_user)
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post(
+    "/{pool_id}/pay",
+    response_model=root_schemas.PaymentReceiptOut,
+    summary="Complete mandi payment for a delivered pool (auto-splits to rider, platform, and farmers)",
+)
+def pay_pool(
+    pool_id: UUID,
+    payload: root_schemas.PaymentPayRequest,
+    db: Session = Depends(get_db),
+):
+    try:
+        return payment_service.pay_pool(
+            db, pool_id, pin=payload.pin, qr_data=payload.qr_data
+        )
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except SQLAlchemyError as e:
         raise HTTPException(status_code=500, detail=f"Database error: {e}")

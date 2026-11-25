@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/foundation.dart' show kIsWeb;
@@ -215,32 +216,54 @@ class CropInfo {
 class SettlementInfo {
   SettlementInfo({
     required this.status,
+    this.id,
     this.grossAmount,
     this.riderFare,
     this.platformFee,
     this.netPayout,
+    this.ratePerKg,
+    this.rateSource,
+    this.paymentReference,
+    this.paymentMethod,
+    this.paidAt,
     this.createdAt,
   });
 
   factory SettlementInfo.fromJson(Map<String, dynamic> json) {
     return SettlementInfo(
+      id: json['id']?.toString(),
       status: (json['status'] ?? 'PENDING').toString(),
       grossAmount: (json['gross_amount'] as num?)?.toDouble(),
       riderFare: (json['rider_fare'] as num?)?.toDouble(),
       platformFee: (json['platform_fee'] as num?)?.toDouble(),
       netPayout: (json['net_payout'] as num?)?.toDouble(),
+      ratePerKg: (json['rate_per_kg'] as num?)?.toDouble(),
+      rateSource: json['rate_source']?.toString(),
+      paymentReference: json['payment_reference']?.toString(),
+      paymentMethod: json['payment_method']?.toString(),
+      paidAt: json['paid_at'] is String
+          ? DateTime.tryParse(json['paid_at'] as String)
+          : null,
       createdAt: json['created_at'] is String
           ? DateTime.tryParse(json['created_at'] as String)
           : null,
     );
   }
 
+  final String? id;
   final String status;
   final double? grossAmount;
   final double? riderFare;
   final double? platformFee;
   final double? netPayout;
+  final double? ratePerKg;
+  final String? rateSource;
+  final String? paymentReference;
+  final String? paymentMethod;
+  final DateTime? paidAt;
   final DateTime? createdAt;
+
+  bool get isPaid => status.toUpperCase() == 'PAID';
 
   String get displayStatus {
     final s = status.toUpperCase();
@@ -267,6 +290,7 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
   bool _isLoading = true;
   String? _error;
   bool _hasChanged = false;
+  Timer? _paymentPollTimer;
 
   @override
   void initState() {
@@ -274,25 +298,50 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
     WidgetsBinding.instance.addPostFrameCallback((_) => _fetch());
   }
 
+  @override
+  void dispose() {
+    _paymentPollTimer?.cancel();
+    super.dispose();
+  }
+
+  void _syncPaymentPolling(OrderDetail? order) {
+    final needsPoll = order != null &&
+        order.isCompleted &&
+        order.settlement != null &&
+        !order.settlement!.isPaid;
+    if (needsPoll && (_paymentPollTimer == null || !_paymentPollTimer!.isActive)) {
+      _paymentPollTimer = Timer.periodic(const Duration(seconds: 5), (_) {
+        _fetch(silent: true);
+      });
+    } else if (!needsPoll && _paymentPollTimer != null) {
+      _paymentPollTimer!.cancel();
+      _paymentPollTimer = null;
+    }
+  }
+
   Map<String, String> _headers(AuthProvider auth) => {
         'Authorization': 'Bearer ${auth.token}',
         'Accept': 'application/json',
       };
 
-  Future<void> _fetch() async {
+  Future<void> _fetch({bool silent = false}) async {
     final auth = context.read<AuthProvider>();
     if (auth.token == null) {
-      setState(() {
-        _isLoading = false;
-        _error = 'Not signed in.';
-      });
+      if (!silent) {
+        setState(() {
+          _isLoading = false;
+          _error = 'Not signed in.';
+        });
+      }
       return;
     }
 
-    setState(() {
-      _isLoading = true;
-      _error = null;
-    });
+    if (!silent) {
+      setState(() {
+        _isLoading = true;
+        _error = null;
+      });
+    }
 
     try {
       final response = await http.get(
@@ -303,16 +352,18 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
 
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body) as Map<String, dynamic>;
+        final loaded = OrderDetail.fromJson(data);
         setState(() {
-          _order = OrderDetail.fromJson(data);
+          _order = loaded;
           _isLoading = false;
         });
-      } else if (response.statusCode == 404) {
+        _syncPaymentPolling(loaded);
+      } else if (!silent && response.statusCode == 404) {
         setState(() {
           _error = 'Order not found.';
           _isLoading = false;
         });
-      } else {
+      } else if (!silent) {
         setState(() {
           _error = _extractError(response) ??
               'Failed to load order (HTTP ${response.statusCode}).';
@@ -320,7 +371,7 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
         });
       }
     } catch (e) {
-      if (!mounted) return;
+      if (!mounted || silent) return;
       setState(() {
         _error = 'Network error: $e';
         _isLoading = false;
@@ -1239,6 +1290,43 @@ class _FinancialCard extends StatelessWidget {
             valueColor: _kFarmerGreen,
             bold: true,
           ),
+          if (s.ratePerKg != null) ...[
+            const SizedBox(height: 6),
+            _DetailRow(
+              label: 'Crop Rate Applied',
+              value:
+                  '₹${s.ratePerKg!.toStringAsFixed(0)}/kg (${s.rateSource == 'mandi_api' ? 'Mandi API Rate' : 'Standard ₹50/kg'})',
+            ),
+          ],
+          if (s.isPaid) ...[
+            const SizedBox(height: 10),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+              decoration: BoxDecoration(
+                color: const Color(0xFFE8F5E9),
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: const Color(0xFFA5D6A7)),
+              ),
+              child: Row(
+                children: [
+                  const Icon(Icons.verified, size: 18, color: _kFarmerGreen),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      s.paymentReference != null
+                          ? 'Payment Received via Mandi QR (${s.paymentReference})'
+                          : 'Payment Received & Settled',
+                      style: const TextStyle(
+                        fontSize: 12.5,
+                        fontWeight: FontWeight.w600,
+                        color: Color(0xFF166534),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
         ],
       ),
     );
