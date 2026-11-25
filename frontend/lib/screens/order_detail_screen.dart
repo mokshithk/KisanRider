@@ -108,7 +108,9 @@ class OrderDetail {
   bool get isCancelled => status == 'CANCELLED';
   bool get isCompleted => status == 'COMPLETED';
   bool get isExpired => status == 'EXPIRED';
-  bool get isAcceptedState => tripStatus == 'ACCEPTED';
+  bool get isAcceptedState =>
+      tripStatus == 'ACCEPTED' ||
+      (status == 'ACCEPTED' && tripStatus == null);
   bool get isInTransitState =>
       tripStatus == 'PICKED_UP' ||
       (status == 'IN_TRANSIT' && tripStatus != 'ACCEPTED');

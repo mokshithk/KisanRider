@@ -46,7 +46,7 @@ def create_pool(
     except SQLAlchemyError as e:
         raise HTTPException(status_code=500, detail=f"Database error: {e}")
 
-    return pool_crud.to_pool_detail_out(db, pool)
+    return pool_crud.to_pool_detail_out(db, pool, requesting_user_id=current_user.id)
 
 
 # ---------------------------------------------------------------------------
@@ -154,7 +154,7 @@ def group_pool(
     except SQLAlchemyError as e:
         raise HTTPException(status_code=500, detail=f"Database error: {e}")
 
-    return pool_crud.to_pool_detail_out(db, pool)
+    return pool_crud.to_pool_detail_out(db, pool, requesting_user_id=current_user.id)
 
 
 # ---------------------------------------------------------------------------
@@ -178,11 +178,11 @@ def get_pool_detail(
     if pool is None:
         raise HTTPException(status_code=404, detail="Pool not found")
 
-    is_creator = pool.creator_id == current_user.id
+    is_creator = str(pool.creator_id).lower() == str(current_user.id).lower()
     is_open = pool.status == pool_models.PoolStatus.OPEN.value
     is_member = any(
-        m.farmer_id == current_user.id
-        and m.status in ("REQUESTED", "ACCEPTED")
+        str(m.farmer_id).lower() == str(current_user.id).lower()
+        and m.status in ("REQUESTED", "ACCEPTED", "APPROVED", "PENDING")
         for m in pool.members
     )
     is_rider = current_user.role == "RIDER"
@@ -220,7 +220,7 @@ def join_pool(
     except SQLAlchemyError as e:
         raise HTTPException(status_code=500, detail=f"Database error: {e}")
 
-    return pool_crud.to_pool_detail_out(db, pool)
+    return pool_crud.to_pool_detail_out(db, pool, requesting_user_id=current_user.id)
 
 
 # ---------------------------------------------------------------------------
@@ -250,7 +250,7 @@ def approve_member(
     except SQLAlchemyError as e:
         raise HTTPException(status_code=500, detail=f"Database error: {e}")
 
-    return pool_crud.to_pool_detail_out(db, pool)
+    return pool_crud.to_pool_detail_out(db, pool, requesting_user_id=current_user.id)
 
 
 @router.post(
@@ -276,7 +276,7 @@ def reject_member(
     except SQLAlchemyError as e:
         raise HTTPException(status_code=500, detail=f"Database error: {e}")
 
-    return pool_crud.to_pool_detail_out(db, pool)
+    return pool_crud.to_pool_detail_out(db, pool, requesting_user_id=current_user.id)
 
 
 # ---------------------------------------------------------------------------

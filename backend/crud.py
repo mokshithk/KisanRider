@@ -216,34 +216,66 @@ def create_produce_request(
     request_schema: schemas.ProduceRequestCreate,
     farmer_id: UUID,
 ) -> schemas.ProduceRequestResponse:
+    is_for_pool = getattr(request_schema, 'for_pool', False)
+
     # 1. Validate farmer profile completeness (Farm Details + Saved Address)
     farmer = db.query(models.User).filter(models.User.id == farmer_id).first()
     if farmer:
-        has_size = farmer.farm_size_acres is not None and farmer.farm_size_acres > 0
-        has_crops = farmer.primary_crops is not None and len(farmer.primary_crops.strip()) > 0
-        if not (has_size and has_crops):
-            raise ValueError(
-                "Farm Details incomplete. Please update your farm size and primary crops in Account before booking transport."
-            )
-        saved_count = db.query(models.SavedAddress).filter(models.SavedAddress.farmer_id == farmer_id).count()
-        has_farm_address = bool(farmer.farm_address and farmer.farm_address.strip())
-        if saved_count == 0 and not has_farm_address:
-            raise ValueError(
-                "Saved Farm Addresses missing. Please add a farm address in Account before booking transport."
-            )
-        # If farmer has a farm_address in profile but no SavedAddress entry, auto-sync it
-        if saved_count == 0 and has_farm_address:
-            try:
-                auto_addr = models.SavedAddress(
-                    farmer_id=farmer_id,
-                    title="Farm Address",
-                    address_text=farmer.farm_address.strip(),
-                    landmark=farmer.landmark,
-                    latitude=request_schema.latitude,
-                    longitude=request_schema.longitude,
+        if not is_for_pool:
+            has_size = farmer.farm_size_acres is not None and farmer.farm_size_acres > 0
+            has_crops = farmer.primary_crops is not None and len(farmer.primary_crops.strip()) > 0
+            if not (has_size and has_crops):
+                raise ValueError(
+                    "Farm Details incomplete. Please update your farm size and primary crops in Account before booking transport."
                 )
-                db.add(auto_addr)
-                db.commit()
+            saved_count = db.query(models.SavedAddress).filter(models.SavedAddress.farmer_id == farmer_id).count()
+            has_farm_address = bool(farmer.farm_address and farmer.farm_address.strip())
+            if saved_count == 0 and not has_farm_address:
+                raise ValueError(
+                    "Saved Farm Addresses missing. Please add a farm address in Account before booking transport."
+                )
+            # If farmer has a farm_address in profile but no SavedAddress entry, auto-sync it
+            if saved_count == 0 and has_farm_address:
+                try:
+                    auto_addr = models.SavedAddress(
+                        farmer_id=farmer_id,
+                        title="Farm Address",
+                        address_text=farmer.farm_address.strip(),
+                        landmark=farmer.landmark,
+                        latitude=request_schema.latitude,
+                        longitude=request_schema.longitude,
+                    )
+                    db.add(auto_addr)
+                    db.commit()
+                except Exception:
+                    db.rollback()
+        else:
+            # When joining/creating a pool, auto-populate any missing profile fields so user is never blocked
+            try:
+                updated = False
+                if not (farmer.farm_size_acres is not None and farmer.farm_size_acres > 0):
+                    farmer.farm_size_acres = 1.0
+                    updated = True
+                if not (farmer.primary_crops and farmer.primary_crops.strip()):
+                    farmer.primary_crops = request_schema.crop_type or "Produce"
+                    updated = True
+                if not (farmer.farm_address and farmer.farm_address.strip()):
+                    farmer.farm_address = request_schema.pickup_address or "Farm Gate"
+                    updated = True
+                if updated:
+                    db.commit()
+                saved_count = db.query(models.SavedAddress).filter(models.SavedAddress.farmer_id == farmer_id).count()
+                if saved_count == 0 and request_schema.pickup_address:
+                    auto_addr = models.SavedAddress(
+                        farmer_id=farmer_id,
+                        title="Farm Gate",
+                        address_text=request_schema.pickup_address.strip(),
+                        landmark=request_schema.pickup_landmark,
+                        latitude=request_schema.latitude,
+                        longitude=request_schema.longitude,
+                    )
+                    db.add(auto_addr)
+                    db.commit()
             except Exception:
                 db.rollback()
 

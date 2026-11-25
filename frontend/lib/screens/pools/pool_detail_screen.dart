@@ -277,17 +277,21 @@ class _PoolDetailScreenState extends State<PoolDetailScreen> {
 
     final auth = context.read<AuthProvider>();
     final pool = _pool!;
-    final isCreator = auth.userId == pool.creatorId;
-    final isMember = pool.members.any((m) => m.farmerId == auth.userId);
-    final myMember = pool.members.where((m) => m.farmerId == auth.userId).firstOrNull;
+    final currentUserId = auth.userId?.trim().toLowerCase();
+    final isCreator = currentUserId != null && currentUserId == pool.creatorId.trim().toLowerCase();
+    final isMember = pool.members.any((m) => m.farmerId.trim().toLowerCase() == currentUserId);
+    final myMember = pool.members.where((m) => m.farmerId.trim().toLowerCase() == currentUserId).firstOrNull;
     final isFull = pool.isFull;
     final canJoin = pool.status == 'OPEN' && !isMember && !isFull;
 
     // Calculate my share
     double myShare = 0.0;
     if (pool.estimatedFreight != null && pool.currentQty > 0) {
-      final myMember = pool.members.firstWhere((m) => m.farmerId == auth.userId, orElse: () => pool.members.first);
-      final myWeight = isMember ? myMember.weightKg : 0.0;
+      final memberForShare = pool.members.firstWhere(
+        (m) => m.farmerId.trim().toLowerCase() == currentUserId,
+        orElse: () => pool.members.first,
+      );
+      final myWeight = isMember ? memberForShare.weightKg : 0.0;
       if (myWeight > 0) {
         myShare = (myWeight / pool.currentQty) * pool.estimatedFreight!;
       }
@@ -328,8 +332,8 @@ class _PoolDetailScreenState extends State<PoolDetailScreen> {
                   const SizedBox(height: 16),
                   _buildInfoCard('Members (${pool.members.length})', [
                     ...pool.members.map((m) {
-                      final memberIsMe = m.farmerId == auth.userId;
-                      final memberIsCreator = m.farmerId == pool.creatorId;
+                      final memberIsMe = currentUserId != null && m.farmerId.trim().toLowerCase() == currentUserId;
+                      final memberIsCreator = m.farmerId.trim().toLowerCase() == pool.creatorId.trim().toLowerCase();
                       
                       String displayName = m.farmerFullName ?? 'Farmer';
                       if (memberIsMe) {

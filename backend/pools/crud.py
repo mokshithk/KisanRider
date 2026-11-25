@@ -238,7 +238,7 @@ def to_pool_detail_out(
         farmer = db.query(models.User).filter(models.User.id == m.farmer_id).first()
         m_out = pool_schemas.PoolMemberOut.model_validate(m)
         m_out.farmer_full_name = farmer.full_name if farmer else None
-        if requesting_user_id and m.farmer_id == requesting_user_id:
+        if requesting_user_id and str(m.farmer_id).lower() == str(requesting_user_id).lower():
             pr = db.query(models.ProduceRequest).filter(models.ProduceRequest.id == m.produce_request_id).first()
             if pr and pr.pickup_otp:
                 m_out.pickup_otp = pr.pickup_otp
@@ -406,7 +406,21 @@ def join_pool(
         if would_be > float(pool.max_qty):
             raise ValueError(f"Capacity exceeded: current {pool.current_qty} kg + requested {member_data.weight_kg} kg > max {pool.max_qty} kg")
 
-        is_auto = bool(pool.auto_approve)
+        # Synchronize produce request with pool details
+        pr = db.query(models.ProduceRequest).filter(models.ProduceRequest.id == member_data.produce_request_id).first()
+        if pr:
+            pr.pickup_window_start = pool.pickup_window_start
+            pr.pickup_window_end = pool.pickup_window_end
+            pr.requested_pickup_at = pool.pickup_window_start
+            pr.dropoff_district = pool.dropoff_district
+            pr.dropoff_mandi_id = pool.dropoff_mandi_id
+            pr.dropoff_mandi_name = pool.dropoff_mandi_name
+            pr.dropoff_stall_number = pool.dropoff_stall_number
+            if not pr.dropoff_location and pool.dropoff_mandi_name:
+                stall = (pool.dropoff_stall_number or "").strip()
+                pr.dropoff_location = f"{pool.dropoff_mandi_name.strip()} - {stall}" if stall else pool.dropoff_mandi_name.strip()
+
+        is_auto = bool(pool.auto_approve) if pool.auto_approve is not None else True
         new_member = pool_models.PoolMember(
             pool_id=pool.id,
             farmer_id=farmer_id,
@@ -641,16 +655,22 @@ def accept_pool(
         else:
             rider_expected_pickup_at = p_start
 
-        accepted_members = (
+        active_members = (
             db.query(pool_models.PoolMember)
             .filter(
                 pool_models.PoolMember.pool_id == pool_id,
-                pool_models.PoolMember.status == pool_models.PoolMemberStatus.ACCEPTED.value,
+                pool_models.PoolMember.status.in_((
+                    pool_models.PoolMemberStatus.ACCEPTED.value,
+                    pool_models.PoolMemberStatus.REQUESTED.value,
+                    pool_models.PoolMemberStatus.APPROVED.value,
+                    pool_models.PoolMemberStatus.PENDING.value,
+                )),
             )
+            .order_by(pool_models.PoolMember.requested_at.asc())
             .all()
         )
-        if not accepted_members:
-            raise ValueError("Pool has no accepted members")
+        if not active_members:
+            raise ValueError("Pool has no active members")
 
         rider = db.query(models.User).filter(models.User.id == rider_id).first()
         if rider:
@@ -675,28 +695,20 @@ def accept_pool(
             if missing:
                 raise ValueError(f"Please complete your profile before accepting pools: {', '.join(missing)}.")
 
-            if rider.payload_capacity_kg is not None and float(pool.current_qty) > float(rider.payload_capacity_kg):
+            total_active_weight = sum(float(m.weight_kg) for m in active_members)
+            if rider.payload_capacity_kg is not None and total_active_weight > float(rider.payload_capacity_kg):
                 raise ValueError(
-                    f"Total pool quantity ({pool.current_qty} kg) exceeds your vehicle capacity ({rider.payload_capacity_kg} kg)."
+                    f"Total pool quantity ({total_active_weight} kg) exceeds your vehicle capacity ({rider.payload_capacity_kg} kg)."
                 )
-
-        pending_members = (
-            db.query(pool_models.PoolMember)
-            .filter(
-                pool_models.PoolMember.pool_id == pool_id,
-                pool_models.PoolMember.status.in_((pool_models.PoolMemberStatus.REQUESTED.value, pool_models.PoolMemberStatus.PENDING.value)),
-            )
-            .all()
-        )
-        for pm in pending_members:
-            pm.status = pool_models.PoolMemberStatus.REJECTED.value
-            pm.decided_at = _now()
-            if not pm.cancellation_reason:
-                pm.cancellation_reason = "Pool assigned to a rider"
+            pool.current_qty = total_active_weight
 
         trips_created: List[models.Trip] = []
         used_otps = set()
-        for member in accepted_members:
+        for member in active_members:
+            member.status = pool_models.PoolMemberStatus.ACCEPTED.value
+            member.decided_at = _now()
+            _create_pool_stop(db, pool.id, member.produce_request_id)
+
             pr = (
                 db.query(models.ProduceRequest)
                 .filter(models.ProduceRequest.id == member.produce_request_id)
@@ -705,8 +717,8 @@ def accept_pool(
             )
             if pr is None:
                 raise ValueError(f"Linked ProduceRequest not found for member {member.id}")
-            if pr.status != "PENDING":
-                raise ValueError(f"ProduceRequest {pr.id} is not PENDING (current: {pr.status})")
+            if pr.status not in ("PENDING", "ACCEPTED"):
+                raise ValueError(f"ProduceRequest {pr.id} cannot be accepted from status {pr.status}")
 
             pr.status = "ACCEPTED"
 
@@ -1060,7 +1072,7 @@ def verify_pooled_farmer_otp(
         p_end = pr_check.pickup_window_end
         if p_end.tzinfo is None:
             p_end = p_end.replace(tzinfo=timezone.utc)
-        if p_end <= now_utc:
+        if p_end + timedelta(hours=24) <= now_utc:
             trip.status = "MISSED"
             pr_check.status = "EXPIRED"
             db.commit()
