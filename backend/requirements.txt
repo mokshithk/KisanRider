@@ -1,7 +1,9 @@
 fastapi
 uvicorn[standard]
 sqlalchemy
-geoalchemy2
+geoalchemy2[shapely]
+shapely
+greenlet
 psycopg2-binary
 python-dotenv
 pydantic[email]
@@ -12,3 +14,4 @@ python-multipart
 aiofiles
 python-jose[cryptography]
 passlib[bcrypt]
+bcrypt==4.0.1
