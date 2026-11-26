@@ -73,7 +73,7 @@ class _ScannerHomeScreenState extends State<ScannerHomeScreen> {
       );
       final resp = await http
           .get(uri, headers: const {'Accept': 'application/json'})
-          .timeout(const Duration(seconds: 12));
+          .timeout(const Duration(seconds: 45));
 
       if (!mounted) return;
 
@@ -176,7 +176,7 @@ class _ScannerHomeScreenState extends State<ScannerHomeScreen> {
         content: TextField(
           controller: controller,
           decoration: const InputDecoration(
-            hintText: 'http://10.28.1.142:8000',
+            hintText: 'https://kisanrider.onrender.com',
             border: OutlineInputBorder(),
           ),
         ),
@@ -429,7 +429,7 @@ class _QrPaymentConfirmScreenState extends State<QrPaymentConfirmScreen> {
               'pin': pin,
             }),
           )
-          .timeout(const Duration(seconds: 15));
+          .timeout(const Duration(seconds: 45));
 
       if (!mounted) return;
 

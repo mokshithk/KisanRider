@@ -1,13 +1,10 @@
 import 'dart:convert';
-import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:http/http.dart' as http;
 
+import '../../services/api_service.dart';
 import 'pool_models.dart';
 
-String get _kApiBaseUrl {
-  if (kIsWeb) return 'http://localhost:8000';
-  return 'http://10.28.1.142:8000';
-}
+String get _kApiBaseUrl => ApiService.baseUrl;
 
 class PoolsApi {
   static Map<String, String> _headers(String token) => {

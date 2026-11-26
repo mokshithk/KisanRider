@@ -1,7 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
 
-import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:geocoding/geocoding.dart';
 import 'package:geolocator/geolocator.dart';
@@ -10,13 +9,11 @@ import 'package:provider/provider.dart';
 import 'package:url_launcher/url_launcher.dart'; // Needed for Call Driver
 
 import '../../providers/auth_provider.dart';
+import '../../services/api_service.dart';
 import 'pool_models.dart';
 import 'pools_api.dart';
 
-String get _kApiBaseUrl {
-  if (kIsWeb) return 'http://localhost:8000';
-  return 'http://10.28.1.142:8000';
-}
+String get _kApiBaseUrl => ApiService.baseUrl;
 
 const Color _kFarmerGreen = Color(0xFF2E7D32);
 const Color _kBackground = Color(0xFFF8F9FA);

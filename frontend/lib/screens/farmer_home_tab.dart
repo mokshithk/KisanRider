@@ -1,21 +1,18 @@
 import 'dart:convert';
 
-import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:provider/provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../providers/auth_provider.dart';
+import '../services/api_service.dart';
 import 'mandi_prices_screen.dart';
 import 'order_history_screen.dart';
 import 'pools/pool_discovery_screen.dart'; // Correct Screen
 
 /// Base URL of the FastAPI backend.
-String get _kApiBaseUrl {
-  if (kIsWeb) return 'http://localhost:8000';
-  return 'http://10.28.1.142:8000';
-}
+String get _kApiBaseUrl => ApiService.baseUrl;
 
 /// Shared brand color + surface palette used by the refactored dashboard.
 const Color _kFarmerGreen = Color(0xFF2E7D32);

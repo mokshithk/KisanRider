@@ -8,11 +8,10 @@ import 'package:http_parser/http_parser.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import '../services/api_service.dart';
+
 /// Base URL of the FastAPI backend.
-String get kApiBaseUrl {
-  if (kIsWeb) return 'http://localhost:8000';
-  return 'http://10.28.1.142:8000';
-}
+String get kApiBaseUrl => ApiService.baseUrl;
 
 /// Search radius for the nearby feed.
 const double kSearchRadiusKm = 50.0;

@@ -1,17 +1,14 @@
 import 'dart:convert';
 
-import 'package:flutter/foundation.dart' show kIsWeb;   // <-- ADDED
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:provider/provider.dart';
 
 import '../providers/auth_provider.dart';
+import '../services/api_service.dart';
 
 /// Base URL of the FastAPI backend.
-String get _kApiBaseUrl {
-  if (kIsWeb) return 'http://localhost:8000';
-  return 'http://10.28.1.142:8000';
-}
+String get _kApiBaseUrl => ApiService.baseUrl;
 
 /// Brand green matching the rest of the farmer UI.
 const Color _kFarmerGreen = Color(0xFF2E7D32);

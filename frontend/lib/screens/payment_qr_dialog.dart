@@ -240,7 +240,7 @@ class _PaymentQrDialogState extends State<PaymentQrDialog> {
     try {
       final resp = await http
           .post(Uri.parse(widget.generateUrl), headers: _headers)
-          .timeout(const Duration(seconds: 15));
+          .timeout(const Duration(seconds: 45));
 
       if (!mounted) return;
       if (resp.statusCode == 200 || resp.statusCode == 201) {
