@@ -4,9 +4,11 @@ sqlalchemy
 geoalchemy2
 psycopg2-binary
 python-dotenv
-pydantic
+pydantic[email]
 ortools
 requests
 httpx
 python-multipart
 aiofiles
+python-jose[cryptography]
+passlib[bcrypt]
