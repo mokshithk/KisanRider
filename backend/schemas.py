@@ -754,7 +754,7 @@ class OtpVerifyResponse(BaseModel):
 # Trip schemas
 # ---------------------------------------------------------------------------
 
-TripStatus = Literal["ACCEPTED", "PICKED_UP", "DELIVERED", "CANCELLED"]
+TripStatus = Literal["ACCEPTED", "PICKED_UP", "DELIVERED", "CANCELLED", "MISSED"]
 
 
 class TripCreate(BaseModel):
