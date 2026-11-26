@@ -7,3 +7,6 @@ python-dotenv
 pydantic
 ortools
 requests
+httpx
+python-multipart
+aiofiles
