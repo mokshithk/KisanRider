@@ -36,7 +36,7 @@ from admin_router import router as admin_router
 import otp_service
 import payment_service
 import schemas
-from database import engine, get_db
+from database import SessionLocal, engine, get_db
 
 
 # Temporary startup diagnostics — remove once you've confirmed both are set.
@@ -44,73 +44,85 @@ print(f"[startup] DATA_GOV_API_KEY present: {bool(os.environ.get('DATA_GOV_API_K
 print(f"[startup] ENABLE_REAL_EMAIL_OTP = {config.ENABLE_REAL_EMAIL_OTP}")
 
 
+def run_expiry_check_once(
+    db: Session,
+    now_utc: Optional[datetime] = None,
+) -> tuple[int, int, int]:
+    """
+    Expire past-window PENDING requests, OPEN/PENDING pools, and unpicked
+    ACCEPTED trips in one pass, returning `(requests, pools, trips)` counts.
+    """
+    current_utc = now_utc or datetime.now(timezone.utc)
+
+    # 1. Unaccepted produce requests past pickup window end
+    expired_requests = (
+        db.query(models.ProduceRequest)
+        .filter(
+            models.ProduceRequest.status == "PENDING",
+            (
+                (models.ProduceRequest.pickup_window_end != None) & (models.ProduceRequest.pickup_window_end <= current_utc)
+            ) | (
+                (models.ProduceRequest.pickup_window_end == None) & (models.ProduceRequest.requested_pickup_at != None) & (models.ProduceRequest.requested_pickup_at <= current_utc)
+            ),
+        )
+        .all()
+    )
+    for req in expired_requests:
+        req.status = "EXPIRED"
+
+    # 2. Unaccepted pools past pickup window end
+    expired_pools = (
+        db.query(pools.models.Pool)
+        .filter(
+            pools.models.Pool.status.in_(["OPEN", "PENDING"]),
+            (
+                (pools.models.Pool.pickup_window_end != None) & (pools.models.Pool.pickup_window_end <= current_utc)
+            ) | (
+                (pools.models.Pool.pickup_window_end == None) & (pools.models.Pool.pickup_window_start != None) & (pools.models.Pool.pickup_window_start <= current_utc)
+            ),
+        )
+        .all()
+    )
+    for p in expired_pools:
+        p.status = "EXPIRED"
+
+    # 3. Accepted trips where pickup OTP was not verified before window end
+    expired_trips = (
+        db.query(models.Trip, models.ProduceRequest)
+        .join(models.ProduceRequest, models.Trip.produce_request_id == models.ProduceRequest.id)
+        .filter(
+            models.Trip.status == "ACCEPTED",
+            (
+                (models.ProduceRequest.pickup_window_end != None) & (models.ProduceRequest.pickup_window_end <= current_utc)
+            ) | (
+                (models.ProduceRequest.pickup_window_end == None) & (models.ProduceRequest.requested_pickup_at != None) & (models.ProduceRequest.requested_pickup_at <= current_utc)
+            ),
+        )
+        .all()
+    )
+    for trip, pr in expired_trips:
+        trip.status = "MISSED"
+        pr.status = "EXPIRED"
+
+    if expired_requests or expired_pools or expired_trips:
+        db.commit()
+        print(
+            f"[expiry-worker] Processed expiry: "
+            f"{len(expired_requests)} reqs, {len(expired_pools)} pools, {len(expired_trips)} trips."
+        )
+
+    return len(expired_requests), len(expired_pools), len(expired_trips)
+
+
 async def _request_expiry_worker():
     """
-    Background worker that:
-    1. Expires unaccepted PENDING produce requests whose pickup window end has passed.
-    2. Expires unaccepted PENDING/OPEN pools whose pickup window end has passed.
-    3. Marks ACCEPTED trips (and their underlying produce requests) as MISSED/EXPIRED
-       if the pickup window end has passed without pickup OTP verification.
-    Preserves all request history and avoids physical record deletion.
-    Runs every 15 seconds.
+    Background worker that expires past-window requests, pools, and unpicked
+    trips every 15 seconds while preserving record history.
     """
     while True:
         try:
-            now_utc = datetime.now(timezone.utc)
             with SessionLocal() as db:
-                # 1. Unaccepted produce requests past pickup window end
-                expired_requests = (
-                    db.query(models.ProduceRequest)
-                    .filter(
-                        models.ProduceRequest.status == "PENDING",
-                        (
-                            (models.ProduceRequest.pickup_window_end != None) & (models.ProduceRequest.pickup_window_end <= now_utc)
-                        ) | (
-                            (models.ProduceRequest.pickup_window_end == None) & (models.ProduceRequest.requested_pickup_at != None) & (models.ProduceRequest.requested_pickup_at <= now_utc)
-                        )
-                    )
-                    .all()
-                )
-                for req in expired_requests:
-                    req.status = "EXPIRED"
-
-                # 2. Unaccepted pools past pickup window end
-                expired_pools = (
-                    db.query(models.Pool)
-                    .filter(
-                        models.Pool.status.in_(["OPEN", "PENDING"]),
-                        (
-                            (models.Pool.pickup_window_end != None) & (models.Pool.pickup_window_end <= now_utc)
-                        ) | (
-                            (models.Pool.pickup_window_end == None) & (models.Pool.pickup_window_start != None) & (models.Pool.pickup_window_start <= now_utc)
-                        )
-                    )
-                    .all()
-                )
-                for p in expired_pools:
-                    p.status = "EXPIRED"
-
-                # 3. Accepted trips where pickup OTP was not verified before window end
-                expired_trips = (
-                    db.query(models.Trip, models.ProduceRequest)
-                    .join(models.ProduceRequest, models.Trip.produce_request_id == models.ProduceRequest.id)
-                    .filter(
-                        models.Trip.status == "ACCEPTED",
-                        (
-                            (models.ProduceRequest.pickup_window_end != None) & (models.ProduceRequest.pickup_window_end <= now_utc)
-                        ) | (
-                            (models.ProduceRequest.pickup_window_end == None) & (models.ProduceRequest.requested_pickup_at != None) & (models.ProduceRequest.requested_pickup_at <= now_utc)
-                        )
-                    )
-                    .all()
-                )
-                for trip, pr in expired_trips:
-                    trip.status = "MISSED"
-                    pr.status = "EXPIRED"
-
-                if expired_requests or expired_pools or expired_trips:
-                    db.commit()
-                    print(f"[expiry-worker] Processed expiry: {len(expired_requests)} reqs, {len(expired_pools)} pools, {len(expired_trips)} trips.")
+                run_expiry_check_once(db)
         except asyncio.CancelledError:
             break
         except Exception as e:
