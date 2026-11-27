@@ -11,6 +11,7 @@ import 'package:url_launcher/url_launcher.dart'; // Needed for Call Driver
 import '../../l10n/app_strings.dart';
 import '../../providers/auth_provider.dart';
 import '../../services/api_service.dart';
+import '../../widgets/segmented_filter_bar.dart';
 import 'pool_models.dart';
 import 'pools_api.dart';
 
@@ -1309,45 +1310,34 @@ class _JoinPoolSheetState extends State<_JoinPoolSheet> {
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
-        color: _kFarmerGreen.withOpacity(0.04),
+        color: Colors.white,
         borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: _kFarmerGreen.withOpacity(0.20)),
+        border: Border.all(color: Colors.grey.shade300),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          SegmentedButton<PickupMode>(
-            segments: [
-              ButtonSegment<PickupMode>(
+          SegmentedFilterBar<PickupMode>(
+            padding: EdgeInsets.zero,
+            options: [
+              SegmentedFilterOption(
                 value: PickupMode.gps,
-                icon: const Icon(Icons.my_location, size: 16),
-                label: Text(context.tr('GPS'), style: const TextStyle(fontSize: 12.5)),
+                label: context.tr('GPS'),
               ),
-              ButtonSegment<PickupMode>(
+              SegmentedFilterOption(
                 value: PickupMode.saved,
-                icon: const Icon(Icons.bookmark_outline, size: 16),
-                label: Text(context.tr('Saved'), style: const TextStyle(fontSize: 12.5)),
+                label: context.tr('Saved'),
               ),
-              ButtonSegment<PickupMode>(
+              SegmentedFilterOption(
                 value: PickupMode.manual,
-                icon: const Icon(Icons.edit_location_alt_outlined, size: 16),
-                label: Text(context.tr('Manual'), style: const TextStyle(fontSize: 12.5)),
+                label: context.tr('Manual'),
               ),
             ],
-            selected: {_pickupMode},
-            onSelectionChanged: _isLoading
+            selectedValue: _pickupMode,
+            onChanged: _isLoading
                 ? null
-                : (selection) {
-                    if (selection.isEmpty) return;
-                    setState(() => _pickupMode = selection.first);
-                  },
-            style: SegmentedButton.styleFrom(
-              selectedBackgroundColor: _kFarmerGreen,
-              selectedForegroundColor: Colors.white,
-              foregroundColor: _kFarmerGreen,
-              side: BorderSide(color: _kFarmerGreen.withOpacity(0.4)),
-              visualDensity: VisualDensity.compact,
-            ),
+                : (mode) => setState(() => _pickupMode = mode),
+            accentColor: _kFarmerGreen,
           ),
           const SizedBox(height: 16),
           AnimatedSize(

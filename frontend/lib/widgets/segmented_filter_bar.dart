@@ -25,7 +25,7 @@ class SegmentedFilterBar<T> extends StatelessWidget {
 
   final List<SegmentedFilterOption<T>> options;
   final T selectedValue;
-  final ValueChanged<T> onChanged;
+  final ValueChanged<T>? onChanged;
   final Color accentColor;
   final EdgeInsetsGeometry padding;
 
@@ -54,11 +54,13 @@ class SegmentedFilterBar<T> extends StatelessWidget {
                   ],
                   selected: {selectedValue},
                   showSelectedIcon: false,
-                  onSelectionChanged: (selection) {
-                    if (selection.isNotEmpty) {
-                      onChanged(selection.first);
-                    }
-                  },
+                  onSelectionChanged: onChanged == null
+                      ? null
+                      : (selection) {
+                          if (selection.isNotEmpty) {
+                            onChanged!(selection.first);
+                          }
+                        },
                   style: SegmentedButton.styleFrom(
                     selectedBackgroundColor: accentColor,
                     selectedForegroundColor: Colors.white,

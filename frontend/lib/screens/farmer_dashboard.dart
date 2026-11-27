@@ -11,6 +11,7 @@ import 'package:provider/provider.dart';
 import '../l10n/app_strings.dart';
 import '../providers/auth_provider.dart';
 import '../services/api_service.dart';
+import '../widgets/segmented_filter_bar.dart';
 import 'farmer_account_screen.dart';
 import 'farmer_earnings_tab.dart';
 import 'farmer_home_tab.dart';
@@ -940,6 +941,98 @@ class _FarmerBookTransportTabState extends State<FarmerBookTransportTab> {
     return null;
   }
 
+  BoxDecoration _sectionCardDecoration() => BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: Colors.grey.shade300),
+      );
+
+  Widget _sectionHeader(IconData icon, String title) {
+    return Row(
+      children: [
+        Icon(icon, color: _kFarmerGreen, size: 20),
+        const SizedBox(width: 8),
+        Expanded(
+          child: Text(
+            title,
+            style: const TextStyle(
+              fontSize: 15,
+              fontWeight: FontWeight.bold,
+              color: Color(0xFF1C1B1F),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  InputDecoration _fieldDecoration({
+    required String label,
+    String? hint,
+    required IconData icon,
+    String? suffixText,
+    Widget? suffixIcon,
+    bool isDense = false,
+  }) {
+    final radius = BorderRadius.circular(12);
+    return InputDecoration(
+      labelText: label,
+      hintText: hint,
+      filled: true,
+      fillColor: const Color(0xFFFAFAFA),
+      isDense: isDense,
+      prefixIcon: Icon(icon, color: _kFarmerGreen, size: 20),
+      suffixText: suffixText,
+      suffixIcon: suffixIcon,
+      border: OutlineInputBorder(borderRadius: radius),
+      enabledBorder: OutlineInputBorder(
+        borderRadius: radius,
+        borderSide: BorderSide(color: Colors.grey.shade300),
+      ),
+      focusedBorder: OutlineInputBorder(
+        borderRadius: radius,
+        borderSide: const BorderSide(color: _kFarmerGreen, width: 1.5),
+      ),
+    );
+  }
+
+  Widget _pickerButton({
+    required IconData icon,
+    required String label,
+    required bool isSelected,
+    required VoidCallback? onPressed,
+  }) {
+    return OutlinedButton.icon(
+      onPressed: onPressed,
+      icon: Icon(
+        icon,
+        size: 16,
+        color: isSelected ? _kFarmerGreen : Colors.grey.shade600,
+      ),
+      label: Text(
+        label,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: TextStyle(
+          fontSize: 13,
+          fontWeight: FontWeight.w600,
+          color: isSelected ? const Color(0xFF1C1B1F) : Colors.grey.shade600,
+        ),
+      ),
+      style: OutlinedButton.styleFrom(
+        backgroundColor:
+            isSelected ? const Color(0xFFF4FAF4) : const Color(0xFFFAFAFA),
+        padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 10),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+        side: BorderSide(
+          color: isSelected
+              ? _kFarmerGreen.withValues(alpha: 0.65)
+              : Colors.grey.shade300,
+        ),
+      ),
+    );
+  }
+
   Widget _buildPickupWindowCard(ThemeData theme) {
     final startDateStr = _windowStartDate == null
         ? context.tr('Select Date')
@@ -961,39 +1054,38 @@ class _FarmerBookTransportTabState extends State<FarmerBookTransportTab> {
 
     return Container(
       padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: Colors.grey.shade300),
-      ),
+      decoration: _sectionCardDecoration(),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Row(
-            children: [
-              const Icon(Icons.access_time_filled, color: _kFarmerGreen, size: 20),
-              const SizedBox(width: 8),
-              Text(
-                context.tr('Pickup Window *'),
-                style: theme.textTheme.titleSmall?.copyWith(fontWeight: FontWeight.bold),
-              ),
-            ],
+          _sectionHeader(
+            Icons.access_time_filled,
+            context.tr('Pickup Window *'),
           ),
           const SizedBox(height: 4),
           Text(
-            context.tr('Specify the time window when the rider can arrive for pickup.'),
+            context.tr(
+              'Specify the time window when the rider can arrive for pickup.',
+            ),
             style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
           ),
           const SizedBox(height: 14),
           Text(
             context.tr('Pickup Window Starts'),
-            style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: Colors.grey.shade800),
+            style: TextStyle(
+              fontSize: 13,
+              fontWeight: FontWeight.w600,
+              color: Colors.grey.shade800,
+            ),
           ),
-          const SizedBox(height: 6),
+          const SizedBox(height: 8),
           Row(
             children: [
               Expanded(
-                child: OutlinedButton.icon(
+                child: _pickerButton(
+                  icon: Icons.calendar_today_outlined,
+                  label: startDateStr,
+                  isSelected: _windowStartDate != null,
                   onPressed: _isSubmitting
                       ? null
                       : () async {
@@ -1008,26 +1100,14 @@ class _FarmerBookTransportTabState extends State<FarmerBookTransportTab> {
                             setState(() => _windowStartDate = picked);
                           }
                         },
-                  icon: const Icon(Icons.calendar_today_outlined, size: 16),
-                  label: Text(
-                    startDateStr,
-                    style: TextStyle(
-                      fontSize: 13,
-                      fontWeight: FontWeight.w600,
-                      color: _windowStartDate == null ? Colors.grey.shade600 : Colors.black87,
-                    ),
-                  ),
-                  style: OutlinedButton.styleFrom(
-                    padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 8),
-                    side: BorderSide(
-                      color: _windowStartDate == null ? Colors.grey.shade400 : _kFarmerGreen,
-                    ),
-                  ),
                 ),
               ),
               const SizedBox(width: 10),
               Expanded(
-                child: OutlinedButton.icon(
+                child: _pickerButton(
+                  icon: Icons.alarm_outlined,
+                  label: startTimeStr,
+                  isSelected: _windowStartTime != null,
                   onPressed: _isSubmitting
                       ? null
                       : () async {
@@ -1039,21 +1119,6 @@ class _FarmerBookTransportTabState extends State<FarmerBookTransportTab> {
                             setState(() => _windowStartTime = picked);
                           }
                         },
-                  icon: const Icon(Icons.alarm_outlined, size: 16),
-                  label: Text(
-                    startTimeStr,
-                    style: TextStyle(
-                      fontSize: 13,
-                      fontWeight: FontWeight.w600,
-                      color: _windowStartTime == null ? Colors.grey.shade600 : Colors.black87,
-                    ),
-                  ),
-                  style: OutlinedButton.styleFrom(
-                    padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 8),
-                    side: BorderSide(
-                      color: _windowStartTime == null ? Colors.grey.shade400 : _kFarmerGreen,
-                    ),
-                  ),
                 ),
               ),
             ],
@@ -1061,13 +1126,20 @@ class _FarmerBookTransportTabState extends State<FarmerBookTransportTab> {
           const SizedBox(height: 14),
           Text(
             context.tr('Pickup Window Ends'),
-            style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: Colors.grey.shade800),
+            style: TextStyle(
+              fontSize: 13,
+              fontWeight: FontWeight.w600,
+              color: Colors.grey.shade800,
+            ),
           ),
-          const SizedBox(height: 6),
+          const SizedBox(height: 8),
           Row(
             children: [
               Expanded(
-                child: OutlinedButton.icon(
+                child: _pickerButton(
+                  icon: Icons.calendar_today_outlined,
+                  label: endDateStr,
+                  isSelected: _windowEndDate != null,
                   onPressed: _isSubmitting
                       ? null
                       : () async {
@@ -1082,26 +1154,14 @@ class _FarmerBookTransportTabState extends State<FarmerBookTransportTab> {
                             setState(() => _windowEndDate = picked);
                           }
                         },
-                  icon: const Icon(Icons.calendar_today_outlined, size: 16),
-                  label: Text(
-                    endDateStr,
-                    style: TextStyle(
-                      fontSize: 13,
-                      fontWeight: FontWeight.w600,
-                      color: _windowEndDate == null ? Colors.grey.shade600 : Colors.black87,
-                    ),
-                  ),
-                  style: OutlinedButton.styleFrom(
-                    padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 8),
-                    side: BorderSide(
-                      color: _windowEndDate == null ? Colors.grey.shade400 : _kFarmerGreen,
-                    ),
-                  ),
                 ),
               ),
               const SizedBox(width: 10),
               Expanded(
-                child: OutlinedButton.icon(
+                child: _pickerButton(
+                  icon: Icons.alarm_outlined,
+                  label: endTimeStr,
+                  isSelected: _windowEndTime != null,
                   onPressed: _isSubmitting
                       ? null
                       : () async {
@@ -1113,21 +1173,6 @@ class _FarmerBookTransportTabState extends State<FarmerBookTransportTab> {
                             setState(() => _windowEndTime = picked);
                           }
                         },
-                  icon: const Icon(Icons.alarm_outlined, size: 16),
-                  label: Text(
-                    endTimeStr,
-                    style: TextStyle(
-                      fontSize: 13,
-                      fontWeight: FontWeight.w600,
-                      color: _windowEndTime == null ? Colors.grey.shade600 : Colors.black87,
-                    ),
-                  ),
-                  style: OutlinedButton.styleFrom(
-                    padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 8),
-                    side: BorderSide(
-                      color: _windowEndTime == null ? Colors.grey.shade400 : _kFarmerGreen,
-                    ),
-                  ),
                 ),
               ),
             ],
@@ -1154,7 +1199,7 @@ class _FarmerBookTransportTabState extends State<FarmerBookTransportTab> {
 
     return SafeArea(
       child: SingleChildScrollView(
-        padding: const EdgeInsets.fromLTRB(20, 20, 20, 32),
+        padding: const EdgeInsets.fromLTRB(16, 18, 16, 32),
         child: Form(
           key: _formKey,
           child: Column(
@@ -1166,8 +1211,10 @@ class _FarmerBookTransportTabState extends State<FarmerBookTransportTab> {
                       ? 'Edit Produce Request'
                       : 'New Produce Request',
                 ),
-                style: theme.textTheme.titleLarge
-                    ?.copyWith(fontWeight: FontWeight.bold),
+                style: theme.textTheme.titleLarge?.copyWith(
+                  fontWeight: FontWeight.bold,
+                  color: const Color(0xFF1C1B1F),
+                ),
               ),
               const SizedBox(height: 4),
               Text(
@@ -1176,190 +1223,215 @@ class _FarmerBookTransportTabState extends State<FarmerBookTransportTab> {
                       ? 'Update the details below. Only PENDING orders can be edited.'
                       : 'Tell us what you\'re sending and where it needs to go.',
                 ),
-                style: theme.textTheme.bodySmall
-                    ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: theme.colorScheme.onSurfaceVariant,
+                ),
               ),
-              const SizedBox(height: 24),
+              const SizedBox(height: 18),
 
-              TextFormField(
-                controller: _cropController,
-                enabled: !_isSubmitting,
-                textCapitalization: TextCapitalization.words,
-                decoration: InputDecoration(
-                  labelText: context.tr('Crop Name'),
-                  hintText: context.tr('e.g. Tomatoes'),
-                  border: const OutlineInputBorder(),
-                  prefixIcon: const Icon(Icons.eco_outlined),
+              Container(
+                padding: const EdgeInsets.all(16),
+                decoration: _sectionCardDecoration(),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    _sectionHeader(
+                      Icons.eco_outlined,
+                      context.tr('Produce Details'),
+                    ),
+                    const SizedBox(height: 14),
+                    TextFormField(
+                      controller: _cropController,
+                      enabled: !_isSubmitting,
+                      textCapitalization: TextCapitalization.words,
+                      decoration: _fieldDecoration(
+                        label: context.tr('Crop Name'),
+                        hint: context.tr('e.g. Tomatoes'),
+                        icon: Icons.eco_outlined,
+                      ),
+                      validator: (value) {
+                        if (value == null || value.trim().isEmpty) {
+                          return context.trAsync('Crop name is required');
+                        }
+                        return null;
+                      },
+                    ),
+                    const SizedBox(height: 14),
+                    TextFormField(
+                      controller: _weightKgController,
+                      enabled: !_isSubmitting,
+                      keyboardType: const TextInputType.numberWithOptions(
+                        decimal: true,
+                      ),
+                      inputFormatters: [
+                        FilteringTextInputFormatter.allow(RegExp(r'[0-9.]')),
+                      ],
+                      decoration: _fieldDecoration(
+                        label: context.tr('Weight / Quantity (in KG)'),
+                        hint: context.tr('e.g., 250'),
+                        icon: Icons.scale_outlined,
+                        suffixText: context.tr('kg'),
+                      ),
+                      validator: (value) {
+                        if (value == null || value.trim().isEmpty) {
+                          return context.trAsync('Weight is required');
+                        }
+                        final parsed = double.tryParse(value.trim());
+                        if (parsed == null || parsed <= 0) {
+                          return context.trAsync('Enter a valid positive weight');
+                        }
+                        return null;
+                      },
+                    ),
+                  ],
                 ),
-                validator: (value) {
-                  if (value == null || value.trim().isEmpty) {
-                    return context.trAsync('Crop name is required');
-                  }
-                  return null;
-                },
               ),
-              const SizedBox(height: 16),
-
-              TextFormField(
-                controller: _weightKgController,
-                enabled: !_isSubmitting,
-                keyboardType: const TextInputType.numberWithOptions(
-                  decimal: true,
-                ),
-                inputFormatters: [
-                  FilteringTextInputFormatter.allow(RegExp(r'[0-9.]')),
-                ],
-                decoration: InputDecoration(
-                  labelText: context.tr('Weight / Quantity (in KG)'),
-                  hintText: context.tr('e.g., 250'),
-                  border: const OutlineInputBorder(),
-                  prefixIcon: const Icon(Icons.scale_outlined),
-                  suffixText: context.tr('kg'),
-                ),
-                validator: (value) {
-                  if (value == null || value.trim().isEmpty) {
-                    return context.trAsync('Weight is required');
-                  }
-                  final parsed = double.tryParse(value.trim());
-                  if (parsed == null || parsed <= 0) {
-                    return context.trAsync('Enter a valid positive weight');
-                  }
-                  return null;
-                },
-              ),
-              const SizedBox(height: 24),
+              const SizedBox(height: 14),
 
               widget.isEditing
                   ? _buildEditPickupSection(theme)
                   : _buildPickupSection(theme),
-              const SizedBox(height: 20),
+              const SizedBox(height: 14),
               if (!widget.isEditing) ...[
                 _buildPickupWindowCard(theme),
-                const SizedBox(height: 24),
+                const SizedBox(height: 14),
               ],
 
-              DropdownButtonFormField<String>(
-                value: _selectedDistrict,
-                isExpanded: true,
-                decoration: InputDecoration(
-                  labelText: context.tr('Dropoff District'),
-                  border: const OutlineInputBorder(),
-                  prefixIcon: const Icon(Icons.map_outlined),
-                ),
-                items: _kDistricts
-                    .map((d) => DropdownMenuItem<String>(
-                          value: d,
-                          child: Text(
-                            context.tr(d),
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                        ))
-                    .toList(),
-                onChanged: _isSubmitting ? null : _onDistrictChanged,
-                validator: (v) =>
-                    v == null ? context.trAsync('Select a district') : null,
-              ),
-              const SizedBox(height: 16),
-
-              DropdownButtonFormField<int>(
-                value: _selectedMandiIndex,
-                isExpanded: true,
-                decoration: InputDecoration(
-                  labelText: context.tr('Dropoff Market / APMC Yard'),
-                  border: const OutlineInputBorder(),
-                  prefixIcon: const Icon(Icons.storefront_outlined),
-                  hintText: _selectedDistrict == null
-                      ? context.tr('Select a district first')
-                      : (_isLoadingMandis
-                          ? context.tr('Loading markets…')
-                          : context.tr('Select a market')),
-                  suffixIcon: _isLoadingMandis
-                      ? const Padding(
-                          padding: EdgeInsets.all(12),
-                          child: SizedBox(
-                            width: 18,
-                            height: 18,
-                            child: CircularProgressIndicator(strokeWidth: 2),
-                          ),
-                        )
-                      : null,
-                ),
-                items: List<DropdownMenuItem<int>>.generate(
-                  _mandis.length,
-                  (i) {
-                    final m = _mandis[i];
-                    final name = (m['name'] ?? '').toString();
-                    final type = (m['type'] ?? '').toString();
-                    final isApmc = type == 'APMC_YARD';
-                    return DropdownMenuItem<int>(
-                      value: i,
-                      child: Row(
-                        children: [
-                          Container(
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 6,
-                              vertical: 1,
-                            ),
-                            decoration: BoxDecoration(
-                              color: isApmc
-                                  ? Colors.blue.shade50
-                                  : Colors.orange.shade50,
-                              borderRadius: BorderRadius.circular(4),
-                              border: Border.all(
-                                color: isApmc
-                                    ? Colors.blue.shade200
-                                    : Colors.orange.shade200,
-                              ),
-                            ),
-                            child: Text(
-                              isApmc ? context.tr('APMC') : context.tr('Local'),
-                              style: TextStyle(
-                                fontSize: 10,
-                                fontWeight: FontWeight.w600,
-                                color: isApmc
-                                    ? Colors.blue.shade800
-                                    : Colors.orange.shade800,
-                              ),
-                            ),
-                          ),
-                          const SizedBox(width: 6),
-                          Expanded(
-                            child: Text(
-                              name,
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                          ),
-                        ],
+              Container(
+                padding: const EdgeInsets.all(16),
+                decoration: _sectionCardDecoration(),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    _sectionHeader(
+                      Icons.storefront_outlined,
+                      context.tr('Dropoff Destination'),
+                    ),
+                    const SizedBox(height: 14),
+                    DropdownButtonFormField<String>(
+                      initialValue: _selectedDistrict,
+                      isExpanded: true,
+                      decoration: _fieldDecoration(
+                        label: context.tr('Dropoff District'),
+                        icon: Icons.map_outlined,
                       ),
-                    );
-                  },
-                ),
-                onChanged: mandiDropdownEnabled
-                    ? (i) => setState(() => _selectedMandiIndex = i)
-                    : null,
-                validator: (v) =>
-                    v == null ? context.trAsync('Select a market') : null,
-              ),
-              if (_mandiError != null) ...[
-                const SizedBox(height: 6),
-                Text(
-                  _mandiError!,
-                  style: TextStyle(
-                    color: theme.colorScheme.error,
-                    fontSize: 12,
-                  ),
-                ),
-              ],
-              const SizedBox(height: 16),
-
-              TextFormField(
-                controller: _shopController,
-                enabled: !_isSubmitting,
-                decoration: InputDecoration(
-                  labelText: context.tr('Dropoff Shop / Stall Number (optional)'),
-                  hintText: context.tr('e.g. Shop #14, Sri Lakshmi Traders'),
-                  border: const OutlineInputBorder(),
-                  prefixIcon: const Icon(Icons.store_outlined),
+                      items: _kDistricts
+                          .map((d) => DropdownMenuItem<String>(
+                                value: d,
+                                child: Text(
+                                  context.tr(d),
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                              ))
+                          .toList(),
+                      onChanged: _isSubmitting ? null : _onDistrictChanged,
+                      validator: (v) =>
+                          v == null ? context.trAsync('Select a district') : null,
+                    ),
+                    const SizedBox(height: 14),
+                    DropdownButtonFormField<int>(
+                      initialValue: _selectedMandiIndex,
+                      isExpanded: true,
+                      decoration: _fieldDecoration(
+                        label: context.tr('Dropoff Market / APMC Yard'),
+                        hint: _selectedDistrict == null
+                            ? context.tr('Select a district first')
+                            : (_isLoadingMandis
+                                ? context.tr('Loading markets…')
+                                : context.tr('Select a market')),
+                        icon: Icons.storefront_outlined,
+                        suffixIcon: _isLoadingMandis
+                            ? const Padding(
+                                padding: EdgeInsets.all(12),
+                                child: SizedBox(
+                                  width: 18,
+                                  height: 18,
+                                  child: CircularProgressIndicator(strokeWidth: 2),
+                                ),
+                              )
+                            : null,
+                      ),
+                      items: List<DropdownMenuItem<int>>.generate(
+                        _mandis.length,
+                        (i) {
+                          final m = _mandis[i];
+                          final name = (m['name'] ?? '').toString();
+                          final type = (m['type'] ?? '').toString();
+                          final isApmc = type == 'APMC_YARD';
+                          return DropdownMenuItem<int>(
+                            value: i,
+                            child: Row(
+                              children: [
+                                Container(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 6,
+                                    vertical: 1,
+                                  ),
+                                  decoration: BoxDecoration(
+                                    color: isApmc
+                                        ? Colors.blue.shade50
+                                        : Colors.orange.shade50,
+                                    borderRadius: BorderRadius.circular(4),
+                                    border: Border.all(
+                                      color: isApmc
+                                          ? Colors.blue.shade200
+                                          : Colors.orange.shade200,
+                                    ),
+                                  ),
+                                  child: Text(
+                                    isApmc
+                                        ? context.tr('APMC')
+                                        : context.tr('Local'),
+                                    style: TextStyle(
+                                      fontSize: 10,
+                                      fontWeight: FontWeight.w600,
+                                      color: isApmc
+                                          ? Colors.blue.shade800
+                                          : Colors.orange.shade800,
+                                    ),
+                                  ),
+                                ),
+                                const SizedBox(width: 6),
+                                Expanded(
+                                  child: Text(
+                                    name,
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          );
+                        },
+                      ),
+                      onChanged: mandiDropdownEnabled
+                          ? (i) => setState(() => _selectedMandiIndex = i)
+                          : null,
+                      validator: (v) =>
+                          v == null ? context.trAsync('Select a market') : null,
+                    ),
+                    if (_mandiError != null) ...[
+                      const SizedBox(height: 6),
+                      Text(
+                        _mandiError!,
+                        style: TextStyle(
+                          color: theme.colorScheme.error,
+                          fontSize: 12,
+                        ),
+                      ),
+                    ],
+                    const SizedBox(height: 14),
+                    TextFormField(
+                      controller: _shopController,
+                      enabled: !_isSubmitting,
+                      decoration: _fieldDecoration(
+                        label: context.tr(
+                          'Dropoff Shop / Stall Number (optional)',
+                        ),
+                        hint: context.tr('e.g. Shop #14, Sri Lakshmi Traders'),
+                        icon: Icons.store_outlined,
+                      ),
+                    ),
+                  ],
                 ),
               ),
 
@@ -1371,12 +1443,16 @@ class _FarmerBookTransportTabState extends State<FarmerBookTransportTab> {
                       TextStyle(color: theme.colorScheme.error, fontSize: 13),
                 ),
               ],
-              const SizedBox(height: 24),
+              const SizedBox(height: 20),
               FilledButton(
                 onPressed: _isSubmitting ? null : _submit,
                 style: FilledButton.styleFrom(
                   backgroundColor: _kFarmerGreen,
+                  foregroundColor: Colors.white,
                   padding: const EdgeInsets.symmetric(vertical: 16),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
                 ),
                 child: _isSubmitting
                     ? const SizedBox(
@@ -1387,7 +1463,13 @@ class _FarmerBookTransportTabState extends State<FarmerBookTransportTab> {
                           color: Colors.white,
                         ),
                       )
-                    : Text(submitLabel),
+                    : Text(
+                        submitLabel,
+                        style: const TextStyle(
+                          fontSize: 15.5,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
               ),
             ],
           ),
@@ -1400,34 +1482,17 @@ class _FarmerBookTransportTabState extends State<FarmerBookTransportTab> {
     final address = (widget.initialPickupAddress ?? '').trim();
     return Container(
       padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: _kFarmerGreen.withOpacity(0.04),
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: _kFarmerGreen.withOpacity(0.20)),
-      ),
+      decoration: _sectionCardDecoration(),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Row(
-            children: [
-              const Icon(Icons.pin_drop_outlined,
-                  color: _kFarmerGreen, size: 20),
-              const SizedBox(width: 8),
-              Text(
-                context.tr('Pickup'),
-                style: theme.textTheme.titleMedium?.copyWith(
-                  fontWeight: FontWeight.bold,
-                  color: _kFarmerGreen,
-                ),
-              ),
-            ],
-          ),
+          _sectionHeader(Icons.pin_drop_outlined, context.tr('Pickup')),
           if (address.isNotEmpty) ...[
             const SizedBox(height: 12),
             Container(
               padding: const EdgeInsets.all(12),
               decoration: BoxDecoration(
-                color: Colors.white,
+                color: const Color(0xFFFAFAFA),
                 borderRadius: BorderRadius.circular(10),
                 border: Border.all(color: Colors.grey.shade300),
               ),
@@ -1455,15 +1520,14 @@ class _FarmerBookTransportTabState extends State<FarmerBookTransportTab> {
             controller: _pickupLandmarkController,
             enabled: !_isSubmitting,
             textCapitalization: TextCapitalization.sentences,
-            decoration: InputDecoration(
-              labelText: context.tr('Pickup Notes'),
-              hintText: context.tr('e.g. Behind the canal, near the yellow gate'),
-              border: const OutlineInputBorder(),
-              prefixIcon: const Icon(Icons.signpost_outlined),
+            decoration: _fieldDecoration(
+              label: context.tr('Pickup Notes'),
+              hint: context.tr('e.g. Behind the canal, near the yellow gate'),
+              icon: Icons.signpost_outlined,
               isDense: true,
             ),
           ),
-          const SizedBox(height: 4),
+          const SizedBox(height: 6),
           Text(
             context.tr('Pickup location is fixed — contact support to change it.'),
             style: theme.textTheme.bodySmall?.copyWith(
@@ -1480,31 +1544,17 @@ class _FarmerBookTransportTabState extends State<FarmerBookTransportTab> {
   Widget _buildPickupSection(ThemeData theme) {
     return Container(
       padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: _kFarmerGreen.withOpacity(0.04),
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: _kFarmerGreen.withOpacity(0.20)),
-      ),
+      decoration: _sectionCardDecoration(),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Row(
-            children: [
-              const Icon(Icons.pin_drop_outlined,
-                  color: _kFarmerGreen, size: 20),
-              const SizedBox(width: 8),
-              Text(
-                context.tr('Pickup Location'),
-                style: theme.textTheme.titleMedium?.copyWith(
-                  fontWeight: FontWeight.bold,
-                  color: _kFarmerGreen,
-                ),
-              ),
-            ],
+          _sectionHeader(
+            Icons.pin_drop_outlined,
+            context.tr('Pickup Location'),
           ),
           const SizedBox(height: 12),
           _buildPickupToggle(theme),
-          const SizedBox(height: 16),
+          const SizedBox(height: 14),
           AnimatedSize(
             duration: const Duration(milliseconds: 220),
             curve: Curves.easeOutCubic,
@@ -1525,65 +1575,54 @@ class _FarmerBookTransportTabState extends State<FarmerBookTransportTab> {
   }
 
   Widget _buildPickupToggle(ThemeData theme) {
-    return SegmentedButton<PickupMode>(
-      segments: [
-        ButtonSegment<PickupMode>(
+    return SegmentedFilterBar<PickupMode>(
+      padding: EdgeInsets.zero,
+      options: [
+        SegmentedFilterOption(
           value: PickupMode.gps,
-          icon: const Icon(Icons.my_location, size: 16),
-          label: Text(
-            context.tr('Current GPS'),
-            style: const TextStyle(fontSize: 12.5),
-          ),
+          label: context.tr('Current GPS'),
         ),
-        ButtonSegment<PickupMode>(
+        SegmentedFilterOption(
           value: PickupMode.saved,
-          icon: const Icon(Icons.bookmark_outline, size: 16),
-          label: Text(
-            context.tr('Saved Places'),
-            style: const TextStyle(fontSize: 12.5),
-          ),
+          label: context.tr('Saved Places'),
         ),
-        ButtonSegment<PickupMode>(
+        SegmentedFilterOption(
           value: PickupMode.manual,
-          icon: const Icon(Icons.edit_location_alt_outlined, size: 16),
-          label: Text(
-            context.tr('Manual'),
-            style: const TextStyle(fontSize: 12.5),
-          ),
+          label: context.tr('Manual'),
         ),
       ],
-      selected: {_pickupMode},
-      onSelectionChanged: _isSubmitting
+      selectedValue: _pickupMode,
+      onChanged: _isSubmitting
           ? null
-          : (selection) {
-              if (selection.isEmpty) return;
+          : (mode) {
               setState(() {
-                _pickupMode = selection.first;
+                _pickupMode = mode;
                 _submitError = null;
               });
             },
-      style: SegmentedButton.styleFrom(
-        selectedBackgroundColor: _kFarmerGreen,
-        selectedForegroundColor: Colors.white,
-        foregroundColor: _kFarmerGreen,
-        side: BorderSide(color: _kFarmerGreen.withOpacity(0.4)),
-        visualDensity: VisualDensity.compact,
-      ),
+      accentColor: _kFarmerGreen,
     );
   }
 
   Widget _buildGpsBody(ThemeData theme) {
+    final hasGps = !_isFetchingLocation && _gpsError == null && _gpsAddress != null;
     return KeyedSubtree(
       key: const ValueKey('pickup_gps'),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           Container(
-            padding: const EdgeInsets.all(12),
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
             decoration: BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.circular(10),
-              border: Border.all(color: Colors.grey.shade300),
+              color: hasGps
+                  ? const Color(0xFFF4FAF4)
+                  : const Color(0xFFFAFAFA),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(
+                color: hasGps
+                    ? _kFarmerGreen.withValues(alpha: 0.35)
+                    : Colors.grey.shade300,
+              ),
             ),
             child: Row(
               children: [
@@ -1614,7 +1653,10 @@ class _FarmerBookTransportTabState extends State<FarmerBookTransportTab> {
                                 context.tr(
                                   'Tap "Refresh" to detect your location.',
                                 ))),
-                    style: theme.textTheme.bodySmall,
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: const Color(0xFF1C1B1F),
+                      fontWeight: hasGps ? FontWeight.w500 : FontWeight.normal,
+                    ),
                   ),
                 ),
                 if (!_isFetchingLocation)
@@ -1634,11 +1676,10 @@ class _FarmerBookTransportTabState extends State<FarmerBookTransportTab> {
             controller: _pickupLandmarkController,
             enabled: !_isSubmitting,
             textCapitalization: TextCapitalization.sentences,
-            decoration: InputDecoration(
-              labelText: context.tr('Landmark / Pickup Notes'),
-              hintText: context.tr('e.g. Behind the canal, near the yellow gate'),
-              border: const OutlineInputBorder(),
-              prefixIcon: const Icon(Icons.signpost_outlined),
+            decoration: _fieldDecoration(
+              label: context.tr('Landmark / Pickup Notes'),
+              hint: context.tr('e.g. Behind the canal, near the yellow gate'),
+              icon: Icons.signpost_outlined,
               isDense: true,
             ),
           ),
@@ -1679,8 +1720,8 @@ class _FarmerBookTransportTabState extends State<FarmerBookTransportTab> {
                 vertical: 10,
               ),
               decoration: BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.circular(10),
+                color: const Color(0xFFFAFAFA),
+                borderRadius: BorderRadius.circular(12),
                 border: Border.all(color: Colors.grey.shade300),
               ),
               child: Row(
@@ -1730,7 +1771,7 @@ class _FarmerBookTransportTabState extends State<FarmerBookTransportTab> {
                   selectedColor: _kFarmerGreen,
                   backgroundColor: Colors.white,
                   side: BorderSide(
-                    color: _kFarmerGreen.withOpacity(0.4),
+                    color: _kFarmerGreen.withValues(alpha: 0.4),
                   ),
                 );
               }),
@@ -1741,9 +1782,11 @@ class _FarmerBookTransportTabState extends State<FarmerBookTransportTab> {
             Container(
               padding: const EdgeInsets.all(12),
               decoration: BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.circular(10),
-                border: Border.all(color: Colors.grey.shade300),
+                color: const Color(0xFFF4FAF4),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(
+                  color: _kFarmerGreen.withValues(alpha: 0.35),
+                ),
               ),
               child: Row(
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -1751,7 +1794,7 @@ class _FarmerBookTransportTabState extends State<FarmerBookTransportTab> {
                   const Padding(
                     padding: EdgeInsets.only(top: 2),
                     child: Icon(Icons.location_on_outlined,
-                        size: 18, color: Colors.black54),
+                        size: 18, color: _kFarmerGreen),
                   ),
                   const SizedBox(width: 8),
                   Expanded(
@@ -1771,11 +1814,10 @@ class _FarmerBookTransportTabState extends State<FarmerBookTransportTab> {
             controller: _pickupLandmarkController,
             enabled: !_isSubmitting,
             textCapitalization: TextCapitalization.sentences,
-            decoration: InputDecoration(
-              labelText: context.tr('Landmark / Pickup Notes (optional)'),
-              hintText: context.tr('e.g. Opposite the borewell'),
-              border: const OutlineInputBorder(),
-              prefixIcon: const Icon(Icons.signpost_outlined),
+            decoration: _fieldDecoration(
+              label: context.tr('Landmark / Pickup Notes (optional)'),
+              hint: context.tr('e.g. Opposite the borewell'),
+              icon: Icons.signpost_outlined,
               isDense: true,
             ),
           ),
@@ -1794,11 +1836,10 @@ class _FarmerBookTransportTabState extends State<FarmerBookTransportTab> {
             controller: _manualAddressController,
             enabled: !_isSubmitting,
             textCapitalization: TextCapitalization.words,
-            decoration: InputDecoration(
-              labelText: context.tr('Village / Area Name'),
-              hintText: context.tr('e.g. Bangarpet, Kolar'),
-              border: const OutlineInputBorder(),
-              prefixIcon: const Icon(Icons.holiday_village_outlined),
+            decoration: _fieldDecoration(
+              label: context.tr('Village / Area Name'),
+              hint: context.tr('e.g. Bangarpet, Kolar'),
+              icon: Icons.holiday_village_outlined,
               isDense: true,
             ),
           ),
@@ -1807,11 +1848,10 @@ class _FarmerBookTransportTabState extends State<FarmerBookTransportTab> {
             controller: _pickupLandmarkController,
             enabled: !_isSubmitting,
             textCapitalization: TextCapitalization.sentences,
-            decoration: InputDecoration(
-              labelText: context.tr('Landmark / Pickup Notes'),
-              hintText: context.tr('e.g. Second gate on the left after the bridge'),
-              border: const OutlineInputBorder(),
-              prefixIcon: const Icon(Icons.signpost_outlined),
+            decoration: _fieldDecoration(
+              label: context.tr('Landmark / Pickup Notes'),
+              hint: context.tr('e.g. Second gate on the left after the bridge'),
+              icon: Icons.signpost_outlined,
               isDense: true,
             ),
           ),

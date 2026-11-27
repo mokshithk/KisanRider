@@ -113,6 +113,46 @@ void main() {
       await tester.pump();
       expect(tester.takeException(), isNull);
     });
+
+    testWidgets('PickupMode 3 segments fit single-line card width without checkmark', (
+      tester,
+    ) async {
+      int mode = 0;
+      const pickupLabels = ['Current GPS', 'Saved Places', 'Manual'];
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: Center(
+              child: SizedBox(
+                width: 288,
+                child: StatefulBuilder(
+                  builder: (context, setState) => SegmentedFilterBar<int>(
+                    padding: EdgeInsets.zero,
+                    options: [
+                      for (int i = 0; i < pickupLabels.length; i++)
+                        SegmentedFilterOption(value: i, label: pickupLabels[i]),
+                    ],
+                    selectedValue: mode,
+                    onChanged: (v) => setState(() => mode = v),
+                    accentColor: const Color(0xFF2E7D32),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+
+      final barSize = tester.getSize(find.byType(SegmentedButton<int>));
+      expect(find.byIcon(Icons.check), findsNothing);
+
+      await tester.tap(find.text('Saved Places'));
+      await tester.pump();
+      expect(mode, 1);
+      expect(tester.getSize(find.byType(SegmentedButton<int>)), barSize);
+      expect(tester.takeException(), isNull);
+    });
   });
 
   group('FarmerOrdersTab segments', () {

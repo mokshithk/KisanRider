@@ -1216,6 +1216,8 @@ class AppStrings {
     'No active pools found.': 'ಯಾವುದೇ ಸಕ್ರಿಯ ಪೂಲ್‌ಗಳು ಕಂಡುಬಂದಿಲ್ಲ.',
     'Create or join a pool to share transport with nearby farmers.':
         'ಹತ್ತಿರದ ರೈತರೊಂದಿಗೆ ಸಾಗಣೆಯನ್ನು ಹಂಚಿಕೊಳ್ಳಲು ಪೂಲ್ ರಚಿಸಿ ಅಥವಾ ಸೇರಿಕೊಳ್ಳಿ.',
+    'Produce Details': 'ಬೆಳೆ ವಿವರಗಳು',
+    'Dropoff Destination': 'ಇಳಿಸುವ ಗಮ್ಯಸ್ಥಾನ',
   };
 }
 
