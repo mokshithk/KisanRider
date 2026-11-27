@@ -1211,6 +1211,11 @@ class AppStrings {
     'Online': 'ಆನ್‌ಲೈನ್',
     'ONLINE': 'ಆನ್‌ಲೈನ್',
     'COD': 'ನಗದು (COD)',
+    '1 farmer': '1 ರೈತ',
+    '{count} farmers': '{count} ರೈತರು',
+    'No active pools found.': 'ಯಾವುದೇ ಸಕ್ರಿಯ ಪೂಲ್‌ಗಳು ಕಂಡುಬಂದಿಲ್ಲ.',
+    'Create or join a pool to share transport with nearby farmers.':
+        'ಹತ್ತಿರದ ರೈತರೊಂದಿಗೆ ಸಾಗಣೆಯನ್ನು ಹಂಚಿಕೊಳ್ಳಲು ಪೂಲ್ ರಚಿಸಿ ಅಥವಾ ಸೇರಿಕೊಳ್ಳಿ.',
   };
 }
 

@@ -10,6 +10,7 @@ import 'package:provider/provider.dart';
 
 import '../l10n/app_strings.dart';
 import '../providers/auth_provider.dart';
+import '../widgets/segmented_filter_bar.dart';
 import 'payment_qr_dialog.dart';
 import 'rider_common.dart';
 
@@ -704,41 +705,17 @@ class _RiderActiveTabState extends State<RiderActiveTab>
   }
 
   Widget _buildFilterBar() {
-    return Container(
-      color: Colors.white,
-      padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
-      child: SingleChildScrollView(
-        scrollDirection: Axis.horizontal,
-        child: Row(
-          children: List.generate(_filters.length, (i) {
-            final selected = i == _activeFilterIndex;
-            return Padding(
-              padding: EdgeInsets.only(
-                right: i == _filters.length - 1 ? 0 : 8,
-              ),
-              child: ChoiceChip(
-                label: Text(
-                  context.tr(_filters[i].label),
-                  style: TextStyle(
-                    fontSize: 13,
-                    fontWeight: FontWeight.w600,
-                    color: selected ? Colors.white : kRiderGreen,
-                  ),
-                ),
-                selected: selected,
-                onSelected: (_) =>
-                    setState(() => _activeFilterIndex = i),
-                selectedColor: kRiderGreen,
-                backgroundColor: Colors.white,
-                side: BorderSide(
-                  color: kRiderGreen.withOpacity(selected ? 0.0 : 0.4),
-                ),
-                showCheckmark: false,
-              ),
-            );
-          }),
-        ),
-      ),
+    return SegmentedFilterBar<int>(
+      options: [
+        for (int i = 0; i < _filters.length; i++)
+          SegmentedFilterOption(
+            value: i,
+            label: context.tr(_filters[i].label),
+          ),
+      ],
+      selectedValue: _activeFilterIndex,
+      onChanged: (i) => setState(() => _activeFilterIndex = i),
+      accentColor: kRiderGreen,
     );
   }
 

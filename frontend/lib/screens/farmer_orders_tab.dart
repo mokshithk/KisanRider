@@ -8,7 +8,12 @@ import 'package:provider/provider.dart';
 import '../l10n/app_strings.dart';
 import '../providers/auth_provider.dart';
 import '../services/api_service.dart';
+import '../widgets/segmented_filter_bar.dart';
 import 'order_detail_screen.dart';
+import 'pools/pool_detail_screen.dart';
+import 'pools/pool_discovery_screen.dart';
+import 'pools/pool_models.dart';
+import 'pools/pools_api.dart';
 
 /// Base URL of the FastAPI backend.
 String get _kApiBaseUrl => ApiService.baseUrl;
@@ -74,11 +79,21 @@ class FarmerOrder {
 
   bool get isPending => status == 'PENDING';
 
-  /// Normalised tag for filter chips:
-  ///   - 'pending'   -> only PENDING
-  ///   - 'accepted'  -> ACCEPTED / PICKED_UP / IN_TRANSIT
-  ///   - 'completed' -> COMPLETED
-  ///   - 'other'     -> CANCELLED etc.
+  /// Ongoing orders shown under the "All" segment. Past/terminal orders
+  /// (`COMPLETED`, `DELIVERED`, `CANCELLED`, etc.) live in Order History.
+  bool get isOngoing {
+    final s = status.toUpperCase();
+    return s == 'PENDING' ||
+        s == 'ACCEPTED' ||
+        s == 'PICKED_UP' ||
+        s == 'IN_TRANSIT';
+  }
+
+  /// Normalised tag for filter segments:
+  ///   - 'active'     -> PENDING / ACCEPTED
+  ///   - 'in_transit' -> PICKED_UP / IN_TRANSIT
+  ///   - 'completed'  -> COMPLETED / DELIVERED
+  ///   - 'other'      -> CANCELLED etc.
   String get filterTag {
     final s = status.toUpperCase();
     if (s == 'PENDING' || s == 'ACCEPTED') return 'active';
@@ -127,21 +142,31 @@ class FarmerOrdersTab extends StatefulWidget {
 }
 
 class FarmerOrdersTabState extends State<FarmerOrdersTab> {
+  static const Set<String> _kTerminalPoolStatuses = {
+    'COMPLETED',
+    'DELIVERED',
+    'CANCELLED',
+    'EXPIRED',
+    'MISSED',
+  };
+
   List<FarmerOrder> myRequests = [];
+  List<Pool> _activePools = [];
   bool isLoading = true;
   String? _error;
+  String? _poolsError;
 
-  /// Active filter chip. Index 0 = All (default).
+  /// Active filter segment. Index 0 = All (default).
   int _activeFilterIndex = 0;
 
   Timer? _pollTimer;
 
-  /// Chip definitions. `tag == null` means "all".
+  /// Segment definitions. `tag == null` means "All" (ongoing orders).
   static const List<({String label, String? tag})> _filters = [
     (label: 'All', tag: null),
     (label: 'Active', tag: 'active'),
     (label: 'In Transit', tag: 'in_transit'),
-    (label: 'Completed', tag: 'completed'),
+    (label: 'Pooled', tag: 'pooled'),
   ];
 
   void selectFilterTag(String tag) {
@@ -210,12 +235,31 @@ class FarmerOrdersTabState extends State<FarmerOrdersTab> {
     }
 
     try {
-      final response = await http.get(
+      final token = auth.token!;
+      final ordersFuture = http.get(
         Uri.parse('$_kApiBaseUrl/produce-requests/farmer/me'),
         headers: _headers(auth),
       );
+      final poolsFuture = PoolsApi.fetchMyPools(token: token)
+          .then<({List<Pool>? pools, String? error})>(
+            (list) => (pools: list, error: null),
+            onError: (Object e) => (
+              pools: null,
+              error: e.toString().replaceFirst('Exception: ', ''),
+            ),
+          );
+
+      final response = await ordersFuture;
+      final poolsResult = await poolsFuture;
 
       if (!mounted) return;
+
+      final nextPools = poolsResult.pools
+          ?.where(
+            (p) => !_kTerminalPoolStatuses.contains(p.status.toUpperCase()),
+          )
+          .toList();
+      nextPools?.sort((a, b) => b.createdAt.compareTo(a.createdAt));
 
       if (response.statusCode == 200) {
         final List<dynamic> decoded =
@@ -230,22 +274,26 @@ class FarmerOrdersTabState extends State<FarmerOrdersTab> {
 
         setState(() {
           myRequests = parsed;
+          if (nextPools != null) _activePools = nextPools;
+          _poolsError = poolsResult.error;
           isLoading = false;
           _error = null;
         });
 
         _syncPolling();
       } else {
-        if (!silent) {
-          setState(() {
+        setState(() {
+          if (nextPools != null) _activePools = nextPools;
+          _poolsError = poolsResult.error;
+          if (!silent) {
             _error = _extractError(response) ??
                 AppStrings.tr(
                   'Failed to load orders (HTTP {code}).',
                   args: {'code': '${response.statusCode}'},
                 );
             isLoading = false;
-          });
-        }
+          }
+        });
       }
     } catch (e) {
       if (!mounted) return;
@@ -271,10 +319,12 @@ class FarmerOrdersTabState extends State<FarmerOrdersTab> {
     return null;
   }
 
-  /// Visible list after applying the active filter chip.
+  /// Visible list after applying the active filter segment.
   List<FarmerOrder> get _filteredOrders {
     final tag = _filters[_activeFilterIndex].tag;
-    if (tag == null) return myRequests;
+    if (tag == null) {
+      return myRequests.where((o) => o.isOngoing).toList();
+    }
     return myRequests.where((o) => o.filterTag == tag).toList();
   }
 
@@ -285,6 +335,28 @@ class FarmerOrdersTabState extends State<FarmerOrdersTab> {
       ),
     );
     if (changed == true && mounted) {
+      await _fetchOrders(silent: true);
+    }
+  }
+
+  Future<void> _openPoolDetail(Pool pool) async {
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute<void>(
+        builder: (_) => PoolDetailScreen(poolId: pool.id),
+      ),
+    );
+    if (mounted) {
+      await _fetchOrders(silent: true);
+    }
+  }
+
+  Future<void> _openFindPool() async {
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute<void>(
+        builder: (_) => const PoolDiscoveryScreen(),
+      ),
+    );
+    if (mounted) {
       await _fetchOrders(silent: true);
     }
   }
@@ -304,43 +376,17 @@ class FarmerOrdersTabState extends State<FarmerOrdersTab> {
   }
 
   Widget _buildFilterBar() {
-    return Container(
-      color: Colors.white,
-      padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
-      child: SingleChildScrollView(
-        scrollDirection: Axis.horizontal,
-        child: Row(
-          children: List.generate(_filters.length, (i) {
-            final selected = i == _activeFilterIndex;
-            return Padding(
-              padding: EdgeInsets.only(
-                right: i == _filters.length - 1 ? 0 : 8,
-              ),
-              child: ChoiceChip(
-                label: Text(
-                  context.tr(_filters[i].label),
-                  style: TextStyle(
-                    fontSize: 13,
-                    fontWeight: FontWeight.w600,
-                    color: selected ? Colors.white : _kFarmerGreen,
-                  ),
-                ),
-                selected: selected,
-                onSelected: (_) =>
-                    setState(() => _activeFilterIndex = i),
-                selectedColor: _kFarmerGreen,
-                backgroundColor: Colors.white,
-                side: BorderSide(
-                  color: _kFarmerGreen.withOpacity(
-                    selected ? 0.0 : 0.4,
-                  ),
-                ),
-                showCheckmark: false,
-              ),
-            );
-          }),
-        ),
-      ),
+    return SegmentedFilterBar<int>(
+      options: [
+        for (int i = 0; i < _filters.length; i++)
+          SegmentedFilterOption(
+            value: i,
+            label: context.tr(_filters[i].label),
+          ),
+      ],
+      selectedValue: _activeFilterIndex,
+      onChanged: (i) => setState(() => _activeFilterIndex = i),
+      accentColor: _kFarmerGreen,
     );
   }
 
@@ -349,21 +395,25 @@ class FarmerOrdersTabState extends State<FarmerOrdersTab> {
       return const Center(child: CircularProgressIndicator());
     }
 
-    if (_error != null) {
-      return _OrdersErrorState(message: _error!, onRetry: _fetchOrders);
+    if (_filters[_activeFilterIndex].tag == 'pooled') {
+      return _buildPooledBody();
     }
 
-    if (myRequests.isEmpty) {
-      return RefreshIndicator(
-        onRefresh: _fetchOrders,
-        color: _kFarmerGreen,
-        child: _OrdersEmptyState(onBookTransport: widget.onBookTransport),
-      );
+    if (_error != null) {
+      return _OrdersErrorState(message: _error!, onRetry: _fetchOrders);
     }
 
     final visible = _filteredOrders;
 
     if (visible.isEmpty) {
+      if (_activeFilterIndex == 0) {
+        return RefreshIndicator(
+          onRefresh: _fetchOrders,
+          color: _kFarmerGreen,
+          child: _OrdersEmptyState(onBookTransport: widget.onBookTransport),
+        );
+      }
+
       return RefreshIndicator(
         onRefresh: _fetchOrders,
         color: _kFarmerGreen,
@@ -404,6 +454,36 @@ class FarmerOrdersTabState extends State<FarmerOrdersTab> {
           return _OrderCard(
             order: order,
             onTap: () => _openDetail(order),
+          );
+        },
+      ),
+    );
+  }
+
+  Widget _buildPooledBody() {
+    if (_poolsError != null && _activePools.isEmpty) {
+      return _OrdersErrorState(message: _poolsError!, onRetry: _fetchOrders);
+    }
+
+    if (_activePools.isEmpty) {
+      return RefreshIndicator(
+        onRefresh: _fetchOrders,
+        color: _kFarmerGreen,
+        child: _PooledEmptyState(onFindPool: _openFindPool),
+      );
+    }
+
+    return RefreshIndicator(
+      onRefresh: _fetchOrders,
+      color: _kFarmerGreen,
+      child: ListView.builder(
+        padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
+        itemCount: _activePools.length,
+        itemBuilder: (context, index) {
+          final pool = _activePools[index];
+          return _FarmerPoolCard(
+            pool: pool,
+            onTap: () => _openPoolDetail(pool),
           );
         },
       ),
@@ -529,6 +609,10 @@ class _StatusChip extends StatelessWidget {
     'CANCELLED': (Color(0xFF991B1B), Color(0x26DC2626)),
     'EXPIRED': (Color(0xFF6B7280), Color(0x266B7280)),
     'MISSED': (Color(0xFF991B1B), Color(0x26DC2626)),
+    'OPEN': (Color(0xFF166534), Color(0x2616A34A)),
+    'LOCKED': (Color(0xFF1D4ED8), Color(0x261D4ED8)),
+    'READY': (Color(0xFF0F766E), Color(0x260D9488)),
+    'FULL': (Color(0xFF991B1B), Color(0x26DC2626)),
   };
 
   @override
@@ -552,6 +636,164 @@ class _StatusChip extends StatelessWidget {
           letterSpacing: 0.5,
         ),
       ),
+    );
+  }
+}
+
+class _FarmerPoolCard extends StatelessWidget {
+  const _FarmerPoolCard({required this.pool, required this.onTap});
+
+  final Pool pool;
+  final VoidCallback onTap;
+
+  String _formatStart(BuildContext context, DateTime d) {
+    final local = d.toLocal();
+    final hh = local.hour.toString().padLeft(2, '0');
+    final mm = local.minute.toString().padLeft(2, '0');
+    return '${local.day} ${AppStrings.trShortMonth(local.month)} ${context.tr('at')} $hh:$mm';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final rawStatus = pool.status.toUpperCase();
+    final badgeStatus = (pool.isFull && rawStatus == 'OPEN') ? 'FULL' : rawStatus;
+    final farmerCountLabel = pool.memberCount == 1
+        ? context.tr('1 farmer')
+        : context.tr('{count} farmers', args: {'count': '${pool.memberCount}'});
+
+    return Card(
+      elevation: 1,
+      margin: const EdgeInsets.only(bottom: 12),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(14),
+      ),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(14),
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.all(14),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Expanded(
+                    child: Text(
+                      '${pool.cropType} · ${pool.currentQty.toStringAsFixed(0)}/${pool.maxQty.toStringAsFixed(0)} ${context.tr('kg')}',
+                      style: theme.textTheme.titleMedium?.copyWith(
+                        fontWeight: FontWeight.bold,
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  _StatusChip(status: badgeStatus),
+                ],
+              ),
+              const SizedBox(height: 8),
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Icon(
+                    Icons.flag_outlined,
+                    size: 15,
+                    color: Color(0xFF6B7280),
+                  ),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text(
+                      context.tr(
+                        'Dropoff: {dropoff}',
+                        args: {
+                          'dropoff': pool.dropoffMandiName ??
+                              context.tr('Unknown Destination'),
+                        },
+                      ),
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: const Color(0xFF1C1B1F),
+                        fontSize: 13,
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 6),
+              Text(
+                '$farmerCountLabel · ${_formatStart(context, pool.pickupWindowStart)}',
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: theme.colorScheme.onSurfaceVariant,
+                  fontSize: 12,
+                ),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _PooledEmptyState extends StatelessWidget {
+  const _PooledEmptyState({required this.onFindPool});
+
+  final VoidCallback onFindPool;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+
+    return ListView(
+      physics: const AlwaysScrollableScrollPhysics(),
+      padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 80),
+      children: [
+        Container(
+          padding: const EdgeInsets.all(24),
+          decoration: BoxDecoration(
+            color: _kFarmerGreen.withValues(alpha: 0.08),
+            shape: BoxShape.circle,
+          ),
+          child: const Icon(
+            Icons.groups_outlined,
+            size: 64,
+            color: _kFarmerGreen,
+          ),
+        ),
+        const SizedBox(height: 24),
+        Text(
+          context.tr('No active pools found.'),
+          textAlign: TextAlign.center,
+          style: theme.textTheme.titleMedium?.copyWith(
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+        const SizedBox(height: 8),
+        Text(
+          context.tr(
+            'Create or join a pool to share transport with nearby farmers.',
+          ),
+          textAlign: TextAlign.center,
+          style: theme.textTheme.bodyMedium?.copyWith(
+            color: theme.colorScheme.onSurfaceVariant,
+          ),
+        ),
+        const SizedBox(height: 24),
+        FilledButton.icon(
+          onPressed: onFindPool,
+          style: FilledButton.styleFrom(
+            backgroundColor: _kFarmerGreen,
+            padding: const EdgeInsets.symmetric(vertical: 14),
+          ),
+          icon: const Icon(Icons.handshake_outlined),
+          label: Text(context.tr('Find Pool')),
+        ),
+      ],
     );
   }
 }
