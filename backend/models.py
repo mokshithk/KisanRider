@@ -145,6 +145,9 @@ class ProduceRequest(Base):
     status = Column(String(20), default="PENDING")
 
     cancellation_reason = Column(String(500), nullable=True)
+    requested_pickup_at = Column(DateTime(timezone=True), nullable=True)
+    pickup_window_start = Column(DateTime(timezone=True), nullable=True)
+    pickup_window_end = Column(DateTime(timezone=True), nullable=True)
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
@@ -177,6 +180,7 @@ class Trip(Base):
     status = Column(String(20), nullable=False, default="ACCEPTED")
     created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
     completed_at = Column(DateTime(timezone=True), nullable=True)
+    rider_expected_pickup_at = Column(DateTime(timezone=True), nullable=True)
 
     pickup_address = Column(String(500), nullable=True)
     pickup_landmark = Column(String(255), nullable=True)
@@ -258,15 +262,25 @@ class Settlement(Base):
 
     crop_name = Column(String(50), nullable=True)
     quantity_kg = Column(Float, nullable=True)
+    rate_per_kg = Column(Float, nullable=True)
+    rate_source = Column(String(30), nullable=True)
     gross_amount = Column(Float, nullable=True)
     rider_fare = Column(Float, nullable=True)
     platform_fee = Column(Float, nullable=True)
     net_payout = Column(Float, nullable=True)
 
+    qr_code_token = Column(String(255), nullable=True, index=True)
+    qr_amount = Column(Float, nullable=True)
+    payment_reference = Column(String(120), nullable=True)
+    payment_method = Column(String(40), nullable=True)
+    paid_at = Column(DateTime(timezone=True), nullable=True)
+
     status = Column(String(20), nullable=False, default="PENDING")
     created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
 
     trip = relationship("Trip", back_populates="settlement")
+    farmer = relationship("User", foreign_keys=[farmer_id])
+    rider = relationship("User", foreign_keys=[rider_id])
 
 class AdminInvitation(Base):
     __tablename__ = "admin_invitations"

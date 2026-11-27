@@ -18,7 +18,7 @@ test.describe('KisanRider Admin Web — Complete End-to-End Suite', () => {
     // 1. Log in with provisioned credentials
     await page.goto('/login');
     await page.fill('input[type="email"]', 'admin@kisanrider.in');
-    await page.fill('input[type="password"]', 'AdminSecure2026!');
+    await page.fill('input[type="password"]', '12345678');
     await page.click('button[type="submit"]');
 
     // Redirected to Dashboard
@@ -85,6 +85,16 @@ test.describe('KisanRider Admin Web — Complete End-to-End Suite', () => {
     await page.click('a[href="/reports"]');
     await expect(page).toHaveURL('/reports');
     await expect(page.locator('button:has-text("Download Official CSV")')).toBeVisible();
+
+    // Verify Task 1: Rider Registrations tab loads without blank screen
+    await page.click('button:has-text("Rider Registrations")');
+    await expect(page.locator('th:has-text("Rider Name")')).toBeVisible();
+    await expect(page.locator('th:has-text("Duty Status")')).toBeVisible();
+    await expect(page.locator('table').first()).toBeVisible();
+
+    // Switch back to Farmer Registrations
+    await page.click('button:has-text("Farmer Registrations")');
+    await expect(page.locator('th:has-text("Farmer Name")')).toBeVisible();
 
     // Switch report tab
     await page.click('button:has-text("Transport Dispatches")');

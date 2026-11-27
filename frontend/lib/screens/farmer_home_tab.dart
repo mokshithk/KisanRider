@@ -1,21 +1,19 @@
 import 'dart:convert';
 
-import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:provider/provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import '../l10n/app_strings.dart';
 import '../providers/auth_provider.dart';
+import '../services/api_service.dart';
 import 'mandi_prices_screen.dart';
 import 'order_history_screen.dart';
 import 'pools/pool_discovery_screen.dart'; // Correct Screen
 
 /// Base URL of the FastAPI backend.
-String get _kApiBaseUrl {
-  if (kIsWeb) return 'http://localhost:8000';
-  return 'http://10.28.1.142:8000';
-}
+String get _kApiBaseUrl => ApiService.baseUrl;
 
 /// Shared brand color + surface palette used by the refactored dashboard.
 const Color _kFarmerGreen = Color(0xFF2E7D32);
@@ -32,9 +30,14 @@ const String _kSupportPhone = '1800000000';
 // ============================================================================
 
 class FarmerHomeTab extends StatefulWidget {
-  const FarmerHomeTab({super.key, required this.onTabSwitch});
+  const FarmerHomeTab({
+    super.key,
+    required this.onTabSwitch,
+    this.onOpenOrdersFilter,
+  });
 
   final void Function(int) onTabSwitch;
+  final void Function(String filterTag)? onOpenOrdersFilter;
 
   @override
   State<FarmerHomeTab> createState() => _FarmerHomeTabState();
@@ -61,7 +64,7 @@ class _FarmerHomeTabState extends State<FarmerHomeTab> {
     if (auth.token == null) {
       setState(() {
         _isLoading = false;
-        _error = 'Not signed in.';
+        _error = AppStrings.tr('Not signed in.');
       });
       return;
     }
@@ -98,14 +101,20 @@ class _FarmerHomeTabState extends State<FarmerHomeTab> {
         });
       } else {
         setState(() {
-          _error = 'Could not load dashboard (HTTP ${resp.statusCode}).';
+          _error = AppStrings.tr(
+            'Could not load dashboard (HTTP {code}).',
+            args: {'code': '${resp.statusCode}'},
+          );
           _isLoading = false;
         });
       }
     } catch (e) {
       if (!mounted) return;
       setState(() {
-        _error = 'Network error: $e';
+        _error = AppStrings.tr(
+          'Network error: {err}',
+          args: {'err': '$e'},
+        );
         _isLoading = false;
       });
     }
@@ -114,7 +123,7 @@ class _FarmerHomeTabState extends State<FarmerHomeTab> {
   String get _firstName {
     final name = context.read<AuthProvider>().fullName ?? '';
     final trimmed = name.trim();
-    if (trimmed.isEmpty) return 'Farmer';
+    if (trimmed.isEmpty) return context.tr('Farmer');
     return trimmed.split(RegExp(r'\s+')).first;
   }
 
@@ -194,18 +203,21 @@ class _FarmerHomeTabState extends State<FarmerHomeTab> {
     final riderName = (rider?['full_name'] ?? '').toString().trim();
 
     if (status == 'DELIVERED' || status == 'COMPLETED') {
-      return 'Delivered';
+      return context.tr('Delivered');
     }
     if (status == 'CANCELLED') {
-      return 'Cancelled';
+      return context.tr('Cancelled');
     }
     if (riderName.isNotEmpty) {
-      return 'Driver: $riderName';
+      return context.tr('Driver: {name}', args: {'name': riderName});
     }
     if (status == 'PENDING') {
-      return 'Awaiting rider';
+      return context.tr('Awaiting rider');
     }
-    return status.replaceAll('_', ' ').toLowerCase();
+    final fallback = status.replaceAll('_', ' ').toLowerCase();
+    return AppStrings.currentLanguage == 'kn'
+        ? AppStrings.trStatus(status)
+        : fallback;
   }
 
   void _openNewRequest() => widget.onTabSwitch(1);
@@ -242,13 +254,13 @@ class _FarmerHomeTabState extends State<FarmerHomeTab> {
       final ok = await launchUrl(uri);
       if (!ok && mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Could not open the dialer.')),
+          SnackBar(content: Text(context.trAsync('Could not open the dialer.'))),
         );
       }
     } catch (_) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Could not open the dialer.')),
+          SnackBar(content: Text(context.trAsync('Could not open the dialer.'))),
         );
       }
     }
@@ -324,7 +336,7 @@ class _FarmerHomeTabState extends State<FarmerHomeTab> {
             const SizedBox(width: 12),
             Expanded(
               child: Text(
-                'Namaste, $_firstName',
+                context.tr('Namaste, {name}', args: {'name': _firstName}),
                 style: theme.textTheme.titleMedium?.copyWith(
                   fontWeight: FontWeight.w600,
                   color: _kTextPrimary,
@@ -353,7 +365,7 @@ class _FarmerHomeTabState extends State<FarmerHomeTab> {
               ),
               const SizedBox(width: 4),
               Text(
-                _district,
+                context.tr(_district),
                 style: const TextStyle(
                   fontSize: 12,
                   fontWeight: FontWeight.w600,
@@ -370,14 +382,28 @@ class _FarmerHomeTabState extends State<FarmerHomeTab> {
   Widget _buildMetricsRow() {
     return Row(
       children: [
-        Expanded(child: _MetricCard(value: _activeCount, label: 'ACTIVE')),
-        const SizedBox(width: 10),
         Expanded(
-          child: _MetricCard(value: _inTransitCount, label: 'IN TRANSIT'),
+          child: _MetricCard(
+            value: _activeCount,
+            label: context.tr('ACTIVE'),
+            onTap: () => widget.onOpenOrdersFilter?.call('active'),
+          ),
         ),
         const SizedBox(width: 10),
         Expanded(
-          child: _MetricCard(value: _completedCount, label: 'COMPLETED'),
+          child: _MetricCard(
+            value: _inTransitCount,
+            label: context.tr('IN TRANSIT'),
+            onTap: () => widget.onOpenOrdersFilter?.call('in_transit'),
+          ),
+        ),
+        const SizedBox(width: 10),
+        Expanded(
+          child: _MetricCard(
+            value: _completedCount,
+            label: context.tr('COMPLETED'),
+            onTap: () => widget.onOpenOrdersFilter?.call('completed'),
+          ),
         ),
       ],
     );
@@ -391,8 +417,8 @@ class _FarmerHomeTabState extends State<FarmerHomeTab> {
             Expanded(
               child: _QuickActionCard(
                 icon: Icons.add_circle_outline,
-                title: 'New Request',
-                subtitle: 'Add produce',
+                title: context.tr('New Request'),
+                subtitle: context.tr('Add produce'),
                 onTap: _openNewRequest,
               ),
             ),
@@ -400,8 +426,8 @@ class _FarmerHomeTabState extends State<FarmerHomeTab> {
             Expanded(
               child: _QuickActionCard(
                 icon: Icons.handshake_outlined,
-                title: 'Find Pool',
-                subtitle: 'Nearby farmers',
+                title: context.tr('Find Pool'),
+                subtitle: context.tr('Nearby farmers'),
                 onTap: _openFindPool,
               ),
             ),
@@ -413,8 +439,8 @@ class _FarmerHomeTabState extends State<FarmerHomeTab> {
             Expanded(
               child: _QuickActionCard(
                 icon: Icons.trending_up,
-                title: 'Mandi Prices',
-                subtitle: 'Compare & earn',
+                title: context.tr('Mandi Prices'),
+                subtitle: context.tr('Compare & earn'),
                 onTap: _openMandiPrices,
               ),
             ),
@@ -422,8 +448,8 @@ class _FarmerHomeTabState extends State<FarmerHomeTab> {
             Expanded(
               child: _QuickActionCard(
                 icon: Icons.history,
-                title: 'Order History',
-                subtitle: 'View past shipments',
+                title: context.tr('Order History'),
+                subtitle: context.tr('View past shipments'),
                 onTap: _openOrderHistory,
               ),
             ),
@@ -439,7 +465,7 @@ class _FarmerHomeTabState extends State<FarmerHomeTab> {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Text(
-          "TODAY'S TRIPS",
+          context.tr("TODAY'S TRIPS"),
           style: theme.textTheme.labelMedium?.copyWith(
             color: _kTextSecondary,
             fontWeight: FontWeight.w700,
@@ -484,23 +510,23 @@ class _FarmerHomeTabState extends State<FarmerHomeTab> {
             size: 22,
           ),
           const SizedBox(width: 12),
-          const Expanded(
+          Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               mainAxisSize: MainAxisSize.min,
               children: [
                 Text(
-                  'Need help with your shipment?',
-                  style: TextStyle(
+                  context.tr('Need help with your shipment?'),
+                  style: const TextStyle(
                     fontSize: 13.5,
                     fontWeight: FontWeight.w600,
                     color: _kTextPrimary,
                   ),
                 ),
-                SizedBox(height: 2),
+                const SizedBox(height: 2),
                 Text(
-                  'Call KisanRider Support',
-                  style: TextStyle(
+                  context.tr('Call KisanRider Support'),
+                  style: const TextStyle(
                     fontSize: 12,
                     color: _kTextSecondary,
                   ),
@@ -509,7 +535,7 @@ class _FarmerHomeTabState extends State<FarmerHomeTab> {
             ),
           ),
           IconButton(
-            tooltip: 'Call Support',
+            tooltip: context.tr('Call Support'),
             onPressed: _callSupport,
             icon: const Icon(Icons.phone, color: _kFarmerGreen),
           ),
@@ -520,45 +546,57 @@ class _FarmerHomeTabState extends State<FarmerHomeTab> {
 }
 
 class _MetricCard extends StatelessWidget {
-  const _MetricCard({required this.value, required this.label});
+  const _MetricCard({
+    required this.value,
+    required this.label,
+    this.onTap,
+  });
 
   final int value;
   final String label;
+  final VoidCallback? onTap;
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
-      decoration: BoxDecoration(
-        color: Colors.white,
+    return Material(
+      color: Colors.white,
+      borderRadius: BorderRadius.circular(12),
+      child: InkWell(
+        onTap: onTap,
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: Colors.grey.shade300),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            value.toString(),
-            style: const TextStyle(
-              fontSize: 24,
-              fontWeight: FontWeight.bold,
-              color: _kTextPrimary,
-              height: 1.1,
-            ),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: Colors.grey.shade300),
           ),
-          const SizedBox(height: 4),
-          Text(
-            label,
-            style: const TextStyle(
-              fontSize: 10.5,
-              fontWeight: FontWeight.w700,
-              color: _kTextSecondary,
-              letterSpacing: 0.6,
-            ),
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                value.toString(),
+                style: const TextStyle(
+                  fontSize: 24,
+                  fontWeight: FontWeight.bold,
+                  color: _kTextPrimary,
+                  height: 1.1,
+                ),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                label,
+                style: const TextStyle(
+                  fontSize: 10.5,
+                  fontWeight: FontWeight.w700,
+                  color: _kTextSecondary,
+                  letterSpacing: 0.6,
+                ),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ],
           ),
-        ],
+        ),
       ),
     );
   }
@@ -655,8 +693,8 @@ class _ActiveShipmentCard extends StatelessWidget {
     final otp = (order['pickup_otp'] ?? '').toString().trim();
 
     final headerLabel = crop.isEmpty
-        ? '${weightKg.toStringAsFixed(0)} kg'
-        : '$crop · ${weightKg.toStringAsFixed(0)} kg';
+        ? '${weightKg.toStringAsFixed(0)} ${context.tr('kg')}'
+        : '$crop · ${weightKg.toStringAsFixed(0)} ${context.tr('kg')}';
 
     return Container(
       padding: const EdgeInsets.all(14),
@@ -712,7 +750,7 @@ class _ActiveShipmentCard extends StatelessWidget {
                 const SizedBox(width: 6),
                 Expanded(
                   child: Text(
-                    'To: $dropoff',
+                    context.tr('To: {dropoff}', args: {'dropoff': dropoff}),
                     style: const TextStyle(
                       fontSize: 12.5,
                       color: _kTextPrimary,
@@ -745,7 +783,10 @@ class _ActiveShipmentCard extends StatelessWidget {
                 const SizedBox(width: 8),
                 Expanded(
                   child: Text(
-                    'Pickup OTP: ${otp.isEmpty ? "----" : otp}',
+                    context.tr(
+                      'Pickup OTP: {otp}',
+                      args: {'otp': otp.isEmpty ? '----' : otp},
+                    ),
                     style: const TextStyle(
                       fontSize: 13.5,
                       fontWeight: FontWeight.w700,
@@ -776,7 +817,7 @@ class _ActiveShipmentCard extends StatelessWidget {
                   letterSpacing: 0.3,
                 ),
               ),
-              child: const Text('Track Order'),
+              child: Text(context.tr('Track Order')),
             ),
           ),
         ],
@@ -820,7 +861,7 @@ class _RawStatusBadge extends StatelessWidget {
         border: Border.all(color: fg.withOpacity(0.55)),
       ),
       child: Text(
-        s,
+        context.trStatus(s),
         style: TextStyle(
           color: fg,
           fontWeight: FontWeight.w700,
@@ -854,7 +895,7 @@ class _RecentTripTile extends StatelessWidget {
     final crop = (order['crop_type'] ?? '').toString().trim();
     final weightKg = ((order['weight_kg'] ?? 0) as num).toDouble();
     final weightLabel =
-        weightKg > 0 ? '${weightKg.toStringAsFixed(0)} kg' : '';
+        weightKg > 0 ? '${weightKg.toStringAsFixed(0)} ${context.tr('kg')}' : '';
     final titleParts = [shortId];
     if (crop.isNotEmpty) titleParts.add(crop);
     if (weightLabel.isNotEmpty) titleParts.add(weightLabel);
@@ -923,7 +964,7 @@ class _RecentTripTile extends StatelessWidget {
               border: Border.all(color: categoryColors.fg.withOpacity(0.55)),
             ),
             child: Text(
-              categoryLabel,
+              context.tr(categoryLabel),
               style: TextStyle(
                 color: categoryColors.fg,
                 fontWeight: FontWeight.w700,
@@ -950,18 +991,18 @@ class _EmptyTripsPlaceholder extends StatelessWidget {
         borderRadius: BorderRadius.circular(12),
         border: Border.all(color: Colors.grey.shade300),
       ),
-      child: const Row(
+      child: Row(
         children: [
-          Icon(
+          const Icon(
             Icons.inbox_outlined,
             color: _kTextSecondary,
             size: 22,
           ),
-          SizedBox(width: 10),
+          const SizedBox(width: 10),
           Expanded(
             child: Text(
-              'No trips yet — post your first request to get started.',
-              style: TextStyle(
+              context.tr('No trips yet — post your first request to get started.'),
+              style: const TextStyle(
                 fontSize: 12.5,
                 color: _kTextSecondary,
               ),
@@ -1002,7 +1043,7 @@ class _ErrorBlock extends StatelessWidget {
           OutlinedButton.icon(
             onPressed: onRetry,
             icon: const Icon(Icons.refresh),
-            label: const Text('Retry'),
+            label: Text(context.tr('Retry')),
           ),
         ],
       ),

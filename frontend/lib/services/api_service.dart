@@ -2,6 +2,8 @@ import 'package:dio/dio.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter/foundation.dart' show kIsWeb, defaultTargetPlatform, TargetPlatform;
 
+const String _kEnvApiBaseUrl = String.fromEnvironment('API_BASE_URL');
+
 /// Centralized API service for KisanRider.
 ///
 /// Exposes a single global [Dio] instance ([ApiService.dio]) that every
@@ -12,16 +14,20 @@ class ApiService {
 
   /// Base URL for the FastAPI backend.
   ///
-  /// - Web/Chrome uses `localhost`.
-  /// - Physical Android/iOS devices use your laptop's Wi-Fi IP.
+  /// - Uses `--dart-define=API_BASE_URL=...` when provided.
+  /// - Web/Chrome defaults to `http://localhost:8000` for local testing.
+  /// - Android/iOS builds connect to the hosted Render backend.
   static String get baseUrl {
+    if (_kEnvApiBaseUrl.isNotEmpty) {
+      return _kEnvApiBaseUrl;
+    }
     if (kIsWeb) {
       // Running in Chrome / Web browser
       return 'http://localhost:8000';
     } else if (defaultTargetPlatform == TargetPlatform.android ||
         defaultTargetPlatform == TargetPlatform.iOS) {
       // Running on a physical phone
-      return 'http://10.28.1.142:8000';
+      return 'https://kisanrider.onrender.com';
     }
     // Fallback for desktop apps
     return 'http://localhost:8000';
@@ -33,9 +39,9 @@ class ApiService {
   static final Dio dio = Dio(
     BaseOptions(
       baseUrl: baseUrl,
-      connectTimeout: const Duration(seconds: 15),
-      receiveTimeout: const Duration(seconds: 15),
-      sendTimeout: const Duration(seconds: 15),
+      connectTimeout: const Duration(seconds: 45),
+      receiveTimeout: const Duration(seconds: 45),
+      sendTimeout: const Duration(seconds: 45),
       headers: {
         'Content-Type': 'application/json',
         'Accept': 'application/json',

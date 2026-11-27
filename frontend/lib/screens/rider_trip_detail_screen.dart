@@ -1,18 +1,17 @@
 import 'dart:convert';
 
-import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:provider/provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import '../l10n/app_strings.dart';
 import '../providers/auth_provider.dart';
+import '../services/api_service.dart';
+import 'payment_qr_dialog.dart';
 
 /// Base URL of the FastAPI backend.
-String get _kApiBaseUrl {
-  if (kIsWeb) return 'http://localhost:8000';
-  return 'http://10.28.1.142:8000';
-}
+String get _kApiBaseUrl => ApiService.baseUrl;
 
 /// Brand green used across the rider UI.
 const Color _kRiderGreen = Color(0xFF2E7D32);
@@ -200,6 +199,13 @@ class RiderTripFareBreakdown {
     required this.platformCommission,
     required this.netEarnings,
     required this.paymentMethod,
+    this.cropGrossAmount,
+    this.farmerPlatformFee,
+    this.farmerNetPayout,
+    this.ratePerKg,
+    this.rateSource,
+    this.paymentReference,
+    this.settlementStatus,
   });
 
   factory RiderTripFareBreakdown.fromJson(Map<String, dynamic> json) {
@@ -210,6 +216,13 @@ class RiderTripFareBreakdown {
           ((json['platform_commission'] ?? 0) as num).toDouble(),
       netEarnings: ((json['net_earnings'] ?? 0) as num).toDouble(),
       paymentMethod: (json['payment_method'] ?? '—').toString(),
+      cropGrossAmount: (json['crop_gross_amount'] as num?)?.toDouble(),
+      farmerPlatformFee: (json['farmer_platform_fee'] as num?)?.toDouble(),
+      farmerNetPayout: (json['farmer_net_payout'] as num?)?.toDouble(),
+      ratePerKg: (json['rate_per_kg'] as num?)?.toDouble(),
+      rateSource: json['rate_source']?.toString(),
+      paymentReference: json['payment_reference']?.toString(),
+      settlementStatus: json['settlement_status']?.toString(),
     );
   }
 
@@ -220,6 +233,13 @@ class RiderTripFareBreakdown {
   /// "QR Payment at Mandi" (settlement PAID) or "Cash in Hand"
   /// (settlement PENDING).
   final String paymentMethod;
+  final double? cropGrossAmount;
+  final double? farmerPlatformFee;
+  final double? farmerNetPayout;
+  final double? ratePerKg;
+  final String? rateSource;
+  final String? paymentReference;
+  final String? settlementStatus;
 }
 
 // ============================================================================
@@ -269,7 +289,7 @@ class _RiderTripDetailScreenState extends State<RiderTripDetailScreen> {
     if (auth.token == null) {
       setState(() {
         _isLoading = false;
-        _error = 'Not signed in.';
+        _error = AppStrings.tr('Not signed in.');
       });
       return;
     }
@@ -294,20 +314,23 @@ class _RiderTripDetailScreenState extends State<RiderTripDetailScreen> {
         });
       } else if (response.statusCode == 404) {
         setState(() {
-          _error = 'Trip not found.';
+          _error = AppStrings.tr('Trip not found.');
           _isLoading = false;
         });
       } else {
         setState(() {
           _error = _extractError(response) ??
-              'Failed to load trip (HTTP ${response.statusCode}).';
+              AppStrings.tr(
+                'Failed to load trip (HTTP {code}).',
+                args: {'code': '${response.statusCode}'},
+              );
           _isLoading = false;
         });
       }
     } catch (e) {
       if (!mounted) return;
       setState(() {
-        _error = 'Network error: $e';
+        _error = AppStrings.tr('Network error: {err}', args: {'err': '$e'});
         _isLoading = false;
       });
     }
@@ -332,7 +355,7 @@ class _RiderTripDetailScreenState extends State<RiderTripDetailScreen> {
     return Scaffold(
       backgroundColor: Colors.grey.shade50,
       appBar: AppBar(
-        title: const Text('Trip Details'),
+        title: Text(context.tr('Trip Details')),
         backgroundColor: _kRiderGreen,
         foregroundColor: Colors.white,
       ),
@@ -347,7 +370,7 @@ class _RiderTripDetailScreenState extends State<RiderTripDetailScreen> {
 
     if (_error != null || _trip == null) {
       return _ErrorView(
-        message: _error ?? 'Could not load trip.',
+        message: _error ?? context.tr('Could not load trip.'),
         onRetry: _fetch,
       );
     }
@@ -370,7 +393,24 @@ class _RiderTripDetailScreenState extends State<RiderTripDetailScreen> {
           const SizedBox(height: 16),
           _CropCard(crop: trip.crop),
           const SizedBox(height: 16),
-          _FareCard(fare: trip.fare, isCancelled: trip.isCancelled),
+          _FareCard(
+            fare: trip.fare,
+            isCancelled: trip.isCancelled,
+            onGenerateQr: (!trip.isCancelled &&
+                    trip.fare != null &&
+                    (trip.fare!.settlementStatus ?? '').toUpperCase() != 'PAID')
+                ? () async {
+                    final auth = context.read<AuthProvider>();
+                    if (auth.token == null) return;
+                    final paid = await showTripPaymentQrDialog(
+                      context,
+                      token: auth.token!,
+                      tripId: trip.id,
+                    );
+                    if (paid && mounted) _fetch();
+                  }
+                : null,
+          ),
         ],
       ),
     );
@@ -386,18 +426,13 @@ class _CompletionHeaderCard extends StatelessWidget {
 
   final RiderTripDetail trip;
 
-  static const List<String> _months = [
-    'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-    'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
-  ];
-
   /// "12 Oct 2026 · 14:32" — with the time included, because on the
   /// detail screen the exact completion moment matters.
   String _formatDateTime(DateTime d) {
     final local = d.toLocal();
     final hh = local.hour.toString().padLeft(2, '0');
     final mm = local.minute.toString().padLeft(2, '0');
-    return '${local.day} ${_months[local.month - 1]} ${local.year} · '
+    return '${local.day} ${AppStrings.trShortMonth(local.month)} ${local.year} · '
         '$hh:$mm';
   }
 
@@ -414,9 +449,9 @@ class _CompletionHeaderCard extends StatelessWidget {
 
     // Header copy: for cancelled trips we don't claim a delivery
     // timestamp — the trip ended, but the framing is different.
-    final headerLabel = trip.isCancelled
-        ? 'Trip Cancelled'
-        : 'Trip Completed';
+    final headerLabel = context.tr(
+      trip.isCancelled ? 'Trip Cancelled' : 'Trip Completed',
+    );
 
     return Container(
       padding: const EdgeInsets.all(18),
@@ -463,7 +498,7 @@ class _CompletionHeaderCard extends StatelessWidget {
           ),
           const SizedBox(height: 6),
           Text(
-            'Trip $_shortRef',
+            context.tr('Trip {ref}', args: {'ref': _shortRef}),
             style: theme.textTheme.bodySmall?.copyWith(
               color: theme.colorScheme.onSurfaceVariant,
               fontWeight: FontWeight.w600,
@@ -477,7 +512,9 @@ class _CompletionHeaderCard extends StatelessWidget {
               Expanded(
                 child: _HeaderStat(
                   icon: Icons.schedule_outlined,
-                  label: trip.isCancelled ? 'Ended on' : 'Delivered on',
+                  label: context.tr(
+                    trip.isCancelled ? 'Ended on' : 'Delivered on',
+                  ),
                   value: completed == null ? '—' : _formatDateTime(completed),
                 ),
               ),
@@ -485,10 +522,10 @@ class _CompletionHeaderCard extends StatelessWidget {
               Expanded(
                 child: _HeaderStat(
                   icon: Icons.route_outlined,
-                  label: 'Distance',
+                  label: context.tr('Distance'),
                   value: trip.distanceKm == null
                       ? '—'
-                      : '${trip.distanceKm!.toStringAsFixed(1)} km',
+                      : '${trip.distanceKm!.toStringAsFixed(1)} ${context.tr('km')}',
                 ),
               ),
             ],
@@ -570,13 +607,24 @@ class _FarmerCard extends StatelessWidget {
       final ok = await launchUrl(uri);
       if (!ok && context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Could not open dialer for $cleaned')),
+          SnackBar(
+            content: Text(
+              context.trAsync(
+                'Could not open dialer for {phone}',
+                args: {'phone': cleaned},
+              ),
+            ),
+          ),
         );
       }
     } catch (_) {
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Could not open the phone dialer')),
+          SnackBar(
+            content: Text(
+              context.trAsync('Could not open the phone dialer'),
+            ),
+          ),
         );
       }
     }
@@ -585,18 +633,18 @@ class _FarmerCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return _SectionCard(
-      title: 'Farmer Info',
+      title: context.tr('Farmer Info'),
       icon: Icons.agriculture_outlined,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          _DetailRow(label: 'Farmer', value: farmer.fullName),
+          _DetailRow(label: context.tr('Farmer'), value: farmer.fullName),
           _DetailRow(
-            label: 'Phone',
+            label: context.tr('Phone'),
             value: farmer.hasPhone ? '+91 ${farmer.phoneNumber}' : '—',
           ),
           _DetailRow(
-            label: 'Farm Address',
+            label: context.tr('Farm Address'),
             value: farmer.hasAddress ? farmer.farmAddress!.trim() : '—',
           ),
           if (farmer.hasPhone) ...[
@@ -616,7 +664,7 @@ class _FarmerCard extends StatelessWidget {
                   ),
                 ),
                 icon: const Icon(Icons.phone, size: 18),
-                label: const Text('CALL FARMER'),
+                label: Text(context.tr('CALL FARMER')),
               ),
             ),
           ],
@@ -638,21 +686,21 @@ class _MandiCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return _SectionCard(
-      title: 'Mandi Unloading',
+      title: context.tr('Mandi Unloading'),
       icon: Icons.storefront_outlined,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           _DetailRow(
-            label: 'APMC Mandi',
+            label: context.tr('APMC Mandi'),
             value: mandi.hasMandi ? mandi.mandiName!.trim() : '—',
           ),
           _DetailRow(
-            label: 'Trader Name',
+            label: context.tr('Trader Name'),
             value: mandi.hasTrader ? mandi.traderName!.trim() : '—',
           ),
           _DetailRow(
-            label: 'Stall Number',
+            label: context.tr('Stall Number'),
             value: mandi.hasStall ? mandi.stallNumber!.trim() : '—',
           ),
         ],
@@ -673,15 +721,15 @@ class _CropCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return _SectionCard(
-      title: 'Crop Load',
+      title: context.tr('Crop Load'),
       icon: Icons.eco_outlined,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          _DetailRow(label: 'Crop', value: crop.cropName),
+          _DetailRow(label: context.tr('Crop'), value: crop.cropName),
           _DetailRow(
-            label: 'Total Weight',
-            value: '${crop.weightKg.toStringAsFixed(0)} kg',
+            label: context.tr('Total Weight'),
+            value: '${crop.weightKg.toStringAsFixed(0)} ${context.tr('kg')}',
           ),
         ],
       ),
@@ -694,10 +742,15 @@ class _CropCard extends StatelessWidget {
 // ============================================================================
 
 class _FareCard extends StatelessWidget {
-  const _FareCard({required this.fare, required this.isCancelled});
+  const _FareCard({
+    required this.fare,
+    required this.isCancelled,
+    this.onGenerateQr,
+  });
 
   final RiderTripFareBreakdown? fare;
   final bool isCancelled;
+  final VoidCallback? onGenerateQr;
 
   /// Indian-style digit grouping: 12,34,567 not 1,234,567.
   static String _rupees(double amount) {
@@ -727,7 +780,7 @@ class _FareCard extends StatelessWidget {
     // Cancelled trips never had a payout.
     if (isCancelled || fare == null) {
       return _SectionCard(
-        title: 'Fare & Earnings',
+        title: context.tr('Fare & Earnings'),
         icon: Icons.account_balance_wallet_outlined,
         child: Container(
           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
@@ -742,10 +795,11 @@ class _FareCard extends StatelessWidget {
               const SizedBox(width: 8),
               Expanded(
                 child: Text(
-                  isCancelled
-                      ? 'No fare was earned on this trip — it was '
-                          'cancelled before delivery.'
-                      : 'Fare breakdown is not available for this trip.',
+                  context.tr(
+                    isCancelled
+                        ? 'No fare was earned on this trip — it was cancelled before delivery.'
+                        : 'Fare breakdown is not available for this trip.',
+                  ),
                   style: theme.textTheme.bodySmall?.copyWith(
                     color: Colors.grey.shade800,
                   ),
@@ -760,20 +814,20 @@ class _FareCard extends StatelessWidget {
     final f = fare!;
 
     return _SectionCard(
-      title: 'Fare & Earnings',
+      title: context.tr('Fare & Earnings'),
       icon: Icons.account_balance_wallet_outlined,
       trailing: _PaymentModeTag(mode: f.paymentMethod),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           _DetailRow(
-            label: 'Gross Transport Fare',
+            label: context.tr('Gross Transport Fare'),
             value: '+${_rupees(f.grossTransportFare)}',
             valueColor: Colors.black87,
             bold: true,
           ),
           _DetailRow(
-            label: 'Platform Commission',
+            label: context.tr('Platform Commission'),
             value: '- ${_rupees(f.platformCommission)}',
             valueColor: Colors.red.shade700,
           ),
@@ -782,11 +836,69 @@ class _FareCard extends StatelessWidget {
             child: Divider(height: 1),
           ),
           _DetailRow(
-            label: 'Net Earnings',
+            label: context.tr('Net Earnings'),
             value: _rupees(f.netEarnings),
             valueColor: _kRiderGreen,
             bold: true,
           ),
+          if (f.cropGrossAmount != null) ...[
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 10),
+              child: Divider(height: 1),
+            ),
+            Text(
+              context.tr('MANDI SALE SPLIT'),
+              style: theme.textTheme.labelSmall?.copyWith(
+                fontWeight: FontWeight.w700,
+                color: const Color(0xFF6B7280),
+                letterSpacing: 1.0,
+              ),
+            ),
+            const SizedBox(height: 6),
+            _DetailRow(
+              label: context.tr('Total Crop Value'),
+              value: _rupees(f.cropGrossAmount!),
+            ),
+            if (f.farmerPlatformFee != null)
+              _DetailRow(
+                label: context.tr('Platform Fee (2%)'),
+                value: '- ${_rupees(f.farmerPlatformFee!)}',
+                valueColor: Colors.red.shade700,
+              ),
+            if (f.farmerNetPayout != null)
+              _DetailRow(
+                label: context.tr('Farmer Net Payout'),
+                value: _rupees(f.farmerNetPayout!),
+                valueColor: _kRiderGreen,
+                bold: true,
+              ),
+            if (f.ratePerKg != null)
+              _DetailRow(
+                label: context.tr('Crop Rate Applied'),
+                value:
+                    '₹${f.ratePerKg!.toStringAsFixed(0)}/${context.tr('kg')} (${f.rateSource == 'mandi_api' ? context.tr('Mandi API') : context.tr('Fallback ₹50')})',
+              ),
+            if (f.paymentReference != null && f.paymentReference!.isNotEmpty)
+              _DetailRow(
+                label: context.tr('Payment Ref'),
+                value: f.paymentReference!,
+              ),
+          ],
+          if (onGenerateQr != null) ...[
+            const SizedBox(height: 14),
+            SizedBox(
+              width: double.infinity,
+              child: FilledButton.icon(
+                onPressed: onGenerateQr,
+                style: FilledButton.styleFrom(
+                  backgroundColor: _kRiderGreen,
+                  padding: const EdgeInsets.symmetric(vertical: 12),
+                ),
+                icon: const Icon(Icons.qr_code_2_rounded, size: 20),
+                label: Text(context.tr('Generate Payment QR')),
+              ),
+            ),
+          ],
         ],
       ),
     );
@@ -839,7 +951,7 @@ class _PaymentModeTag extends StatelessWidget {
           Icon(icon, size: 11, color: fg),
           const SizedBox(width: 4),
           Text(
-            mode,
+            context.tr(mode),
             style: TextStyle(
               color: fg,
               fontWeight: FontWeight.bold,
@@ -984,7 +1096,7 @@ class _StatusBadge extends StatelessWidget {
         border: Border.all(color: fg),
       ),
       child: Text(
-        normalized,
+        context.trStatus(normalized),
         style: TextStyle(
           color: fg,
           fontWeight: FontWeight.bold,
@@ -1019,7 +1131,7 @@ class _ErrorView extends StatelessWidget {
                 size: 56, color: theme.colorScheme.error),
             const SizedBox(height: 16),
             Text(
-              'Could not load trip',
+              context.tr('Could not load trip'),
               style: theme.textTheme.titleMedium
                   ?.copyWith(fontWeight: FontWeight.w600),
             ),
@@ -1034,7 +1146,7 @@ class _ErrorView extends StatelessWidget {
             OutlinedButton.icon(
               onPressed: onRetry,
               icon: const Icon(Icons.refresh),
-              label: const Text('Retry'),
+              label: Text(context.tr('Retry')),
             ),
           ],
         ),

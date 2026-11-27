@@ -3,7 +3,7 @@ CRUD layer for KisanRider.
 """
 
 import random
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from typing import List, Optional
 from uuid import UUID
 
@@ -18,7 +18,7 @@ from geoalchemy2.functions import (
     ST_Y,
 )
 from geoalchemy2.shape import to_shape
-from sqlalchemy import cast, func, select
+from sqlalchemy import cast, func, select, or_, and_
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, joinedload
 
@@ -205,6 +205,9 @@ def _to_response(pr: models.ProduceRequest) -> schemas.ProduceRequestResponse:
         dropoff_lng=pr.dropoff_lng,
         status=pr.status,
         created_at=pr.created_at,
+        requested_pickup_at=pr.requested_pickup_at,
+        pickup_window_start=pr.pickup_window_start,
+        pickup_window_end=pr.pickup_window_end or pr.requested_pickup_at,
     )
 
 
@@ -213,6 +216,107 @@ def create_produce_request(
     request_schema: schemas.ProduceRequestCreate,
     farmer_id: UUID,
 ) -> schemas.ProduceRequestResponse:
+    is_for_pool = getattr(request_schema, 'for_pool', False)
+
+    # 1. Validate farmer profile completeness (Farm Details + Saved Address)
+    farmer = db.query(models.User).filter(models.User.id == farmer_id).first()
+    if farmer:
+        if not is_for_pool:
+            has_size = farmer.farm_size_acres is not None and farmer.farm_size_acres > 0
+            has_crops = farmer.primary_crops is not None and len(farmer.primary_crops.strip()) > 0
+            if not (has_size and has_crops):
+                raise ValueError(
+                    "Farm Details incomplete. Please update your farm size and primary crops in Account before booking transport."
+                )
+            saved_count = db.query(models.SavedAddress).filter(models.SavedAddress.farmer_id == farmer_id).count()
+            has_farm_address = bool(farmer.farm_address and farmer.farm_address.strip())
+            if saved_count == 0 and not has_farm_address:
+                raise ValueError(
+                    "Saved Farm Addresses missing. Please add a farm address in Account before booking transport."
+                )
+            # If farmer has a farm_address in profile but no SavedAddress entry, auto-sync it
+            if saved_count == 0 and has_farm_address:
+                try:
+                    auto_addr = models.SavedAddress(
+                        farmer_id=farmer_id,
+                        title="Farm Address",
+                        address_text=farmer.farm_address.strip(),
+                        landmark=farmer.landmark,
+                        latitude=request_schema.latitude,
+                        longitude=request_schema.longitude,
+                    )
+                    db.add(auto_addr)
+                    db.commit()
+                except Exception:
+                    db.rollback()
+        else:
+            # When joining/creating a pool, auto-populate any missing profile fields so user is never blocked
+            try:
+                updated = False
+                if not (farmer.farm_size_acres is not None and farmer.farm_size_acres > 0):
+                    farmer.farm_size_acres = 1.0
+                    updated = True
+                if not (farmer.primary_crops and farmer.primary_crops.strip()):
+                    farmer.primary_crops = request_schema.crop_type or "Produce"
+                    updated = True
+                if not (farmer.farm_address and farmer.farm_address.strip()):
+                    farmer.farm_address = request_schema.pickup_address or "Farm Gate"
+                    updated = True
+                if updated:
+                    db.commit()
+                saved_count = db.query(models.SavedAddress).filter(models.SavedAddress.farmer_id == farmer_id).count()
+                if saved_count == 0 and request_schema.pickup_address:
+                    auto_addr = models.SavedAddress(
+                        farmer_id=farmer_id,
+                        title="Farm Gate",
+                        address_text=request_schema.pickup_address.strip(),
+                        landmark=request_schema.pickup_landmark,
+                        latitude=request_schema.latitude,
+                        longitude=request_schema.longitude,
+                    )
+                    db.add(auto_addr)
+                    db.commit()
+            except Exception:
+                db.rollback()
+
+    # 2. Validate pickup window / requested pickup date and time
+    is_for_pool = getattr(request_schema, 'for_pool', False)
+    now_utc = datetime.now(timezone.utc)
+    win_start = getattr(request_schema, 'pickup_window_start', None)
+    win_end = getattr(request_schema, 'pickup_window_end', None)
+    req_pickup = getattr(request_schema, 'requested_pickup_at', None)
+
+    if not is_for_pool:
+        if win_start is not None and win_end is not None:
+            if win_start.tzinfo is None:
+                win_start = win_start.replace(tzinfo=timezone.utc)
+            if win_end.tzinfo is None:
+                win_end = win_end.replace(tzinfo=timezone.utc)
+            if win_start < now_utc - timedelta(minutes=5):
+                raise ValueError("Pickup window start time cannot be in the past.")
+            if win_end <= win_start:
+                raise ValueError("Pickup window end must be later than start time.")
+            if req_pickup is None:
+                req_pickup = win_end
+            elif req_pickup.tzinfo is None:
+                req_pickup = req_pickup.replace(tzinfo=timezone.utc)
+        elif req_pickup is not None:
+            if req_pickup.tzinfo is None:
+                req_pickup = req_pickup.replace(tzinfo=timezone.utc)
+            if req_pickup <= now_utc:
+                raise ValueError("Requested pickup date & time must be in the future.")
+            win_start = req_pickup
+            win_end = req_pickup
+        else:
+            raise ValueError("Pickup Window Starts and Ends are required.")
+    else:
+        if win_start is not None and win_start.tzinfo is None:
+            win_start = win_start.replace(tzinfo=timezone.utc)
+        if win_end is not None and win_end.tzinfo is None:
+            win_end = win_end.replace(tzinfo=timezone.utc)
+        if req_pickup is not None and req_pickup.tzinfo is None:
+            req_pickup = req_pickup.replace(tzinfo=timezone.utc)
+
     try:
         point_wkt = WKTElement(
             f"POINT({request_schema.longitude} {request_schema.latitude})",
@@ -248,6 +352,9 @@ def create_produce_request(
         dropoff_lng=request_schema.dropoff_lng,
         pickup_otp=pickup_otp,
         status="PENDING",
+        requested_pickup_at=req_pickup,
+        pickup_window_start=win_start,
+        pickup_window_end=win_end,
     )
 
     try:
@@ -295,6 +402,9 @@ def create_produce_request(
         dropoff_lng=db_request.dropoff_lng,
         status=db_request.status,
         created_at=db_request.created_at,
+        requested_pickup_at=db_request.requested_pickup_at,
+        pickup_window_start=db_request.pickup_window_start,
+        pickup_window_end=db_request.pickup_window_end,
     )
 
 
@@ -409,6 +519,9 @@ def get_nearby_produce_requests(
             pr.dropoff_location,
             pr.dropoff_lat,
             pr.dropoff_lng,
+            pr.requested_pickup_at,
+            pr.pickup_window_start,
+            pr.pickup_window_end,
             latitude_col,
             longitude_col,
             distance_km,
@@ -416,8 +529,35 @@ def get_nearby_produce_requests(
         .filter(ST_DWithin(stored_geog, query_point_geog, radius_km * 1000))
     )
 
+    # Exclude produce requests committed to an active pool
+    from pools.models import PoolMember as _PM
+    pooled_sub = select(_PM.produce_request_id).where(
+        _PM.produce_request_id.isnot(None),
+        _PM.status.in_(("REQUESTED", "ACCEPTED", "PENDING", "APPROVED")),
+    )
+    query = query.filter(~pr.id.in_(pooled_sub))
+
     if status_filter:
         query = query.filter(pr.status == status_filter)
+
+    # Exclude expired requests: active if pickup_window_end > now_utc,
+    # or (when pickup_window_end is absent) requested_pickup_at is None or > now_utc.
+    now_utc = datetime.now(timezone.utc)
+    query = query.filter(
+        or_(
+            and_(
+                pr.pickup_window_end.isnot(None),
+                pr.pickup_window_end > now_utc,
+            ),
+            and_(
+                pr.pickup_window_end.is_(None),
+                or_(
+                    pr.requested_pickup_at.is_(None),
+                    pr.requested_pickup_at > now_utc,
+                ),
+            ),
+        )
+    )
 
     query = query.order_by(pr.created_at.desc()).limit(limit)
 
@@ -445,6 +585,9 @@ def get_nearby_produce_requests(
             dropoff_lng=row.dropoff_lng,
             status=row.status,
             created_at=row.created_at,
+            requested_pickup_at=row.requested_pickup_at,
+            pickup_window_start=row.pickup_window_start,
+            pickup_window_end=row.pickup_window_end or row.requested_pickup_at,
             distance_km=round(row.distance_km, 3),
         )
         for row in rows
@@ -468,11 +611,25 @@ def verify_pickup_otp(
             f"Request is in a terminal state ({pr.status}) and cannot be picked up"
         )
 
+    if pr.status in ("EXPIRED", "MISSED"):
+        raise ValueError("Cannot verify OTP for an expired request.")
     if pr.status != "ACCEPTED":
         raise ValueError(
             f"Request must be ACCEPTED before OTP verification "
             f"(current status: {pr.status})"
         )
+
+    now_utc = datetime.now(timezone.utc)
+    win_end = pr.pickup_window_end or pr.requested_pickup_at
+    if win_end is not None:
+        if win_end.tzinfo is None:
+            win_end = win_end.replace(tzinfo=timezone.utc)
+        if win_end <= now_utc:
+            pr.status = "EXPIRED"
+            if pr.trip:
+                pr.trip.status = "MISSED"
+            db.commit()
+            raise ValueError("The pickup window has expired. This request is no longer active.")
 
     if not pr.pickup_otp or pr.pickup_otp != otp.strip():
         raise ValueError("Invalid OTP")
@@ -496,7 +653,10 @@ def get_trip_by_id(db: Session, trip_id: UUID) -> Optional[models.Trip]:
 
 
 def accept_produce_request(
-    db: Session, request_id: UUID, rider_id: UUID
+    db: Session,
+    request_id: UUID,
+    rider_id: UUID,
+    rider_expected_pickup_at: Optional[datetime] = None,
 ) -> models.Trip:
     try:
         pr = (
@@ -508,6 +668,60 @@ def accept_produce_request(
 
         if not pr or pr.status != "PENDING":
             raise ValueError("Produce request unavailable or already accepted")
+
+        now_utc = datetime.now(timezone.utc)
+        win_end = pr.pickup_window_end or pr.requested_pickup_at
+        if win_end is not None:
+            if win_end.tzinfo is None:
+                win_end = win_end.replace(tzinfo=timezone.utc)
+            if win_end <= now_utc:
+                pr.status = "EXPIRED"
+                db.commit()
+                raise ValueError("This transport request has expired and cannot be accepted.")
+
+        win_start = pr.pickup_window_start or pr.requested_pickup_at
+        if win_start is not None and win_start.tzinfo is None:
+            win_start = win_start.replace(tzinfo=timezone.utc)
+
+        if rider_expected_pickup_at is not None:
+            if rider_expected_pickup_at.tzinfo is None:
+                rider_expected_pickup_at = rider_expected_pickup_at.replace(tzinfo=timezone.utc)
+            if win_start and rider_expected_pickup_at < win_start - timedelta(seconds=59):
+                raise ValueError(f"Expected pickup time cannot be earlier than pickup window starts ({win_start.isoformat()}).")
+            if win_end and rider_expected_pickup_at > win_end:
+                raise ValueError(f"Expected pickup time cannot be later than pickup window ends ({win_end.isoformat()}).")
+        else:
+            rider_expected_pickup_at = win_start or now_utc
+
+        rider = db.query(models.User).filter(models.User.id == rider_id).first()
+        if rider:
+            # Profile completeness check
+            missing = []
+            if not (rider.full_name and rider.full_name.strip()):
+                missing.append("Full Name")
+            phone = (rider.phone_number or rider.phone or "").strip()
+            if not phone:
+                missing.append("Contact Phone")
+            if not (rider.vehicle_type and rider.vehicle_type.strip()):
+                missing.append("Vehicle Type")
+            if not (rider.vehicle_number and rider.vehicle_number.strip()):
+                missing.append("Vehicle Number")
+            if rider.payload_capacity_kg is None or rider.payload_capacity_kg <= 0:
+                missing.append("Payload Capacity")
+            if not (rider.license_number and rider.license_number.strip()):
+                missing.append("License Number")
+            if not (rider.district and rider.district.strip()):
+                missing.append("Operating District")
+            if not (rider.operating_routes and rider.operating_routes.strip()):
+                missing.append("Operating Routes")
+            if missing:
+                raise ValueError(f"Please complete your profile before accepting requests: {', '.join(missing)}.")
+
+            # Capacity validation
+            if rider.payload_capacity_kg is not None and float(pr.weight_kg or 0) > float(rider.payload_capacity_kg):
+                raise ValueError(
+                    f"Produce weight ({pr.weight_kg} kg) exceeds your vehicle capacity ({rider.payload_capacity_kg} kg)."
+                )
 
         pr.status = "ACCEPTED"
 
@@ -528,6 +742,7 @@ def accept_produce_request(
             pickup_landmark=pr.pickup_landmark,
             pickup_latitude=pickup_lat,
             pickup_longitude=pickup_lng,
+            rider_expected_pickup_at=rider_expected_pickup_at,
         )
         db.add(db_trip)
         db.commit()
@@ -584,6 +799,50 @@ def update_trip_status(
 
         if status == "DELIVERED":
             _ensure_settlement_for_trip(db, trip, pr, distance_km)
+            if trip.pool_id is not None:
+                from pools import models as _pool_models
+                pm = (
+                    db.query(_pool_models.PoolMember)
+                    .filter(
+                        _pool_models.PoolMember.pool_id == trip.pool_id,
+                        _pool_models.PoolMember.produce_request_id == trip.produce_request_id,
+                    )
+                    .first()
+                )
+                if pm and pm.status in ("REQUESTED", "ACCEPTED", "APPROVED", "PENDING"):
+                    pm.status = _pool_models.PoolMemberStatus.COMPLETED.value
+                stop = (
+                    db.query(_pool_models.PoolStop)
+                    .filter(
+                        _pool_models.PoolStop.pool_id == trip.pool_id,
+                        _pool_models.PoolStop.produce_request_id == trip.produce_request_id,
+                        _pool_models.PoolStop.status != "SKIPPED",
+                    )
+                    .first()
+                )
+                if stop:
+                    stop.status = "DELIVERED"
+
+                other_open = (
+                    db.query(models.Trip.id)
+                    .filter(
+                        models.Trip.pool_id == trip.pool_id,
+                        models.Trip.id != trip.id,
+                        models.Trip.status.notin_(("DELIVERED", "CANCELLED", "MISSED")),
+                    )
+                    .first()
+                )
+                if other_open is None:
+                    pool_obj = (
+                        db.query(_pool_models.Pool)
+                        .filter(_pool_models.Pool.id == trip.pool_id)
+                        .with_for_update()
+                        .first()
+                    )
+                    if pool_obj and pool_obj.status not in ("COMPLETED", "CANCELLED"):
+                        pool_obj.status = _pool_models.PoolStatus.COMPLETED.value
+                        if pool_obj.locked_at is None:
+                            pool_obj.locked_at = datetime.utcnow()
 
         db.commit()
         db.refresh(trip)
@@ -599,7 +858,7 @@ def update_trip_status(
 def get_active_trips_for_rider(
     db: Session, rider_id: UUID
 ) -> List[models.Trip]:
-    return (
+    trips = (
         db.query(models.Trip)
         .options(joinedload(models.Trip.produce_request))
         .filter(
@@ -609,6 +868,28 @@ def get_active_trips_for_rider(
         .order_by(models.Trip.created_at.desc())
         .all()
     )
+    now_utc = datetime.now(timezone.utc)
+    active = []
+    changed = False
+    for t in trips:
+        if t.status == "ACCEPTED" and t.produce_request:
+            pr = t.produce_request
+            win_end = pr.pickup_window_end or pr.requested_pickup_at
+            if win_end:
+                if win_end.tzinfo is None:
+                    win_end = win_end.replace(tzinfo=timezone.utc)
+                if win_end <= now_utc:
+                    t.status = "MISSED"
+                    pr.status = "EXPIRED"
+                    changed = True
+                    continue
+        active.append(t)
+    if changed:
+        try:
+            db.commit()
+        except Exception:
+            db.rollback()
+    return active
 
 
 # ---------------------------------------------------------------------------
@@ -731,6 +1012,9 @@ def _to_trip_active(
         ),
         vehicle_number=(rider.vehicle_number if rider and has_rider else None),
         vehicle_type=(rider.vehicle_type if rider and has_rider else None),
+        rider_expected_pickup_at=(trip.rider_expected_pickup_at if trip else None),
+        pickup_window_start=pr.pickup_window_start,
+        pickup_window_end=pr.pickup_window_end or pr.requested_pickup_at,
     )
 
 
@@ -823,7 +1107,28 @@ def get_active_trips_out_for_rider(
         .order_by(models.Trip.created_at.desc())
         .all()
     )
-    return [_to_trip_active(t.produce_request) for t in trips]
+    now_utc = datetime.now(timezone.utc)
+    active = []
+    changed = False
+    for t in trips:
+        if t.status == "ACCEPTED" and t.produce_request:
+            pr = t.produce_request
+            win_end = pr.pickup_window_end or pr.requested_pickup_at
+            if win_end:
+                if win_end.tzinfo is None:
+                    win_end = win_end.replace(tzinfo=timezone.utc)
+                if win_end <= now_utc:
+                    t.status = "MISSED"
+                    pr.status = "EXPIRED"
+                    changed = True
+                    continue
+        active.append(t)
+    if changed:
+        try:
+            db.commit()
+        except Exception:
+            db.rollback()
+    return [_to_trip_active(t.produce_request) for t in active]
 
 
 def get_trip_active_by_request_id(
@@ -1002,9 +1307,13 @@ def get_farmer_order_detail(
         status=_order_display_status(pr),
         trip_status=(trip.status if trip is not None else None),
         created_at=pr.created_at,
+        requested_pickup_at=pr.requested_pickup_at,
         completed_at=(trip.completed_at if trip is not None else None),
         trip_id=(trip.id if trip is not None else None),
         pickup_otp=pr.pickup_otp,
+        pickup_window_start=pr.pickup_window_start,
+        pickup_window_end=pr.pickup_window_end or pr.requested_pickup_at,
+        rider_expected_pickup_at=(trip.rider_expected_pickup_at if trip is not None else None),
         cancellation_reason=pr.cancellation_reason,
         rider=(
             schemas.OrderRiderInfo(
@@ -1035,11 +1344,17 @@ def get_farmer_order_detail(
         ),
         settlement=(
             schemas.OrderSettlementInfo(
+                id=settlement.id,
                 status=settlement.status,
                 gross_amount=settlement.gross_amount,
                 rider_fare=settlement.rider_fare,
                 platform_fee=settlement.platform_fee,
                 net_payout=settlement.net_payout,
+                rate_per_kg=settlement.rate_per_kg,
+                rate_source=settlement.rate_source,
+                payment_reference=settlement.payment_reference,
+                payment_method=settlement.payment_method,
+                paid_at=settlement.paid_at,
                 created_at=settlement.created_at,
             )
             if settlement is not None
@@ -1314,6 +1629,13 @@ def get_rider_trip_detail(
             platform_commission=commission,
             net_earnings=net,
             payment_method=_rider_trip_payment_method_detail(trip, settlement),
+            crop_gross_amount=settlement.gross_amount,
+            farmer_platform_fee=settlement.platform_fee,
+            farmer_net_payout=settlement.net_payout,
+            rate_per_kg=settlement.rate_per_kg,
+            rate_source=settlement.rate_source,
+            payment_reference=settlement.payment_reference,
+            settlement_status=settlement.status,
         )
 
     return schemas.RiderTripDetailResponse(
@@ -1398,13 +1720,13 @@ def _compute_settlement_values(
     rate_per_kg: float,
 ) -> dict:
     base_fare = 50.0
-    distance_fare = distance_km * _DISTANCE_FARE_PER_KM
-    weight_surcharge = max(0.0, weight_kg - 50.0) * 2.0
-    rider_fare = base_fare + distance_fare + weight_surcharge
+    distance_fare = round(distance_km * _DISTANCE_FARE_PER_KM, 2)
+    weight_surcharge = round(max(0.0, weight_kg - 50.0) * 2.0, 2)
+    rider_fare = round(base_fare + distance_fare + weight_surcharge, 2)
 
-    gross_amount = weight_kg * rate_per_kg
-    platform_fee = gross_amount * _PLATFORM_FEE_RATE
-    net_payout = gross_amount - (rider_fare + platform_fee)
+    gross_amount = round(weight_kg * rate_per_kg, 2)
+    platform_fee = round(gross_amount * _PLATFORM_FEE_RATE, 2)
+    net_payout = round(gross_amount - (rider_fare + platform_fee), 2)
 
     return {
         "base_fare": base_fare,
@@ -1422,6 +1744,10 @@ def _ensure_settlement_for_trip(
     trip: models.Trip,
     pr: Optional[models.ProduceRequest],
     distance_km: Optional[float],
+    *,
+    rate_per_kg: Optional[float] = None,
+    rate_source: Optional[str] = None,
+    fare_share_weight_total: Optional[float] = None,
 ) -> Optional[models.Settlement]:
     existing = (
         db.query(models.Settlement.id)
@@ -1436,11 +1762,50 @@ def _ensure_settlement_for_trip(
         if pr is not None and pr.weight_kg is not None
         else 0.0
     )
-    values = _compute_settlement_values(
-        weight_kg,
-        distance_km if distance_km is not None else _DEFAULT_DISTANCE_KM,
-        _DEFAULT_RATE_PER_KG,
-    )
+
+    if rate_per_kg is None:
+        from payment_service import resolve_delivery_crop_rate_per_kg
+        resolved_rate, resolved_source, _ = resolve_delivery_crop_rate_per_kg(
+            pr.crop_type if pr is not None else None,
+            district=pr.dropoff_district if pr is not None else None,
+            mandi_name=pr.dropoff_mandi_name if pr is not None else None,
+        )
+    else:
+        resolved_rate = float(rate_per_kg)
+        resolved_source = rate_source or "mandi_api"
+
+    effective_distance = distance_km if distance_km is not None else _DEFAULT_DISTANCE_KM
+
+    if fare_share_weight_total is not None and fare_share_weight_total > 0 and weight_kg > 0:
+        pool_values = _compute_settlement_values(
+            fare_share_weight_total,
+            effective_distance,
+            resolved_rate,
+        )
+        ratio = weight_kg / fare_share_weight_total
+        base_fare = round(pool_values["base_fare"] * ratio, 2)
+        distance_fare = round(pool_values["distance_fare"] * ratio, 2)
+        weight_surcharge = round(pool_values["weight_surcharge"] * ratio, 2)
+        rider_fare = round(base_fare + distance_fare + weight_surcharge, 2)
+
+        gross_amount = round(weight_kg * resolved_rate, 2)
+        platform_fee = round(gross_amount * _PLATFORM_FEE_RATE, 2)
+        net_payout = round(gross_amount - (rider_fare + platform_fee), 2)
+        values = {
+            "base_fare": base_fare,
+            "distance_fare": distance_fare,
+            "weight_surcharge": weight_surcharge,
+            "rider_fare": rider_fare,
+            "gross_amount": gross_amount,
+            "platform_fee": platform_fee,
+            "net_payout": net_payout,
+        }
+    else:
+        values = _compute_settlement_values(
+            weight_kg,
+            effective_distance,
+            resolved_rate,
+        )
 
     db_settlement = models.Settlement(
         trip_id=trip.id,
@@ -1448,6 +1813,8 @@ def _ensure_settlement_for_trip(
         farmer_id=pr.farmer_id if pr is not None else None,
         crop_name=pr.crop_type if pr is not None else None,
         quantity_kg=weight_kg,
+        rate_per_kg=resolved_rate,
+        rate_source=resolved_source,
         base_fare=values["base_fare"],
         distance_fare=values["distance_fare"],
         weight_surcharge=values["weight_surcharge"],
@@ -1507,6 +1874,8 @@ def create_settlement(
         farmer_id=pr.farmer_id if pr is not None else None,
         crop_name=pr.crop_type if pr is not None else None,
         quantity_kg=weight_kg,
+        rate_per_kg=settlement_in.rate_per_kg,
+        rate_source="manual",
         base_fare=values["base_fare"],
         distance_fare=values["distance_fare"],
         weight_surcharge=values["weight_surcharge"],

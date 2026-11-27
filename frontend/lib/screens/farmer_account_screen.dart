@@ -1,23 +1,19 @@
 import 'dart:convert';
 
-import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import 'package:provider/provider.dart';
 
+import '../l10n/app_strings.dart';
 import '../providers/auth_provider.dart';
+import '../providers/language_provider.dart';
+import '../services/api_service.dart';
 import 'login_screen.dart';
 import 'order_history_screen.dart';
 
 /// Base URL of the FastAPI backend.
-///
-/// - Web/Chrome uses `localhost`.
-/// - Physical Android/iOS devices use your laptop's Wi-Fi IP.
-String get _kApiBaseUrl {
-  if (kIsWeb) return 'http://localhost:8000';
-  return 'http://10.28.1.142:8000';
-}
+String get _kApiBaseUrl => ApiService.baseUrl;
 
 /// Kisan Green — the primary brand color used throughout the farmer UI.
 const Color _kFarmerGreen = Color(0xFF2E7D32);
@@ -50,12 +46,12 @@ Future<void> showLogoutConfirmation(BuildContext context) async {
   final confirmed = await showDialog<bool>(
     context: context,
     builder: (dialogContext) => AlertDialog(
-      title: const Text('Log out?'),
-      content: const Text('Are you sure you want to log out?'),
+      title: Text(dialogContext.tr('Log out?')),
+      content: Text(dialogContext.tr('Are you sure you want to log out?')),
       actions: [
         TextButton(
           onPressed: () => Navigator.of(dialogContext).pop(false),
-          child: const Text('Cancel'),
+          child: Text(dialogContext.tr('Cancel')),
         ),
         FilledButton(
           onPressed: () => Navigator.of(dialogContext).pop(true),
@@ -63,7 +59,7 @@ Future<void> showLogoutConfirmation(BuildContext context) async {
             backgroundColor: _kFarmerGreen,
             foregroundColor: Colors.white,
           ),
-          child: const Text('Logout'),
+          child: Text(dialogContext.tr('Logout')),
         ),
       ],
     ),
@@ -111,12 +107,6 @@ class _FarmerAccountScreenState extends State<FarmerAccountScreen>
   bool _isLoading = true;
   String? _error;
 
-  /// Local mirror of `preferred_language` so the picker has something to
-  /// render immediately. Once the backend's `FarmerProfileUpdate` gains
-  /// that field, swap the local assignment in [_onLanguageSelected] for a
-  /// PUT and this can be deleted.
-  String _preferredLanguage = 'en';
-
   @override
   bool get wantKeepAlive => true;
 
@@ -140,7 +130,7 @@ class _FarmerAccountScreenState extends State<FarmerAccountScreen>
     if (auth.token == null) {
       setState(() {
         _isLoading = false;
-        _error = 'Not signed in.';
+        _error = context.trAsync('Not signed in.');
       });
       return;
     }
@@ -161,21 +151,22 @@ class _FarmerAccountScreenState extends State<FarmerAccountScreen>
         final data = jsonDecode(response.body) as Map<String, dynamic>;
         setState(() {
           _account = data;
-          _preferredLanguage =
-              (data['preferred_language'] ?? 'en').toString();
           _isLoading = false;
         });
       } else {
         setState(() {
           _error = _extractError(response) ??
-              'Failed to load account (HTTP ${response.statusCode}).';
+              context.trAsync(
+                'Failed to load account (HTTP {code}).',
+                args: {'code': '${response.statusCode}'},
+              );
           _isLoading = false;
         });
       }
     } catch (e) {
       if (!mounted) return;
       setState(() {
-        _error = 'Network error: $e';
+        _error = context.trAsync('Network error: {err}', args: {'err': '$e'});
         _isLoading = false;
       });
     }
@@ -240,7 +231,7 @@ class _FarmerAccountScreenState extends State<FarmerAccountScreen>
       builder: (_) => sheet,
     );
     if (changed == true && mounted) {
-      _showSuccess('Saved successfully.');
+      _showSuccess(context.trAsync('Saved successfully.'));
       await _fetchAccount();
     }
   }
@@ -257,11 +248,12 @@ class _FarmerAccountScreenState extends State<FarmerAccountScreen>
   }
 
   Future<void> _onLanguageSelected(String code) async {
-    // Local-only for now — see class-level comment on `_preferredLanguage`.
-    setState(() => _preferredLanguage = code);
+    await LanguageProvider.instance.setLanguage(code);
     if (!mounted) return;
     _showSuccess(
-      code == 'kn' ? 'Language set to ಕನ್ನಡ.' : 'Language set to English.',
+      context.trAsync(
+        code == 'kn' ? 'Language set to ಕನ್ನಡ.' : 'Language set to English.',
+      ),
     );
   }
 
@@ -310,13 +302,13 @@ class _FarmerAccountScreenState extends State<FarmerAccountScreen>
             const SizedBox(height: 8),
 
             // ----- Personal Information ---------------------------------
-            _SectionHeader(title: 'PERSONAL INFORMATION'),
+            _SectionHeader(title: context.tr('PERSONAL INFORMATION')),
             _SettingsCard(
               children: [
                 _SettingsTile(
                   icon: Icons.person_outline,
-                  title: 'Edit Profile',
-                  subtitle: 'Name, phone, district & taluk',
+                  title: context.tr('Edit Profile'),
+                  subtitle: context.tr('Name, phone, district & taluk'),
                   onTap: () => _openSheet(
                     _EditProfileSheet(account: _account),
                   ),
@@ -324,8 +316,8 @@ class _FarmerAccountScreenState extends State<FarmerAccountScreen>
                 const Divider(height: 1, indent: 56),
                 _SettingsTile(
                   icon: Icons.agriculture_outlined,
-                  title: 'Farm Details',
-                  subtitle: 'Farm size and primary crops',
+                  title: context.tr('Farm Details'),
+                  subtitle: context.tr('Farm size and primary crops'),
                   onTap: () => _openSheet(
                     _FarmDetailsSheet(account: _account),
                   ),
@@ -334,29 +326,26 @@ class _FarmerAccountScreenState extends State<FarmerAccountScreen>
             ),
 
             // ----- Orders & Logistics -----------------------------------
-            // NEW — sits between Personal Info and Locations, matching
-            // the task's placement spec. Contains the Order History tile
-            // that navigates to OrderHistoryScreen.
-            _SectionHeader(title: 'ORDERS & LOGISTICS'),
+            _SectionHeader(title: context.tr('ORDERS & LOGISTICS')),
             _SettingsCard(
               children: [
                 _SettingsTile(
                   icon: Icons.receipt_long_outlined,
-                  title: 'Order History',
-                  subtitle: 'View past shipments and delivery receipts',
+                  title: context.tr('Order History'),
+                  subtitle: context.tr('View past shipments and delivery receipts'),
                   onTap: _openOrderHistory,
                 ),
               ],
             ),
 
             // ----- Locations & Addresses --------------------------------
-            _SectionHeader(title: 'LOCATIONS & ADDRESSES'),
+            _SectionHeader(title: context.tr('LOCATIONS & ADDRESSES')),
             _SettingsCard(
               children: [
                 _SettingsTile(
                   icon: Icons.location_on_outlined,
-                  title: 'Saved Farm Addresses',
-                  subtitle: 'Pickup address and landmark for riders',
+                  title: context.tr('Saved Farm Addresses'),
+                  subtitle: context.tr('Pickup address and landmark for riders'),
                   onTap: () => _openSheet(
                     _FarmAddressSheet(account: _account),
                   ),
@@ -365,13 +354,13 @@ class _FarmerAccountScreenState extends State<FarmerAccountScreen>
             ),
 
             // ----- Payouts & Banking ------------------------------------
-            _SectionHeader(title: 'PAYOUTS & BANKING'),
+            _SectionHeader(title: context.tr('PAYOUTS & BANKING')),
             _SettingsCard(
               children: [
                 _SettingsTile(
                   icon: Icons.account_balance_outlined,
-                  title: 'Bank Account & UPI Details',
-                  subtitle: 'Where your payouts are credited',
+                  title: context.tr('Bank Account & UPI Details'),
+                  subtitle: context.tr('Where your payouts are credited'),
                   onTap: () => _openSheet(
                     _PayoutDetailsSheet(account: _account),
                   ),
@@ -380,18 +369,18 @@ class _FarmerAccountScreenState extends State<FarmerAccountScreen>
             ),
 
             // ----- Preferences & Security -------------------------------
-            _SectionHeader(title: 'PREFERENCES & SECURITY'),
+            _SectionHeader(title: context.tr('PREFERENCES & SECURITY')),
             _SettingsCard(
               children: [
                 _SettingsTile(
                   icon: Icons.language_outlined,
-                  title: 'App Language',
-                  trailingText: 'English / ಕನ್ನಡ',
+                  title: context.tr('App Language'),
+                  trailingText: context.tr('English / ಕನ್ನಡ'),
                   onTap: () => showModalBottomSheet<void>(
                     context: context,
                     backgroundColor: Colors.transparent,
                     builder: (_) => _LanguagePickerSheet(
-                      current: _preferredLanguage,
+                      current: context.read<LanguageProvider>().languageCode,
                       onSelected: _onLanguageSelected,
                     ),
                   ),
@@ -399,8 +388,8 @@ class _FarmerAccountScreenState extends State<FarmerAccountScreen>
                 const Divider(height: 1, indent: 56),
                 _SettingsTile(
                   icon: Icons.lock_outline,
-                  title: 'Change Password',
-                  subtitle: 'Verify with an OTP sent to your email',
+                  title: context.tr('Change Password'),
+                  subtitle: context.tr('Verify with an OTP sent to your email'),
                   onTap: () => _openSheet(
                     _ChangePasswordSheet(email: _displayEmail),
                   ),
@@ -409,39 +398,43 @@ class _FarmerAccountScreenState extends State<FarmerAccountScreen>
             ),
 
             // ----- Support & Legal --------------------------------------
-            _SectionHeader(title: 'SUPPORT & LEGAL'),
+            _SectionHeader(title: context.tr('SUPPORT & LEGAL')),
             _SettingsCard(
               children: [
                 _SettingsTile(
                   icon: Icons.headset_mic_outlined,
-                  title: 'Help & Support',
+                  title: context.tr('Help & Support'),
                   onTap: () => _showInfoDialog(
                     context,
-                    title: 'Help & Support',
-                    body: 'Need a hand?\n\n'
-                        'Email: support@kisanrider.app\n'
-                        'Phone: +91 1800 000 000\n'
-                        'Hours: Mon–Sat, 9 AM to 6 PM IST\n\n'
-                        'For urgent issues with an active trip, please '
-                        'call the rider directly from the My Orders tab.',
+                    title: context.trAsync('Help & Support'),
+                    body: context.trAsync(
+                      'Need a hand?\n\n'
+                      'Email: support@kisanrider.app\n'
+                      'Phone: +91 1800 000 000\n'
+                      'Hours: Mon–Sat, 9 AM to 6 PM IST\n\n'
+                      'For urgent issues with an active trip, please '
+                      'call the rider directly from the My Orders tab.',
+                    ),
                   ),
                 ),
                 const Divider(height: 1, indent: 56),
                 _SettingsTile(
                   icon: Icons.description_outlined,
-                  title: 'Terms & Privacy Policy',
+                  title: context.tr('Terms & Privacy Policy'),
                   onTap: () => _showInfoDialog(
                     context,
-                    title: 'Terms & Privacy Policy',
-                    body: 'KisanRider connects farmers and riders for '
-                        'agricultural transport across Karnataka.\n\n'
-                        'We collect only what is necessary to operate the '
-                        'service: your name, contact details, farm location, '
-                        'and payout information. Location data is used to '
-                        'match produce requests with nearby riders and is '
-                        'never shared with third parties.\n\n'
-                        'By continuing to use KisanRider you agree to these '
-                        'terms and to our privacy practices.',
+                    title: context.trAsync('Terms & Privacy Policy'),
+                    body: context.trAsync(
+                      'KisanRider connects farmers and riders for '
+                      'agricultural transport across Karnataka.\n\n'
+                      'We collect only what is necessary to operate the '
+                      'service: your name, contact details, farm location, '
+                      'and payout information. Location data is used to '
+                      'match produce requests with nearby riders and is '
+                      'never shared with third parties.\n\n'
+                      'By continuing to use KisanRider you agree to these '
+                      'terms and to our privacy practices.',
+                    ),
                   ),
                 ),
               ],
@@ -463,7 +456,7 @@ class _FarmerAccountScreenState extends State<FarmerAccountScreen>
                 ),
               ),
               icon: const Icon(Icons.power_settings_new_rounded),
-              label: const Text('LOG OUT'),
+              label: Text(context.tr('LOG OUT')),
             ),
           ],
         ),
@@ -485,7 +478,7 @@ class _FarmerAccountScreenState extends State<FarmerAccountScreen>
           TextButton(
             onPressed: () => Navigator.of(dialogContext).pop(),
             style: TextButton.styleFrom(foregroundColor: _kFarmerGreen),
-            child: const Text('Close'),
+            child: Text(dialogContext.tr('Close')),
           ),
         ],
       ),
@@ -613,16 +606,24 @@ class _ProfileHeaderCard extends StatelessWidget {
             children: [
               _PillChip(
                 icon: Icons.location_on_outlined,
-                label: district.isEmpty
-                    ? 'District: $_kDefaultState'
-                    : 'District: $district',
+                label: context.tr(
+                  'District: {district}',
+                  args: {
+                    'district': context.tr(
+                      district.isEmpty ? _kDefaultState : district,
+                    ),
+                  },
+                ),
                 foreground: Colors.grey.shade800,
                 background: Colors.white,
                 border: Colors.grey.shade300,
               ),
               _PillChip(
                 icon: Icons.verified_user_outlined,
-                label: 'Role: $role',
+                label: context.tr(
+                  'Role: {role}',
+                  args: {'role': AppStrings.trRole(role, lang: context.watch<LanguageProvider>().languageCode)},
+                ),
                 foreground: _kFarmerGreen,
                 background: _kFarmerGreen.withOpacity(0.15),
                 border: _kFarmerGreen.withOpacity(0.5),
@@ -912,7 +913,7 @@ Future<Map<String, dynamic>?> _putAccountField({
 }) async {
   final auth = context.read<AuthProvider>();
   if (auth.token == null) {
-    _showRedSnack(context, 'Not signed in.');
+    _showRedSnack(context, AppStrings.tr('Not signed in.'));
     return null;
   }
 
@@ -932,7 +933,10 @@ Future<Map<String, dynamic>?> _putAccountField({
     }
 
     // Extract backend detail.
-    String message = 'Save failed (HTTP ${response.statusCode}).';
+    String message = AppStrings.tr(
+      'Save failed (HTTP {code}).',
+      args: {'code': '${response.statusCode}'},
+    );
     try {
       final decoded = jsonDecode(response.body);
       if (decoded is Map && decoded['detail'] != null) {
@@ -943,7 +947,10 @@ Future<Map<String, dynamic>?> _putAccountField({
     return null;
   } catch (e) {
     if (context.mounted) {
-      _showRedSnack(context, 'Network error: $e');
+      _showRedSnack(
+        context,
+        AppStrings.tr('Network error: {err}', args: {'err': '$e'}),
+      );
     }
     return null;
   }
@@ -1048,8 +1055,10 @@ class _EditProfileSheetState extends State<_EditProfileSheet> {
   @override
   Widget build(BuildContext context) {
     return _SheetScaffold(
-      title: 'Edit Profile',
-      subtitle: 'Your name and contact details as they appear to riders.',
+      title: context.tr('Edit Profile'),
+      subtitle: context.tr(
+        'Your name and contact details as they appear to riders.',
+      ),
       child: Form(
         key: _formKey,
         child: Column(
@@ -1059,22 +1068,20 @@ class _EditProfileSheetState extends State<_EditProfileSheet> {
               controller: _fullName,
               enabled: !_isSubmitting,
               textCapitalization: TextCapitalization.words,
-              decoration: const InputDecoration(
-                labelText: 'Full Name',
-                border: OutlineInputBorder(),
-                prefixIcon: Icon(Icons.person_outline),
+              decoration: InputDecoration(
+                labelText: context.tr('Full Name'),
+                border: const OutlineInputBorder(),
+                prefixIcon: const Icon(Icons.person_outline),
               ),
               validator: (v) {
-                if ((v ?? '').trim().isEmpty) return 'Name is required';
+                if ((v ?? '').trim().isEmpty) {
+                  return context.trAsync('Name is required');
+                }
                 return null;
               },
             ),
             const SizedBox(height: 14),
 
-            // Contact phone number. The "+91 " prefix is decoration; the
-            // controller value is just the 10 digits. inputFormatters
-            // enforce digits-only + max length so the field can't produce
-            // a value the validator would reject on shape grounds.
             TextFormField(
               controller: _phone,
               enabled: !_isSubmitting,
@@ -1083,39 +1090,35 @@ class _EditProfileSheetState extends State<_EditProfileSheet> {
                 FilteringTextInputFormatter.digitsOnly,
                 LengthLimitingTextInputFormatter(10),
               ],
-              decoration: const InputDecoration(
-                labelText: 'Contact Phone Number',
+              decoration: InputDecoration(
+                labelText: context.tr('Contact Phone Number'),
                 hintText: '9876543210',
-                border: OutlineInputBorder(),
-                prefixIcon: Icon(Icons.phone),
+                border: const OutlineInputBorder(),
+                prefixIcon: const Icon(Icons.phone),
                 prefixText: '+91 ',
-                helperText:
-                    'Shared with your rider on active trips',
+                helperText: context.tr('Shared with your rider on active trips'),
               ),
               validator: (v) {
                 final value = (v ?? '').trim();
-                // Optional field — a farmer who doesn't want to share a
-                // number can leave it blank.
                 if (value.isEmpty) return null;
                 if (!RegExp(r'^\d{10}$').hasMatch(value)) {
-                  return 'Enter a valid 10-digit mobile number';
+                  return context.trAsync('Enter a valid 10-digit mobile number');
                 }
                 return null;
               },
             ),
             const SizedBox(height: 14),
 
-            // Email is intentionally read-only: changing it is a privileged
-            // operation that would need re-verification. Shown so the user
-            // sees which address their OTPs go to.
             TextFormField(
               initialValue: (widget.account?['email'] ?? '').toString(),
               enabled: false,
-              decoration: const InputDecoration(
-                labelText: 'Email Address',
-                helperText: 'Contact support to change your login email',
-                border: OutlineInputBorder(),
-                prefixIcon: Icon(Icons.email_outlined),
+              decoration: InputDecoration(
+                labelText: context.tr('Email Address'),
+                helperText: context.tr(
+                  'Contact support to change your login email',
+                ),
+                border: const OutlineInputBorder(),
+                prefixIcon: const Icon(Icons.email_outlined),
                 filled: true,
               ),
             ),
@@ -1124,15 +1127,15 @@ class _EditProfileSheetState extends State<_EditProfileSheet> {
             DropdownButtonFormField<String>(
               value: _district,
               isExpanded: true,
-              decoration: const InputDecoration(
-                labelText: 'District',
-                border: OutlineInputBorder(),
-                prefixIcon: Icon(Icons.map_outlined),
+              decoration: InputDecoration(
+                labelText: context.tr('District'),
+                border: const OutlineInputBorder(),
+                prefixIcon: const Icon(Icons.map_outlined),
               ),
               items: _districts
                   .map((d) => DropdownMenuItem<String>(
                         value: d,
-                        child: Text(d, overflow: TextOverflow.ellipsis),
+                        child: Text(context.tr(d), overflow: TextOverflow.ellipsis),
                       ))
                   .toList(),
               onChanged: _isSubmitting
@@ -1145,17 +1148,17 @@ class _EditProfileSheetState extends State<_EditProfileSheet> {
               controller: _talukVillage,
               enabled: !_isSubmitting,
               textCapitalization: TextCapitalization.words,
-              decoration: const InputDecoration(
-                labelText: 'Taluk / Village',
-                hintText: 'e.g. Bangarpet, Kolar',
-                border: OutlineInputBorder(),
-                prefixIcon: Icon(Icons.holiday_village_outlined),
+              decoration: InputDecoration(
+                labelText: context.tr('Taluk / Village'),
+                hintText: context.tr('e.g. Bangarpet, Kolar'),
+                border: const OutlineInputBorder(),
+                prefixIcon: const Icon(Icons.holiday_village_outlined),
               ),
             ),
             const SizedBox(height: 22),
 
             _SheetSubmitButton(
-              label: 'SAVE PROFILE',
+              label: context.tr('SAVE PROFILE'),
               isSubmitting: _isSubmitting,
               onPressed: _submit,
             ),
@@ -1229,8 +1232,8 @@ class _FarmDetailsSheetState extends State<_FarmDetailsSheet> {
   @override
   Widget build(BuildContext context) {
     return _SheetScaffold(
-      title: 'Farm Details',
-      subtitle: 'Used to estimate loading and crop planning.',
+      title: context.tr('Farm Details'),
+      subtitle: context.tr('Used to estimate loading and crop planning.'),
       child: Form(
         key: _formKey,
         child: Column(
@@ -1244,19 +1247,19 @@ class _FarmDetailsSheetState extends State<_FarmDetailsSheet> {
               inputFormatters: [
                 FilteringTextInputFormatter.allow(RegExp(r'[0-9.]')),
               ],
-              decoration: const InputDecoration(
-                labelText: 'Farm Size (acres)',
-                hintText: 'e.g. 3.5',
-                border: OutlineInputBorder(),
-                prefixIcon: Icon(Icons.square_foot_outlined),
-                suffixText: 'acres',
+              decoration: InputDecoration(
+                labelText: context.tr('Farm Size (acres)'),
+                hintText: context.tr('e.g. 3.5'),
+                border: const OutlineInputBorder(),
+                prefixIcon: const Icon(Icons.square_foot_outlined),
+                suffixText: context.tr('acres'),
               ),
               validator: (v) {
                 final value = (v ?? '').trim();
                 if (value.isEmpty) return null; // optional
                 final parsed = double.tryParse(value);
                 if (parsed == null || parsed < 0) {
-                  return 'Enter a valid non-negative number';
+                  return context.trAsync('Enter a valid non-negative number');
                 }
                 return null;
               },
@@ -1267,18 +1270,18 @@ class _FarmDetailsSheetState extends State<_FarmDetailsSheet> {
               controller: _primaryCrops,
               enabled: !_isSubmitting,
               textCapitalization: TextCapitalization.words,
-              decoration: const InputDecoration(
-                labelText: 'Primary Crops',
-                hintText: 'e.g. Tomatoes, Beans, Ragi',
-                helperText: 'Separate multiple crops with commas',
-                border: OutlineInputBorder(),
-                prefixIcon: Icon(Icons.eco_outlined),
+              decoration: InputDecoration(
+                labelText: context.tr('Primary Crops'),
+                hintText: context.tr('e.g. Tomatoes, Beans, Ragi'),
+                helperText: context.tr('Separate multiple crops with commas'),
+                border: const OutlineInputBorder(),
+                prefixIcon: const Icon(Icons.eco_outlined),
               ),
             ),
             const SizedBox(height: 22),
 
             _SheetSubmitButton(
-              label: 'SAVE FARM DETAILS',
+              label: context.tr('SAVE FARM DETAILS'),
               isSubmitting: _isSubmitting,
               onPressed: _submit,
             ),
@@ -1348,9 +1351,10 @@ class _FarmAddressSheetState extends State<_FarmAddressSheet> {
   @override
   Widget build(BuildContext context) {
     return _SheetScaffold(
-      title: 'Farm Pickup Address',
-      subtitle:
-          'Riders use this to find your farm. Be as specific as you can.',
+      title: context.tr('Farm Pickup Address'),
+      subtitle: context.tr(
+        'Riders use this to find your farm. Be as specific as you can.',
+      ),
       child: Form(
         key: _formKey,
         child: Column(
@@ -1361,11 +1365,12 @@ class _FarmAddressSheetState extends State<_FarmAddressSheet> {
               enabled: !_isSubmitting,
               maxLines: 4,
               textCapitalization: TextCapitalization.sentences,
-              decoration: const InputDecoration(
-                labelText: 'Farm Address',
-                hintText:
-                    'Survey no., village, post office, taluk, district, PIN',
-                border: OutlineInputBorder(),
+              decoration: InputDecoration(
+                labelText: context.tr('Farm Address'),
+                hintText: context.tr(
+                  'Survey no., village, post office, taluk, district, PIN',
+                ),
+                border: const OutlineInputBorder(),
                 alignLabelWithHint: true,
               ),
             ),
@@ -1375,17 +1380,19 @@ class _FarmAddressSheetState extends State<_FarmAddressSheet> {
               controller: _landmark,
               enabled: !_isSubmitting,
               textCapitalization: TextCapitalization.sentences,
-              decoration: const InputDecoration(
-                labelText: 'Nearby Landmark',
-                hintText: 'e.g. Opposite the water tank, near the school',
-                border: OutlineInputBorder(),
-                prefixIcon: Icon(Icons.signpost_outlined),
+              decoration: InputDecoration(
+                labelText: context.tr('Nearby Landmark'),
+                hintText: context.tr(
+                  'e.g. Opposite the water tank, near the school',
+                ),
+                border: const OutlineInputBorder(),
+                prefixIcon: const Icon(Icons.signpost_outlined),
               ),
             ),
             const SizedBox(height: 22),
 
             _SheetSubmitButton(
-              label: 'SAVE ADDRESS',
+              label: context.tr('SAVE ADDRESS'),
               isSubmitting: _isSubmitting,
               onPressed: _submit,
             ),
@@ -1464,9 +1471,10 @@ class _PayoutDetailsSheetState extends State<_PayoutDetailsSheet> {
   @override
   Widget build(BuildContext context) {
     return _SheetScaffold(
-      title: 'Payout Details',
-      subtitle:
-          'Where settlements are credited. Either bank or UPI is enough.',
+      title: context.tr('Payout Details'),
+      subtitle: context.tr(
+        'Where settlements are credited. Either bank or UPI is enough.',
+      ),
       child: Form(
         key: _formKey,
         child: Column(
@@ -1476,11 +1484,11 @@ class _PayoutDetailsSheetState extends State<_PayoutDetailsSheet> {
               controller: _bankName,
               enabled: !_isSubmitting,
               textCapitalization: TextCapitalization.words,
-              decoration: const InputDecoration(
-                labelText: 'Bank Name',
-                hintText: 'e.g. State Bank of India',
-                border: OutlineInputBorder(),
-                prefixIcon: Icon(Icons.account_balance_outlined),
+              decoration: InputDecoration(
+                labelText: context.tr('Bank Name'),
+                hintText: context.tr('e.g. State Bank of India'),
+                border: const OutlineInputBorder(),
+                prefixIcon: const Icon(Icons.account_balance_outlined),
               ),
             ),
             const SizedBox(height: 14),
@@ -1493,10 +1501,10 @@ class _PayoutDetailsSheetState extends State<_PayoutDetailsSheet> {
                 FilteringTextInputFormatter.digitsOnly,
                 LengthLimitingTextInputFormatter(30),
               ],
-              decoration: const InputDecoration(
-                labelText: 'Account Number',
-                border: OutlineInputBorder(),
-                prefixIcon: Icon(Icons.numbers_outlined),
+              decoration: InputDecoration(
+                labelText: context.tr('Account Number'),
+                border: const OutlineInputBorder(),
+                prefixIcon: const Icon(Icons.numbers_outlined),
               ),
             ),
             const SizedBox(height: 14),
@@ -1509,11 +1517,11 @@ class _PayoutDetailsSheetState extends State<_PayoutDetailsSheet> {
                 LengthLimitingTextInputFormatter(11),
                 FilteringTextInputFormatter.allow(RegExp(r'[A-Za-z0-9]')),
               ],
-              decoration: const InputDecoration(
-                labelText: 'IFSC Code',
-                hintText: 'e.g. SBIN0001234',
-                border: OutlineInputBorder(),
-                prefixIcon: Icon(Icons.tag_outlined),
+              decoration: InputDecoration(
+                labelText: context.tr('IFSC Code'),
+                hintText: context.tr('e.g. SBIN0001234'),
+                border: const OutlineInputBorder(),
+                prefixIcon: const Icon(Icons.tag_outlined),
               ),
             ),
             const SizedBox(height: 14),
@@ -1522,17 +1530,17 @@ class _PayoutDetailsSheetState extends State<_PayoutDetailsSheet> {
               controller: _upiId,
               enabled: !_isSubmitting,
               autocorrect: false,
-              decoration: const InputDecoration(
-                labelText: 'UPI ID (optional)',
-                hintText: 'e.g. name@okicici',
-                border: OutlineInputBorder(),
-                prefixIcon: Icon(Icons.qr_code_2_outlined),
+              decoration: InputDecoration(
+                labelText: context.tr('UPI ID (optional)'),
+                hintText: context.tr('e.g. name@okicici'),
+                border: const OutlineInputBorder(),
+                prefixIcon: const Icon(Icons.qr_code_2_outlined),
               ),
             ),
             const SizedBox(height: 22),
 
             _SheetSubmitButton(
-              label: 'SAVE PAYOUT DETAILS',
+              label: context.tr('SAVE PAYOUT DETAILS'),
               isSubmitting: _isSubmitting,
               onPressed: _submit,
             ),
@@ -1559,13 +1567,13 @@ class _LanguagePickerSheet extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return _SheetScaffold(
-      title: 'App Language',
-      subtitle: 'Choose the language used across KisanRider.',
+      title: context.tr('App Language'),
+      subtitle: context.tr('Choose the language used across KisanRider.'),
       child: Column(
         children: [
           _LanguageOption(
             code: 'en',
-            label: 'English',
+            label: context.tr('English'),
             nativeLabel: 'English',
             selected: current == 'en',
             onTap: () {
@@ -1576,7 +1584,7 @@ class _LanguagePickerSheet extends StatelessWidget {
           const SizedBox(height: 8),
           _LanguageOption(
             code: 'kn',
-            label: 'Kannada',
+            label: context.tr('Kannada'),
             nativeLabel: 'ಕನ್ನಡ',
             selected: current == 'kn',
             onTap: () {
@@ -1692,7 +1700,10 @@ class _ChangePasswordSheetState extends State<_ChangePasswordSheet> {
 
   Future<void> _sendOtp() async {
     if (widget.email.isEmpty) {
-      _showRedSnack(context, 'No email on file. Please contact support.');
+      _showRedSnack(
+        context,
+        context.trAsync('No email on file. Please contact support.'),
+      );
       return;
     }
     setState(() => _isSubmitting = true);
@@ -1718,13 +1729,18 @@ class _ChangePasswordSheetState extends State<_ChangePasswordSheet> {
           ..hideCurrentSnackBar()
           ..showSnackBar(
             SnackBar(
-              content: Text('OTP sent to ${widget.email}'),
+              content: Text(
+                context.trAsync('OTP sent to {email}', args: {'email': widget.email}),
+              ),
               backgroundColor: _kFarmerGreen,
             ),
           );
       } else {
         setState(() => _isSubmitting = false);
-        String message = 'Could not send OTP (HTTP ${response.statusCode}).';
+        String message = context.trAsync(
+          'Could not send OTP (HTTP {code}).',
+          args: {'code': '${response.statusCode}'},
+        );
         try {
           final decoded = jsonDecode(response.body);
           if (decoded is Map && decoded['detail'] != null) {
@@ -1736,7 +1752,10 @@ class _ChangePasswordSheetState extends State<_ChangePasswordSheet> {
     } catch (e) {
       if (!mounted) return;
       setState(() => _isSubmitting = false);
-      _showRedSnack(context, 'Network error: $e');
+      _showRedSnack(
+        context,
+        context.trAsync('Network error: {err}', args: {'err': '$e'}),
+      );
     }
   }
 
@@ -1764,7 +1783,10 @@ class _ChangePasswordSheetState extends State<_ChangePasswordSheet> {
         Navigator.of(context).pop(true);
       } else {
         setState(() => _isSubmitting = false);
-        String message = 'Password change failed (HTTP ${response.statusCode}).';
+        String message = context.trAsync(
+          'Password change failed (HTTP {code}).',
+          args: {'code': '${response.statusCode}'},
+        );
         try {
           final decoded = jsonDecode(response.body);
           if (decoded is Map && decoded['detail'] != null) {
@@ -1776,17 +1798,22 @@ class _ChangePasswordSheetState extends State<_ChangePasswordSheet> {
     } catch (e) {
       if (!mounted) return;
       setState(() => _isSubmitting = false);
-      _showRedSnack(context, 'Network error: $e');
+      _showRedSnack(
+        context,
+        context.trAsync('Network error: {err}', args: {'err': '$e'}),
+      );
     }
   }
 
   @override
   Widget build(BuildContext context) {
     return _SheetScaffold(
-      title: 'Change Password',
-      subtitle: _step == _stepRequest
-          ? 'We will email a one-time code to confirm it is you.'
-          : 'Enter the code we sent and choose a new password.',
+      title: context.tr('Change Password'),
+      subtitle: context.tr(
+        _step == _stepRequest
+            ? 'We will email a one-time code to confirm it is you.'
+            : 'Enter the code we sent and choose a new password.',
+      ),
       child: AnimatedSize(
         duration: const Duration(milliseconds: 240),
         curve: Curves.easeOutCubic,
@@ -1821,7 +1848,7 @@ class _ChangePasswordSheetState extends State<_ChangePasswordSheet> {
               const SizedBox(width: 10),
               Expanded(
                 child: Text(
-                  widget.email.isEmpty ? 'No email on file' : widget.email,
+                  widget.email.isEmpty ? context.tr('No email on file') : widget.email,
                   style: const TextStyle(fontWeight: FontWeight.w600),
                   overflow: TextOverflow.ellipsis,
                 ),
@@ -1831,7 +1858,7 @@ class _ChangePasswordSheetState extends State<_ChangePasswordSheet> {
         ),
         const SizedBox(height: 22),
         _SheetSubmitButton(
-          label: 'SEND OTP',
+          label: context.tr('SEND OTP'),
           isSubmitting: _isSubmitting,
           onPressed: _sendOtp,
         ),
@@ -1854,17 +1881,17 @@ class _ChangePasswordSheetState extends State<_ChangePasswordSheet> {
               FilteringTextInputFormatter.digitsOnly,
               LengthLimitingTextInputFormatter(4),
             ],
-            decoration: const InputDecoration(
-              labelText: '4-Digit OTP',
+            decoration: InputDecoration(
+              labelText: context.tr('4-Digit OTP'),
               hintText: '••••',
-              border: OutlineInputBorder(),
-              prefixIcon: Icon(Icons.password_rounded),
+              border: const OutlineInputBorder(),
+              prefixIcon: const Icon(Icons.password_rounded),
               counterText: '',
             ),
             validator: (v) {
               final value = (v ?? '').trim();
               if (!RegExp(r'^\d{4}$').hasMatch(value)) {
-                return 'Enter the 4-digit code';
+                return context.trAsync('Enter the 4-digit code');
               }
               return null;
             },
@@ -1876,12 +1903,12 @@ class _ChangePasswordSheetState extends State<_ChangePasswordSheet> {
             enabled: !_isSubmitting,
             obscureText: _obscureNew,
             decoration: InputDecoration(
-              labelText: 'New Password',
-              hintText: 'At least 6 characters',
+              labelText: context.tr('New Password'),
+              hintText: context.tr('At least 6 characters'),
               border: const OutlineInputBorder(),
               prefixIcon: const Icon(Icons.lock_outline),
               suffixIcon: IconButton(
-                tooltip: _obscureNew ? 'Show' : 'Hide',
+                tooltip: context.tr(_obscureNew ? 'Show' : 'Hide'),
                 icon: Icon(
                   _obscureNew
                       ? Icons.visibility_outlined
@@ -1892,8 +1919,8 @@ class _ChangePasswordSheetState extends State<_ChangePasswordSheet> {
             ),
             validator: (v) {
               final value = v ?? '';
-              if (value.isEmpty) return 'New password is required';
-              if (value.length < 6) return 'At least 6 characters';
+              if (value.isEmpty) return context.trAsync('New password is required');
+              if (value.length < 6) return context.trAsync('At least 6 characters');
               return null;
             },
           ),
@@ -1904,11 +1931,11 @@ class _ChangePasswordSheetState extends State<_ChangePasswordSheet> {
             enabled: !_isSubmitting,
             obscureText: _obscureConfirm,
             decoration: InputDecoration(
-              labelText: 'Confirm New Password',
+              labelText: context.tr('Confirm New Password'),
               border: const OutlineInputBorder(),
               prefixIcon: const Icon(Icons.lock_reset_outlined),
               suffixIcon: IconButton(
-                tooltip: _obscureConfirm ? 'Show' : 'Hide',
+                tooltip: context.tr(_obscureConfirm ? 'Show' : 'Hide'),
                 icon: Icon(
                   _obscureConfirm
                       ? Icons.visibility_outlined
@@ -1920,9 +1947,11 @@ class _ChangePasswordSheetState extends State<_ChangePasswordSheet> {
             ),
             validator: (v) {
               final value = v ?? '';
-              if (value.isEmpty) return 'Please confirm your new password';
+              if (value.isEmpty) {
+                return context.trAsync('Please confirm your new password');
+              }
               if (value != _newPasswordController.text) {
-                return 'Passwords do not match';
+                return context.trAsync('Passwords do not match');
               }
               return null;
             },
@@ -1930,7 +1959,7 @@ class _ChangePasswordSheetState extends State<_ChangePasswordSheet> {
           const SizedBox(height: 22),
 
           _SheetSubmitButton(
-            label: 'RESET PASSWORD',
+            label: context.tr('RESET PASSWORD'),
             isSubmitting: _isSubmitting,
             onPressed: _resetPassword,
           ),
@@ -1963,7 +1992,7 @@ class _ErrorView extends StatelessWidget {
                 size: 56, color: theme.colorScheme.error),
             const SizedBox(height: 16),
             Text(
-              'Could not load account',
+              context.tr('Could not load account'),
               style: theme.textTheme.titleMedium
                   ?.copyWith(fontWeight: FontWeight.w600),
             ),
@@ -1978,11 +2007,33 @@ class _ErrorView extends StatelessWidget {
             OutlinedButton.icon(
               onPressed: onRetry,
               icon: const Icon(Icons.refresh),
-              label: const Text('Retry'),
+              label: Text(context.tr('Retry')),
             ),
           ],
         ),
       ),
     );
   }
+}
+
+// ============================================================================
+// Public Sheet Openers (reused by Book Transport profile validation)
+// ============================================================================
+
+Future<bool?> openFarmDetailsSheet(BuildContext context, [Map<String, dynamic>? account]) {
+  return showModalBottomSheet<bool>(
+    context: context,
+    isScrollControlled: true,
+    backgroundColor: Colors.transparent,
+    builder: (_) => _FarmDetailsSheet(account: account),
+  );
+}
+
+Future<bool?> openFarmAddressSheet(BuildContext context, [Map<String, dynamic>? account]) {
+  return showModalBottomSheet<bool>(
+    context: context,
+    isScrollControlled: true,
+    backgroundColor: Colors.transparent,
+    builder: (_) => _FarmAddressSheet(account: account),
+  );
 }

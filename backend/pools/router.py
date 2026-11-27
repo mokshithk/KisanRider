@@ -4,6 +4,7 @@ FastAPI router for the KisanRider farmer-pooling feature.
 
 from typing import Optional
 from uuid import UUID
+from pydantic import BaseModel, Field
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.exc import SQLAlchemyError
@@ -15,6 +16,8 @@ from database import get_db
 from pools import crud as pool_crud
 from pools import models as pool_models
 from pools import schemas as pool_schemas
+import payment_service
+import schemas as root_schemas
 
 
 router = APIRouter(prefix="/pools", tags=["pools"])
@@ -45,7 +48,7 @@ def create_pool(
     except SQLAlchemyError as e:
         raise HTTPException(status_code=500, detail=f"Database error: {e}")
 
-    return pool_crud.to_pool_detail_out(db, pool)
+    return pool_crud.to_pool_detail_out(db, pool, requesting_user_id=current_user.id)
 
 
 # ---------------------------------------------------------------------------
@@ -153,7 +156,7 @@ def group_pool(
     except SQLAlchemyError as e:
         raise HTTPException(status_code=500, detail=f"Database error: {e}")
 
-    return pool_crud.to_pool_detail_out(db, pool)
+    return pool_crud.to_pool_detail_out(db, pool, requesting_user_id=current_user.id)
 
 
 # ---------------------------------------------------------------------------
@@ -167,7 +170,7 @@ def group_pool(
 )
 def get_pool_detail(
     pool_id: UUID,
-    current_user: models.User = Depends(auth.require_role("FARMER")),
+    current_user: models.User = Depends(auth.get_current_user),
     db: Session = Depends(get_db),
 ):
     """
@@ -177,18 +180,19 @@ def get_pool_detail(
     if pool is None:
         raise HTTPException(status_code=404, detail="Pool not found")
 
-    is_creator = pool.creator_id == current_user.id
+    is_creator = str(pool.creator_id).lower() == str(current_user.id).lower()
     is_open = pool.status == pool_models.PoolStatus.OPEN.value
     is_member = any(
-        m.farmer_id == current_user.id
-        and m.status in ("REQUESTED", "ACCEPTED")
+        str(m.farmer_id).lower() == str(current_user.id).lower()
+        and m.status in ("REQUESTED", "ACCEPTED", "APPROVED", "PENDING", "COMPLETED")
         for m in pool.members
     )
+    is_rider = current_user.role == "RIDER"
 
-    if not (is_creator or is_open or is_member):
+    if not (is_creator or is_open or is_member or is_rider):
         raise HTTPException(status_code=404, detail="Pool not found")
 
-    return pool_crud.to_pool_detail_out(db, pool)
+    return pool_crud.to_pool_detail_out(db, pool, requesting_user_id=current_user.id)
 
 
 # ---------------------------------------------------------------------------
@@ -218,7 +222,7 @@ def join_pool(
     except SQLAlchemyError as e:
         raise HTTPException(status_code=500, detail=f"Database error: {e}")
 
-    return pool_crud.to_pool_detail_out(db, pool)
+    return pool_crud.to_pool_detail_out(db, pool, requesting_user_id=current_user.id)
 
 
 # ---------------------------------------------------------------------------
@@ -248,7 +252,7 @@ def approve_member(
     except SQLAlchemyError as e:
         raise HTTPException(status_code=500, detail=f"Database error: {e}")
 
-    return pool_crud.to_pool_detail_out(db, pool)
+    return pool_crud.to_pool_detail_out(db, pool, requesting_user_id=current_user.id)
 
 
 @router.post(
@@ -274,7 +278,7 @@ def reject_member(
     except SQLAlchemyError as e:
         raise HTTPException(status_code=500, detail=f"Database error: {e}")
 
-    return pool_crud.to_pool_detail_out(db, pool)
+    return pool_crud.to_pool_detail_out(db, pool, requesting_user_id=current_user.id)
 
 
 # ---------------------------------------------------------------------------
@@ -350,15 +354,17 @@ def cancel_pool(
 )
 def accept_pool(
     pool_id: UUID,
+    payload: Optional[pool_schemas.PoolAcceptPayload] = None,
     current_user: models.User = Depends(auth.require_role("RIDER")),
     db: Session = Depends(get_db),
 ):
     """
     Accept an OPEN pool as the authenticated rider.
     """
+    rider_expected = payload.rider_expected_pickup_at if payload else None
     try:
         pool, trip_ids = pool_crud.accept_pool(
-            db, pool_id, current_user.id
+            db, pool_id, current_user.id, rider_expected_pickup_at=rider_expected
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -371,3 +377,156 @@ def accept_pool(
         trip_ids=trip_ids,
         trips_created=len(trip_ids),
     )
+
+
+@router.get(
+    "/{pool_id}/route-optimization",
+    summary="Calculate shortest road pickup sequence and route geometry for a pool",
+)
+def get_pool_route_optimization(
+    pool_id: UUID,
+    rider_lat: float = Query(..., ge=-90, le=90, description="Rider starting latitude"),
+    rider_lng: float = Query(..., ge=-180, le=180, description="Rider starting longitude"),
+    current_user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Compute shortest road-network pickup sequence using OR-Tools and OSRM:
+    Rider GPS -> Farmer 1 -> Farmer 2 -> ... -> Farmer N -> Dropoff Mandi.
+    """
+    try:
+        return pool_crud.get_pool_route_optimization(
+            db, pool_id, rider_lat=rider_lat, rider_lng=rider_lng
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except SQLAlchemyError as e:
+        raise HTTPException(status_code=500, detail=f"Database error: {e}")
+
+
+class PoolFarmerOtpVerifyRequest(BaseModel):
+    produce_request_id: UUID
+    otp: str = Field(..., min_length=4, max_length=8)
+
+
+@router.post(
+    "/{pool_id}/verify-farmer-otp",
+    summary="Verify individual farmer pickup OTP in a pool",
+)
+def verify_pool_farmer_otp(
+    pool_id: UUID,
+    payload: PoolFarmerOtpVerifyRequest,
+    current_user: models.User = Depends(auth.require_role("RIDER")),
+    db: Session = Depends(get_db),
+):
+    """
+    Verify the 4-digit pickup OTP for a specific farmer's stop in a pool.
+    On success, transitions only that farmer's ProduceRequest and Trip to PICKED_UP.
+    """
+    try:
+        return pool_crud.verify_pooled_farmer_otp(
+            db=db,
+            pool_id=pool_id,
+            produce_request_id=payload.produce_request_id,
+            otp=payload.otp,
+            rider_id=current_user.id,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except SQLAlchemyError as e:
+        raise HTTPException(status_code=500, detail=f"Database error: {e}")
+
+
+@router.post(
+    "/{pool_id}/deliver",
+    response_model=pool_schemas.PoolDeliverResult,
+    summary="Mark a pool as delivered after uploading delivery proof photo",
+)
+def deliver_pool(
+    pool_id: UUID,
+    payload: pool_schemas.PoolDeliverPayload,
+    current_user: models.User = Depends(auth.require_role("RIDER")),
+    db: Session = Depends(get_db),
+):
+    """
+    Mark an entire pool as delivered after verifying all farmer pickups and
+    uploading proof-of-delivery photo.
+    """
+    try:
+        return pool_crud.deliver_pool(
+            db=db,
+            pool_id=pool_id,
+            rider_id=current_user.id,
+            delivery_photo_url=payload.delivery_photo_url,
+            distance_km=payload.distance_km,
+        )
+    except ValueError as e:
+        msg = str(e)
+        status_code = 403 if "not the assigned rider" in msg.lower() else 400
+        raise HTTPException(status_code=status_code, detail=msg)
+    except SQLAlchemyError as e:
+        raise HTTPException(status_code=500, detail=f"Database error: {e}")
+
+
+@router.post(
+    "/{pool_id}/generate-qr",
+    response_model=root_schemas.PaymentQrOut,
+    summary="Generate a single payment QR for an entire delivered pool",
+)
+def generate_pool_payment_qr(
+    pool_id: UUID,
+    current_user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
+):
+    try:
+        return payment_service.generate_pool_qr(db, pool_id, actor_user=current_user)
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except SQLAlchemyError as e:
+        raise HTTPException(status_code=500, detail=f"Database error: {e}")
+
+
+@router.get(
+    "/{pool_id}/payment-status",
+    response_model=root_schemas.PaymentQrOut,
+    summary="Poll payment status and split breakdown for a delivered pool",
+)
+def get_pool_payment_status(
+    pool_id: UUID,
+    current_user: models.User = Depends(auth.get_current_user),
+    db: Session = Depends(get_db),
+):
+    try:
+        return payment_service.get_pool_payment_status(db, pool_id, actor_user=current_user)
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post(
+    "/{pool_id}/pay",
+    response_model=root_schemas.PaymentReceiptOut,
+    summary="Complete mandi payment for a delivered pool (auto-splits to rider, platform, and farmers)",
+)
+def pay_pool(
+    pool_id: UUID,
+    payload: root_schemas.PaymentPayRequest,
+    db: Session = Depends(get_db),
+):
+    try:
+        return payment_service.pay_pool(
+            db, pool_id, pin=payload.pin, qr_data=payload.qr_data
+        )
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except SQLAlchemyError as e:
+        raise HTTPException(status_code=500, detail=f"Database error: {e}")

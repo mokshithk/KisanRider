@@ -1,19 +1,18 @@
+import 'dart:async';
 import 'dart:convert';
 
-import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:provider/provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import '../l10n/app_strings.dart';
 import '../providers/auth_provider.dart';
+import '../services/api_service.dart';
 import 'farmer_dashboard.dart';
 
 /// Base URL of the FastAPI backend.
-String get _kApiBaseUrl {
-  if (kIsWeb) return 'http://localhost:8000';
-  return 'http://10.28.1.142:8000';
-}
+String get _kApiBaseUrl => ApiService.baseUrl;
 
 const Color _kFarmerGreen = Color(0xFF2E7D32);
 
@@ -39,6 +38,10 @@ class OrderDetail {
     this.dropoffDistrict,
     this.dropoffMandiName,
     this.dropoffStallNumber,
+    this.requestedPickupAt,
+    this.pickupWindowStart,
+    this.pickupWindowEnd,
+    this.riderExpectedPickupAt,
   });
 
   factory OrderDetail.fromJson(Map<String, dynamic> json) {
@@ -67,6 +70,10 @@ class OrderDetail {
       dropoffDistrict: json['dropoff_district']?.toString(),
       dropoffMandiName: json['dropoff_mandi_name']?.toString(),
       dropoffStallNumber: json['dropoff_stall_number']?.toString(),
+      requestedPickupAt: _parseDate(json['requested_pickup_at']),
+      pickupWindowStart: _parseDate(json['pickup_window_start']),
+      pickupWindowEnd: _parseDate(json['pickup_window_end']),
+      riderExpectedPickupAt: _parseDate(json['rider_expected_pickup_at']),
     );
   }
 
@@ -88,6 +95,10 @@ class OrderDetail {
   final String? dropoffDistrict;
   final String? dropoffMandiName;
   final String? dropoffStallNumber;
+  final DateTime? requestedPickupAt;
+  final DateTime? pickupWindowStart;
+  final DateTime? pickupWindowEnd;
+  final DateTime? riderExpectedPickupAt;
 
   bool get hasRider => rider != null;
   bool get hasSettlement => settlement != null;
@@ -95,7 +106,10 @@ class OrderDetail {
   bool get isPending => status == 'PENDING';
   bool get isCancelled => status == 'CANCELLED';
   bool get isCompleted => status == 'COMPLETED';
-  bool get isAcceptedState => tripStatus == 'ACCEPTED';
+  bool get isExpired => status == 'EXPIRED';
+  bool get isAcceptedState =>
+      tripStatus == 'ACCEPTED' ||
+      (status == 'ACCEPTED' && tripStatus == null);
   bool get isInTransitState =>
       tripStatus == 'PICKED_UP' ||
       (status == 'IN_TRANSIT' && tripStatus != 'ACCEPTED');
@@ -200,32 +214,54 @@ class CropInfo {
 class SettlementInfo {
   SettlementInfo({
     required this.status,
+    this.id,
     this.grossAmount,
     this.riderFare,
     this.platformFee,
     this.netPayout,
+    this.ratePerKg,
+    this.rateSource,
+    this.paymentReference,
+    this.paymentMethod,
+    this.paidAt,
     this.createdAt,
   });
 
   factory SettlementInfo.fromJson(Map<String, dynamic> json) {
     return SettlementInfo(
+      id: json['id']?.toString(),
       status: (json['status'] ?? 'PENDING').toString(),
       grossAmount: (json['gross_amount'] as num?)?.toDouble(),
       riderFare: (json['rider_fare'] as num?)?.toDouble(),
       platformFee: (json['platform_fee'] as num?)?.toDouble(),
       netPayout: (json['net_payout'] as num?)?.toDouble(),
+      ratePerKg: (json['rate_per_kg'] as num?)?.toDouble(),
+      rateSource: json['rate_source']?.toString(),
+      paymentReference: json['payment_reference']?.toString(),
+      paymentMethod: json['payment_method']?.toString(),
+      paidAt: json['paid_at'] is String
+          ? DateTime.tryParse(json['paid_at'] as String)
+          : null,
       createdAt: json['created_at'] is String
           ? DateTime.tryParse(json['created_at'] as String)
           : null,
     );
   }
 
+  final String? id;
   final String status;
   final double? grossAmount;
   final double? riderFare;
   final double? platformFee;
   final double? netPayout;
+  final double? ratePerKg;
+  final String? rateSource;
+  final String? paymentReference;
+  final String? paymentMethod;
+  final DateTime? paidAt;
   final DateTime? createdAt;
+
+  bool get isPaid => status.toUpperCase() == 'PAID';
 
   String get displayStatus {
     final s = status.toUpperCase();
@@ -252,6 +288,7 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
   bool _isLoading = true;
   String? _error;
   bool _hasChanged = false;
+  Timer? _paymentPollTimer;
 
   @override
   void initState() {
@@ -259,25 +296,50 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
     WidgetsBinding.instance.addPostFrameCallback((_) => _fetch());
   }
 
+  @override
+  void dispose() {
+    _paymentPollTimer?.cancel();
+    super.dispose();
+  }
+
+  void _syncPaymentPolling(OrderDetail? order) {
+    final needsPoll = order != null &&
+        order.isCompleted &&
+        order.settlement != null &&
+        !order.settlement!.isPaid;
+    if (needsPoll && (_paymentPollTimer == null || !_paymentPollTimer!.isActive)) {
+      _paymentPollTimer = Timer.periodic(const Duration(seconds: 5), (_) {
+        _fetch(silent: true);
+      });
+    } else if (!needsPoll && _paymentPollTimer != null) {
+      _paymentPollTimer!.cancel();
+      _paymentPollTimer = null;
+    }
+  }
+
   Map<String, String> _headers(AuthProvider auth) => {
         'Authorization': 'Bearer ${auth.token}',
         'Accept': 'application/json',
       };
 
-  Future<void> _fetch() async {
+  Future<void> _fetch({bool silent = false}) async {
     final auth = context.read<AuthProvider>();
     if (auth.token == null) {
-      setState(() {
-        _isLoading = false;
-        _error = 'Not signed in.';
-      });
+      if (!silent) {
+        setState(() {
+          _isLoading = false;
+          _error = AppStrings.tr('Not signed in.');
+        });
+      }
       return;
     }
 
-    setState(() {
-      _isLoading = true;
-      _error = null;
-    });
+    if (!silent) {
+      setState(() {
+        _isLoading = true;
+        _error = null;
+      });
+    }
 
     try {
       final response = await http.get(
@@ -288,26 +350,34 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
 
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body) as Map<String, dynamic>;
+        final loaded = OrderDetail.fromJson(data);
         setState(() {
-          _order = OrderDetail.fromJson(data);
+          _order = loaded;
           _isLoading = false;
         });
-      } else if (response.statusCode == 404) {
+        _syncPaymentPolling(loaded);
+      } else if (!silent && response.statusCode == 404) {
         setState(() {
-          _error = 'Order not found.';
+          _error = AppStrings.tr('Order not found.');
           _isLoading = false;
         });
-      } else {
+      } else if (!silent) {
         setState(() {
           _error = _extractError(response) ??
-              'Failed to load order (HTTP ${response.statusCode}).';
+              AppStrings.tr(
+                'Failed to load order (HTTP {code}).',
+                args: {'code': '${response.statusCode}'},
+              );
           _isLoading = false;
         });
       }
     } catch (e) {
-      if (!mounted) return;
+      if (!mounted || silent) return;
       setState(() {
-        _error = 'Network error: $e';
+        _error = AppStrings.tr(
+          'Network error: {err}',
+          args: {'err': '$e'},
+        );
         _isLoading = false;
       });
     }
@@ -321,7 +391,10 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
       }
     } catch (_) {
       // Fallback if body is not JSON
-      return 'Server error (HTTP ${response.statusCode}). Check backend logs.';
+      return AppStrings.tr(
+        'Server error (HTTP {code}). Check backend logs.',
+        args: {'code': '${response.statusCode}'},
+      );
     }
     return null;
   }
@@ -330,10 +403,10 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
     // Navigate to the Book Transport screen in EDIT mode
     final changed = await Navigator.of(context).push<bool>(
       MaterialPageRoute<bool>(
-        builder: (_) => Scaffold(
+        builder: (ctx) => Scaffold(
           backgroundColor: Colors.grey.shade50,
           appBar: AppBar(
-            title: const Text('Edit Request'),
+            title: Text(ctx.tr('Edit Request')),
             backgroundColor: _kFarmerGreen,
             foregroundColor: Colors.white,
           ),
@@ -358,8 +431,8 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
       ScaffoldMessenger.of(context)
         ..hideCurrentSnackBar()
         ..showSnackBar(
-          const SnackBar(
-            content: Text('Order updated successfully.'),
+          SnackBar(
+            content: Text(context.trAsync('Order updated successfully.')),
             backgroundColor: _kFarmerGreen,
           ),
         );
@@ -413,8 +486,8 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
         ScaffoldMessenger.of(context)
           ..hideCurrentSnackBar()
           ..showSnackBar(
-            const SnackBar(
-              content: Text('Order cancelled successfully'),
+            SnackBar(
+              content: Text(context.trAsync('Order cancelled successfully')),
               backgroundColor: _kFarmerGreen,
             ),
           );
@@ -432,8 +505,8 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
         ..hideCurrentSnackBar()
         ..showSnackBar(
           SnackBar(
-            content: const Text(
-              'Could not cancel order. Please try again.',
+            content: Text(
+              context.trAsync('Could not cancel order. Please try again.'),
             ),
             backgroundColor: Colors.red.shade700,
           ),
@@ -445,8 +518,8 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
         ..hideCurrentSnackBar()
         ..showSnackBar(
           SnackBar(
-            content: const Text(
-              'Could not cancel order. Please try again.',
+            content: Text(
+              context.trAsync('Could not cancel order. Please try again.'),
             ),
             backgroundColor: Colors.red.shade700,
           ),
@@ -459,7 +532,7 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
     return Scaffold(
       backgroundColor: Colors.grey.shade50,
       appBar: AppBar(
-        title: const Text('Order Details'),
+        title: Text(context.tr('Order Details')),
         backgroundColor: _kFarmerGreen,
         foregroundColor: Colors.white,
         leading: IconButton(
@@ -479,7 +552,7 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
 
     if (_error != null || _order == null) {
       return _ErrorView(
-        message: _error ?? 'Could not load order.',
+        message: _error ?? context.tr('Could not load order.'),
         onRetry: _fetch,
       );
     }
@@ -550,7 +623,7 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
                   ),
                 ),
                 icon: const Icon(Icons.edit_outlined, size: 18),
-                label: const Text('Edit Request'),
+                label: Text(context.tr('Edit Request')),
               ),
             ),
             const SizedBox(width: 12),
@@ -567,7 +640,7 @@ class _OrderDetailScreenState extends State<OrderDetailScreen> {
                   ),
                 ),
                 icon: const Icon(Icons.close, size: 18),
-                label: const Text('Cancel Order'),
+                label: Text(context.tr('Cancel Order')),
               ),
             ),
           ],
@@ -586,14 +659,9 @@ class _HeaderCard extends StatelessWidget {
 
   final OrderDetail order;
 
-  static const List<String> _months = [
-    'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-    'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
-  ];
-
   String _formatDate(DateTime d) {
     final local = d.toLocal();
-    return '${local.day} ${_months[local.month - 1]} ${local.year}';
+    return '${local.day} ${AppStrings.trShortMonth(local.month)} ${local.year}';
   }
 
   String get _shortRef {
@@ -627,7 +695,7 @@ class _HeaderCard extends StatelessWidget {
             children: [
               Expanded(
                 child: Text(
-                  'Order $_shortRef',
+                  context.tr('Order {ref}', args: {'ref': _shortRef}),
                   style: theme.textTheme.titleMedium?.copyWith(
                     fontWeight: FontWeight.bold,
                   ),
@@ -638,7 +706,10 @@ class _HeaderCard extends StatelessWidget {
           ),
           const SizedBox(height: 6),
           Text(
-            'Placed on ${_formatDate(order.createdAt)}',
+            context.tr(
+              'Placed on {date}',
+              args: {'date': _formatDate(order.createdAt)},
+            ),
             style: theme.textTheme.bodySmall?.copyWith(
               color: theme.colorScheme.onSurfaceVariant,
             ),
@@ -646,7 +717,10 @@ class _HeaderCard extends StatelessWidget {
           if (order.completedAt != null) ...[
             const SizedBox(height: 2),
             Text(
-              'Completed on ${_formatDate(order.completedAt!)}',
+              context.tr(
+                'Completed on {date}',
+                args: {'date': _formatDate(order.completedAt!)},
+              ),
               style: theme.textTheme.bodySmall?.copyWith(
                 color: theme.colorScheme.onSurfaceVariant,
               ),
@@ -689,22 +763,39 @@ class _SpecCard extends StatelessWidget {
     final theme = Theme.of(context);
 
     return _SectionCard(
-      title: 'Order Specifications',
+      title: context.tr('Order Specifications'),
       icon: Icons.receipt_long_outlined,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          _DetailRow(label: 'Crop', value: order.crop.cropName),
+          _DetailRow(label: context.tr('Crop'), value: order.crop.cropName),
           _DetailRow(
-            label: 'Weight',
-            value: '${order.crop.weightKg.toStringAsFixed(0)} kg',
+            label: context.tr('Weight'),
+            value: '${order.crop.weightKg.toStringAsFixed(0)} ${context.tr('kg')}',
           ),
+          if (order.pickupWindowStart != null && order.pickupWindowEnd != null) ...[
+            _DetailRow(
+              label: context.tr('Pickup Window'),
+              value: '${order.pickupWindowStart!.toLocal().day}/${order.pickupWindowStart!.toLocal().month} ${order.pickupWindowStart!.toLocal().hour.toString().padLeft(2, '0')}:${order.pickupWindowStart!.toLocal().minute.toString().padLeft(2, '0')} — ${order.pickupWindowEnd!.toLocal().day}/${order.pickupWindowEnd!.toLocal().month} ${order.pickupWindowEnd!.toLocal().hour.toString().padLeft(2, '0')}:${order.pickupWindowEnd!.toLocal().minute.toString().padLeft(2, '0')}',
+            ),
+          ] else if (order.requestedPickupAt != null) ...[
+            _DetailRow(
+              label: context.tr('Pickup Requested'),
+              value: '${order.requestedPickupAt!.toLocal().day}/${order.requestedPickupAt!.toLocal().month} ${context.tr('at')} ${order.requestedPickupAt!.toLocal().hour.toString().padLeft(2, '0')}:${order.requestedPickupAt!.toLocal().minute.toString().padLeft(2, '0')}',
+            ),
+          ],
+          if (order.riderExpectedPickupAt != null) ...[
+            _DetailRow(
+              label: context.tr('Rider Expected Pickup'),
+              value: '${order.riderExpectedPickupAt!.toLocal().day}/${order.riderExpectedPickupAt!.toLocal().month} ${context.tr('at')} ${order.riderExpectedPickupAt!.toLocal().hour.toString().padLeft(2, '0')}:${order.riderExpectedPickupAt!.toLocal().minute.toString().padLeft(2, '0')}',
+            ),
+          ],
           const SizedBox(height: 14),
-          const _SubHeading(text: 'ROUTE'),
+          _SubHeading(text: context.tr('ROUTE')),
           const SizedBox(height: 6),
           _RouteRow(
             icon: Icons.location_on_outlined,
-            label: 'Pickup',
+            label: context.tr('Pickup'),
             value: order.pickup.displayAddress,
             subline: order.pickup.hasLandmark
                 ? order.pickup.landmark!.trim()
@@ -720,7 +811,7 @@ class _SpecCard extends StatelessWidget {
           ),
           _RouteRow(
             icon: Icons.flag_outlined,
-            label: 'Dropoff',
+            label: context.tr('Dropoff'),
             value: order.dropoff.displayAddress,
           ),
           const SizedBox(height: 14),
@@ -737,7 +828,7 @@ class _SpecCard extends StatelessWidget {
                 const SizedBox(width: 6),
                 Expanded(
                   child: Text(
-                    'Estimated Transport Cost',
+                    context.tr('Estimated Transport Cost'),
                     style: theme.textTheme.bodySmall?.copyWith(
                       color: theme.colorScheme.onSurfaceVariant,
                     ),
@@ -755,8 +846,9 @@ class _SpecCard extends StatelessWidget {
             ),
             const SizedBox(height: 4),
             Text(
-              'Estimated for a ~10 km trip. Final price is '
-              'settled at delivery.',
+              context.tr(
+                'Estimated for a ~10 km trip. Final price is settled at delivery.',
+              ),
               style: theme.textTheme.bodySmall?.copyWith(
                 color: theme.colorScheme.onSurfaceVariant,
                 fontSize: 11,
@@ -787,13 +879,24 @@ class _RiderSection extends StatelessWidget {
       final ok = await launchUrl(uri);
       if (!ok && context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Could not open dialer for $cleaned')),
+          SnackBar(
+            content: Text(
+              context.trAsync(
+                'Could not open dialer for {phone}',
+                args: {'phone': cleaned},
+              ),
+            ),
+          ),
         );
       }
     } catch (_) {
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Could not open the phone dialer')),
+          SnackBar(
+            content: Text(
+              context.trAsync('Could not open the phone dialer'),
+            ),
+          ),
         );
       }
     }
@@ -804,20 +907,20 @@ class _RiderSection extends StatelessWidget {
     final theme = Theme.of(context);
 
     return _SectionCard(
-      title: 'Assigned Rider',
+      title: context.tr('Assigned Rider'),
       icon: Icons.delivery_dining,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          _DetailRow(label: 'Rider Name', value: rider.fullName),
+          _DetailRow(label: context.tr('Rider Name'), value: rider.fullName),
           _DetailRow(
-            label: 'Vehicle Plate',
+            label: context.tr('Vehicle Plate'),
             value: (rider.vehicleNumber ?? '').trim().isEmpty
                 ? '—'
                 : rider.vehicleNumber!.trim(),
           ),
           _DetailRow(
-            label: 'Vehicle Type',
+            label: context.tr('Vehicle Type'),
             value: (rider.vehicleType ?? '').trim().isEmpty
                 ? '—'
                 : rider.vehicleType!.trim(),
@@ -840,7 +943,7 @@ class _RiderSection extends StatelessWidget {
                 ),
                 icon: const Icon(Icons.phone, size: 18),
                 label: Text(
-                  'CALL RIDER',
+                  context.tr('CALL RIDER'),
                   style: theme.textTheme.labelLarge?.copyWith(
                     color: Colors.white,
                     fontWeight: FontWeight.w700,
@@ -886,9 +989,9 @@ class _PickupOtpBanner extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Text(
-                  'Pickup OTP',
-                  style: TextStyle(
+                Text(
+                  context.tr('Pickup OTP'),
+                  style: const TextStyle(
                     fontSize: 11,
                     fontWeight: FontWeight.w700,
                     color: Color(0xFF8A5A00),
@@ -906,9 +1009,9 @@ class _PickupOtpBanner extends StatelessWidget {
                   ),
                 ),
                 const SizedBox(height: 4),
-                const Text(
-                  'Share this code with the rider at pickup.',
-                  style: TextStyle(
+                Text(
+                  context.tr('Share this code with the rider at pickup.'),
+                  style: const TextStyle(
                     fontSize: 11,
                     color: Color(0xFF8A5A00),
                   ),
@@ -931,16 +1034,11 @@ class _TimelineCard extends StatelessWidget {
 
   final OrderDetail order;
 
-  static const List<String> _months = [
-    'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-    'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
-  ];
-
   String _formatDateTime(DateTime d) {
     final local = d.toLocal();
     final hh = local.hour.toString().padLeft(2, '0');
     final mm = local.minute.toString().padLeft(2, '0');
-    return '${local.day} ${_months[local.month - 1]} ${local.year} · $hh:$mm';
+    return '${local.day} ${AppStrings.trShortMonth(local.month)} ${local.year} · $hh:$mm';
   }
 
   @override
@@ -950,12 +1048,12 @@ class _TimelineCard extends StatelessWidget {
 
     final steps = <_TimelineStep>[
       _TimelineStep(
-        label: 'Order Placed',
+        label: context.tr('Order Placed'),
         timestamp: _formatDateTime(order.createdAt),
         done: true,
       ),
       _TimelineStep(
-        label: 'Rider Assigned',
+        label: context.tr('Rider Assigned'),
         timestamp: trip != null &&
                 (trip == 'ACCEPTED' ||
                     trip == 'PICKED_UP' ||
@@ -967,19 +1065,19 @@ class _TimelineCard extends StatelessWidget {
             trip == 'DELIVERED',
       ),
       _TimelineStep(
-        label: 'In Transit',
+        label: context.tr('In Transit'),
         timestamp: trip == 'PICKED_UP' || trip == 'DELIVERED' ? '' : null,
         done: trip == 'PICKED_UP' || trip == 'DELIVERED',
       ),
       _TimelineStep(
-        label: 'Delivered',
+        label: context.tr('Delivered'),
         timestamp: completed != null ? _formatDateTime(completed) : null,
         done: trip == 'DELIVERED' || order.status == 'COMPLETED',
       ),
     ];
 
     return _SectionCard(
-      title: 'Delivery Progress',
+      title: context.tr('Delivery Progress'),
       icon: Icons.timeline_outlined,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -1119,7 +1217,7 @@ class _FinancialCard extends StatelessWidget {
 
     if (settlement == null) {
       return _SectionCard(
-        title: 'Payout Breakdown',
+        title: context.tr('Payout Breakdown'),
         icon: Icons.account_balance_wallet_outlined,
         child: Container(
           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
@@ -1134,7 +1232,9 @@ class _FinancialCard extends StatelessWidget {
               const SizedBox(width: 8),
               Expanded(
                 child: Text(
-                  'Settlement will be created once the delivery is completed.',
+                  context.tr(
+                    'Settlement will be created once the delivery is completed.',
+                  ),
                   style: theme.textTheme.bodySmall?.copyWith(
                     color: Colors.grey.shade800,
                   ),
@@ -1155,7 +1255,7 @@ class _FinancialCard extends StatelessWidget {
         : Colors.amber.withOpacity(0.15);
 
     return _SectionCard(
-      title: 'Payout Breakdown',
+      title: context.tr('Payout Breakdown'),
       icon: Icons.account_balance_wallet_outlined,
       trailing: Container(
         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
@@ -1165,7 +1265,7 @@ class _FinancialCard extends StatelessWidget {
           border: Border.all(color: statusColor),
         ),
         child: Text(
-          s.displayStatus,
+          context.trStatus(s.displayStatus),
           style: TextStyle(
             color: statusColor,
             fontWeight: FontWeight.bold,
@@ -1178,20 +1278,20 @@ class _FinancialCard extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           _DetailRow(
-            label: 'Gross Sale Amount',
+            label: context.tr('Gross Sale Amount'),
             value: s.grossAmount == null
-                ? 'Pending Calculation'
+                ? context.tr('Pending Calculation')
                 : _rupees(s.grossAmount),
           ),
           _DetailRow(
-            label: 'Transport Fee',
+            label: context.tr('Transport Fee'),
             value: s.riderFare == null
                 ? '—'
                 : '- ${_rupees(s.riderFare)}',
             valueColor: Colors.red.shade700,
           ),
           _DetailRow(
-            label: 'Platform Fee',
+            label: context.tr('Platform Fee'),
             value: s.platformFee == null
                 ? '—'
                 : '- ${_rupees(s.platformFee)}',
@@ -1202,11 +1302,51 @@ class _FinancialCard extends StatelessWidget {
             child: Divider(height: 1),
           ),
           _DetailRow(
-            label: 'Net Payout',
+            label: context.tr('Net Payout'),
             value: _rupees(s.netPayout),
             valueColor: _kFarmerGreen,
             bold: true,
           ),
+          if (s.ratePerKg != null) ...[
+            const SizedBox(height: 6),
+            _DetailRow(
+              label: context.tr('Crop Rate Applied'),
+              value:
+                  '₹${s.ratePerKg!.toStringAsFixed(0)}/${context.tr('kg')} (${s.rateSource == 'mandi_api' ? context.tr('Mandi API Rate') : context.tr('Standard ₹50/kg')})',
+            ),
+          ],
+          if (s.isPaid) ...[
+            const SizedBox(height: 10),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+              decoration: BoxDecoration(
+                color: const Color(0xFFE8F5E9),
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: const Color(0xFFA5D6A7)),
+              ),
+              child: Row(
+                children: [
+                  const Icon(Icons.verified, size: 18, color: _kFarmerGreen),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      s.paymentReference != null
+                          ? context.tr(
+                              'Payment Received via Mandi QR ({ref})',
+                              args: {'ref': s.paymentReference!},
+                            )
+                          : context.tr('Payment Received & Settled'),
+                      style: const TextStyle(
+                        fontSize: 12.5,
+                        fontWeight: FontWeight.w600,
+                        color: Color(0xFF166534),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
         ],
       ),
     );
@@ -1242,7 +1382,7 @@ class _CancelledBanner extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  'This order was cancelled.',
+                  context.tr('This order was cancelled.'),
                   style: TextStyle(
                     fontSize: 13.5,
                     fontWeight: FontWeight.w600,
@@ -1252,7 +1392,7 @@ class _CancelledBanner extends StatelessWidget {
                 if (reason != null && reason!.isNotEmpty) ...[
                   const SizedBox(height: 4),
                   Text(
-                    'Reason: $reason',
+                    context.tr('Reason: {reason}', args: {'reason': reason!}),
                     style: TextStyle(
                       fontSize: 12,
                       color: Colors.red.shade700,
@@ -1302,14 +1442,16 @@ class _CancelReasonDialogState extends State<_CancelReasonDialog> {
   @override
   Widget build(BuildContext context) {
     return AlertDialog(
-      title: Text('Cancel Order $_shortRef?'),
+      title: Text(
+        context.tr('Cancel Order {ref}?', args: {'ref': _shortRef}),
+      ),
       content: Column(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text(
-            'Please tell us why you are cancelling this order:',
-            style: TextStyle(fontSize: 13),
+          Text(
+            context.tr('Please tell us why you are cancelling this order:'),
+            style: const TextStyle(fontSize: 13),
           ),
           const SizedBox(height: 12),
           ..._reasons.map(
@@ -1317,7 +1459,7 @@ class _CancelReasonDialogState extends State<_CancelReasonDialog> {
               value: r,
               groupValue: _selected,
               onChanged: (v) => setState(() => _selected = v ?? _selected),
-              title: Text(r, style: const TextStyle(fontSize: 13.5)),
+              title: Text(context.tr(r), style: const TextStyle(fontSize: 13.5)),
               contentPadding: EdgeInsets.zero,
               dense: true,
               activeColor: _kFarmerGreen,
@@ -1328,14 +1470,14 @@ class _CancelReasonDialogState extends State<_CancelReasonDialog> {
       actions: [
         TextButton(
           onPressed: () => Navigator.of(context).pop(),
-          child: const Text('Keep Order'),
+          child: Text(context.tr('Keep Order')),
         ),
         FilledButton(
           onPressed: () => Navigator.of(context).pop(_selected),
           style: FilledButton.styleFrom(
             backgroundColor: Colors.red.shade600,
           ),
-          child: const Text('Cancel Order'),
+          child: Text(context.tr('Cancel Order')),
         ),
       ],
     );
@@ -1546,7 +1688,7 @@ class _StatusBadge extends StatelessWidget {
         border: Border.all(color: fg),
       ),
       child: Text(
-        normalized.replaceAll('_', ' '),
+        context.trStatus(normalized.replaceAll('_', ' ')),
         style: TextStyle(
           color: fg,
           fontWeight: FontWeight.bold,
@@ -1581,7 +1723,7 @@ class _ErrorView extends StatelessWidget {
                 size: 56, color: theme.colorScheme.error),
             const SizedBox(height: 16),
             Text(
-              'Could not load order',
+              context.tr('Could not load order'),
               style: theme.textTheme.titleMedium
                   ?.copyWith(fontWeight: FontWeight.w600),
             ),
@@ -1596,7 +1738,7 @@ class _ErrorView extends StatelessWidget {
             OutlinedButton.icon(
               onPressed: onRetry,
               icon: const Icon(Icons.refresh),
-              label: const Text('Retry'),
+              label: Text(context.tr('Retry')),
             ),
           ],
         ),

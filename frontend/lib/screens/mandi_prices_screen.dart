@@ -1,20 +1,15 @@
 import 'dart:convert';
 
-import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:provider/provider.dart';
 
+import '../l10n/app_strings.dart';
 import '../providers/auth_provider.dart';
+import '../services/api_service.dart';
 
 /// Base URL of the FastAPI backend.
-///
-/// - Web/Chrome uses `localhost`.
-/// - Physical Android/iOS devices use your laptop's Wi-Fi IP.
-String get _kApiBaseUrl {
-  if (kIsWeb) return 'http://localhost:8000';
-  return 'http://10.28.1.142:8000';
-}
+String get _kApiBaseUrl => ApiService.baseUrl;
 
 // ---------------------------------------------------------------------------
 // Design tokens (kept local so this file has no cross-file coupling)
@@ -213,14 +208,20 @@ class _MandiPricesScreenState extends State<MandiPricesScreen> {
         });
       } else {
         setState(() {
-          _error = 'Could not load prices (HTTP ${resp.statusCode}).';
+          _error = AppStrings.tr(
+            'Could not load prices (HTTP {code}).',
+            args: {'code': '${resp.statusCode}'},
+          );
           _loading = false;
         });
       }
     } catch (e) {
       if (!mounted) return;
       setState(() {
-        _error = 'Network error: $e';
+        _error = AppStrings.tr(
+          'Network error: {err}',
+          args: {'err': '$e'},
+        );
         _loading = false;
       });
     }
@@ -257,18 +258,28 @@ class _MandiPricesScreenState extends State<MandiPricesScreen> {
   String get _emptyMessage {
     final query = _searchController.text.trim();
     final district = _selectedDistrict;
+    final districtLabel = context.tr(district);
 
     if (query.isEmpty) {
       if (district == _kAllDistrictsOption) {
-        return 'No APMC rates available right now.';
+        return context.tr('No APMC rates available right now.');
       }
-      return 'No APMC rates found in $district.';
+      return context.tr(
+        'No APMC rates found in {district}.',
+        args: {'district': districtLabel},
+      );
     }
 
     if (district == _kAllDistrictsOption) {
-      return 'No APMC rates found for "$query".';
+      return context.tr(
+        'No APMC rates found for "{query}".',
+        args: {'query': query},
+      );
     }
-    return 'No APMC rates found for "$query" in $district.';
+    return context.tr(
+      'No APMC rates found for "{query}" in {district}.',
+      args: {'query': query, 'district': districtLabel},
+    );
   }
 
   // -------------------------------------------------------------------------
@@ -280,7 +291,7 @@ class _MandiPricesScreenState extends State<MandiPricesScreen> {
     return Scaffold(
       backgroundColor: _kBackground,
       appBar: AppBar(
-        title: const Text('Mandi Prices'),
+        title: Text(context.tr('Mandi Prices')),
         backgroundColor: _kFarmerGreen,
         foregroundColor: Colors.white,
       ),
@@ -304,10 +315,10 @@ class _MandiPricesScreenState extends State<MandiPricesScreen> {
           DropdownButtonFormField<String>(
             value: _selectedDistrict,
             isExpanded: true,
-            decoration: const InputDecoration(
-              labelText: 'District',
-              border: OutlineInputBorder(),
-              prefixIcon: Icon(Icons.map_outlined),
+            decoration: InputDecoration(
+              labelText: context.tr('District'),
+              border: const OutlineInputBorder(),
+              prefixIcon: const Icon(Icons.map_outlined),
               isDense: true,
             ),
             items: <String>[
@@ -317,7 +328,7 @@ class _MandiPricesScreenState extends State<MandiPricesScreen> {
                 .map(
                   (d) => DropdownMenuItem<String>(
                     value: d,
-                    child: Text(d, overflow: TextOverflow.ellipsis),
+                    child: Text(context.tr(d), overflow: TextOverflow.ellipsis),
                   ),
                 )
                 .toList(),
@@ -332,14 +343,15 @@ class _MandiPricesScreenState extends State<MandiPricesScreen> {
             controller: _searchController,
             onChanged: (_) => setState(() {}),
             decoration: InputDecoration(
-              hintText:
-                  'Search crop (e.g., Arecanut, Pepper, Tomato...)',
+              hintText: context.tr(
+                'Search crop (e.g., Arecanut, Pepper, Tomato...)',
+              ),
               hintStyle: const TextStyle(fontSize: 13),
               prefixIcon: const Icon(Icons.search, size: 20),
               suffixIcon: _searchController.text.isNotEmpty
                   ? IconButton(
                       icon: const Icon(Icons.close, size: 18),
-                      tooltip: 'Clear',
+                      tooltip: context.tr('Clear'),
                       onPressed: () {
                         _searchController.clear();
                         setState(() {});
@@ -508,7 +520,7 @@ class _ErrorState extends StatelessWidget {
             OutlinedButton.icon(
               onPressed: onRetry,
               icon: const Icon(Icons.refresh),
-              label: const Text('Retry'),
+              label: Text(context.tr('Retry')),
             ),
           ],
         ),

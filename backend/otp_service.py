@@ -17,12 +17,10 @@ import time
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
-from config import (
-    ENABLE_REAL_EMAIL_OTP,
-    SMTP_EMAIL,
-    SMTP_PASSWORD,
-    SMTP_SERVER,
-)
+import httpx
+
+import config
+from email_templates import render_kisanrider_otp_email
 
 # Code lifetime. 5 minutes is the industry-standard sweet spot — long enough
 # that a user fumbling for their inbox doesn't time out, short enough that a
@@ -139,35 +137,32 @@ def issue_and_send_email_otp(email: str) -> dict:
     code = _generate_code()
     _store_otp(email, code)
 
-    if not ENABLE_REAL_EMAIL_OTP:
+    if not config.ENABLE_REAL_EMAIL_OTP:
         # Dev bypass — no email, no code check on verify. Return the code
         # so any caller who wants to log it can; the endpoint doesn't.
         return {"sent": False, "bypass": True, "code": code}
 
-    if not SMTP_EMAIL or not SMTP_PASSWORD:
-        # Real OTP requested but no SMTP credentials configured. Log the
-        # code (so a developer can still complete the flow from the
-        # terminal) and report `sent=False` — the caller will 502.
-        print(f"[otp] SMTP credentials missing — code for {email} is {code}")
+    if not _has_delivery_channel():
+        print(f"[otp] Email delivery credentials missing for {email}")
         return {"sent": False, "bypass": False, "code": code}
+
+    html_content, text_content = render_kisanrider_otp_email(
+        otp_code=code,
+        title="Verify Your KisanRider Account",
+        subtitle="Account Registration",
+        instruction="Please use the verification code below to complete your registration on KisanRider.",
+        expiry_minutes=5,
+    )
 
     try:
         _send_email(
             to_email=email,
             subject="KisanRider Verification Code",
-            body=(
-                "Your KisanRider verification code is:\n\n"
-                f"    {code}\n\n"
-                "This code expires in 5 minutes. If you didn't request it, "
-                "you can safely ignore this email."
-            ),
+            text_content=text_content,
+            html_content=html_content,
         )
         return {"sent": True, "bypass": False, "code": code}
     except Exception as e:
-        # Swallow the exception and surface failure as a boolean — the
-        # caller doesn't need a traceback, just "did it work". The code
-        # is logged so the developer can recover manually if this is a
-        # transient SMTP hiccup.
         print(f"[otp] Email send failed for {email}: {type(e).__name__}: {e}")
         return {"sent": False, "bypass": False, "code": code}
 
@@ -184,27 +179,27 @@ def issue_and_send_password_reset_otp(email: str) -> dict:
     code = _generate_code()
     _store_password_reset_otp(email, code)
 
-    if not ENABLE_REAL_EMAIL_OTP:
+    if not config.ENABLE_REAL_EMAIL_OTP:
         return {"sent": False, "bypass": True, "code": code}
 
-    if not SMTP_EMAIL or not SMTP_PASSWORD:
-        print(
-            f"[otp] SMTP credentials missing — password reset code for "
-            f"{email} is {code}"
-        )
+    if not _has_delivery_channel():
+        print(f"[otp] Email delivery credentials missing for password reset {email}")
         return {"sent": False, "bypass": False, "code": code}
+
+    html_content, text_content = render_kisanrider_otp_email(
+        otp_code=code,
+        title="Reset Your KisanRider Password",
+        subtitle="Password Recovery",
+        instruction="You requested to reset your password. Use the verification code below to set a new password.",
+        expiry_minutes=5,
+    )
 
     try:
         _send_email(
             to_email=email,
             subject="KisanRider Password Reset Code",
-            body=(
-                "Your KisanRider password reset code is:\n\n"
-                f"    {code}\n\n"
-                "This code expires in 5 minutes. If you didn't request a "
-                "password reset, you can safely ignore this email — your "
-                "current password will keep working."
-            ),
+            text_content=text_content,
+            html_content=html_content,
         )
         return {"sent": True, "bypass": False, "code": code}
     except Exception as e:
@@ -215,30 +210,83 @@ def issue_and_send_password_reset_otp(email: str) -> dict:
         return {"sent": False, "bypass": False, "code": code}
 
 
-def _send_email(to_email: str, subject: str, body: str) -> None:
-    """
-    Open an SMTP-over-SSL session, authenticate, and send a plaintext
-    message. Raises smtplib.SMTPException (or a subclass) on any failure,
-    including auth rejection and network timeouts.
+def _has_delivery_channel() -> bool:
+    """Return True if at least one email delivery mechanism is configured."""
+    if config.BREVO_API_KEY and (config.BREVO_SENDER_EMAIL or config.SMTP_EMAIL):
+        return True
+    if config.EMAIL_WEBHOOK_URL:
+        return True
+    return bool(config.SMTP_EMAIL and config.SMTP_PASSWORD)
 
-    Uses port 465 (implicit TLS) rather than 587 (STARTTLS). On the
-    network this was developed on, 587 with STARTTLS authenticated fine
-    but then timed out during the message body transfer, while 465 with
-    SMTP_SSL delivers reliably. Google supports both ports, so nothing
-    is lost by preferring the one that works here.
 
-    For Gmail, SMTP_PASSWORD must be a 16-character App Password with
-    spaces stripped. Using the account's regular password with 2FA
-    enabled produces SMTPAuthenticationError (535, b'5.7.8 ...').
+def _send_via_brevo(
+    to_email: str, subject: str, text_content: str, html_content: str
+) -> None:
+    sender_email = config.BREVO_SENDER_EMAIL or config.SMTP_EMAIL
+    if not sender_email:
+        raise RuntimeError("BREVO_SENDER_EMAIL or SMTP_EMAIL must be set for Brevo")
+
+    resp = httpx.post(
+        "https://api.brevo.com/v3/smtp/email",
+        headers={
+            "api-key": config.BREVO_API_KEY or "",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        },
+        json={
+            "sender": {"name": "KisanRider", "email": sender_email},
+            "to": [{"email": to_email}],
+            "subject": subject,
+            "htmlContent": html_content,
+            "textContent": text_content,
+        },
+        timeout=15.0,
+    )
+    if resp.status_code >= 400:
+        raise RuntimeError(f"Brevo API error {resp.status_code}: {resp.text}")
+
+
+def _send_via_webhook(
+    to_email: str, subject: str, text_content: str, html_content: str
+) -> None:
+    resp = httpx.post(
+        config.EMAIL_WEBHOOK_URL or "",
+        json={
+            "to": to_email,
+            "subject": subject,
+            "text": text_content,
+            "html": html_content,
+        },
+        follow_redirects=True,
+        timeout=15.0,
+    )
+    if resp.status_code >= 400:
+        raise RuntimeError(f"Email webhook error {resp.status_code}: {resp.text}")
+
+
+def _send_email(to_email: str, subject: str, text_content: str, html_content: str) -> None:
     """
-    msg = MIMEMultipart()
-    msg["From"] = SMTP_EMAIL
+    Dispatch an OTP email over HTTPS (Brevo API or Webhook when configured,
+    which works on Render Free Tier) or fall back to Gmail SMTP over SSL
+    (for local development).
+    """
+    if config.BREVO_API_KEY:
+        _send_via_brevo(to_email, subject, text_content, html_content)
+        return
+
+    if config.EMAIL_WEBHOOK_URL:
+        _send_via_webhook(to_email, subject, text_content, html_content)
+        return
+
+    msg = MIMEMultipart("alternative")
+    msg["From"] = config.SMTP_EMAIL or ""
     msg["To"] = to_email
     msg["Subject"] = subject
-    msg.attach(MIMEText(body, "plain"))
+    msg.attach(MIMEText(text_content, "plain"))
+    msg.attach(MIMEText(html_content, "html"))
 
     with smtplib.SMTP_SSL(
-        SMTP_SERVER, _SMTP_SSL_PORT, timeout=_SMTP_TIMEOUT_SECONDS
+        config.SMTP_SERVER, _SMTP_SSL_PORT, timeout=_SMTP_TIMEOUT_SECONDS
     ) as server:
-        server.login(SMTP_EMAIL, SMTP_PASSWORD)
+        server.login(config.SMTP_EMAIL or "", config.SMTP_PASSWORD or "")
         server.send_message(msg)

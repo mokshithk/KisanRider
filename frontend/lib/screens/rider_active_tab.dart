@@ -1,35 +1,24 @@
+import 'pools/rider_pool_detail_screen.dart';
 import 'dart:async';
 import 'dart:convert';
-import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
-import 'package:http_parser/http_parser.dart';
-import 'package:image_picker/image_picker.dart';
 import 'package:provider/provider.dart';
 
+import '../l10n/app_strings.dart';
 import '../providers/auth_provider.dart';
+import '../widgets/segmented_filter_bar.dart';
+import 'payment_qr_dialog.dart';
 import 'rider_common.dart';
 
 /// Statuses from which a rider may complete a delivery.
 const Set<String> _kCompletableTripStatuses = {'PICKED_UP', 'IN_TRANSIT'};
 
 /// Upload + status-PATCH timeout.
-const Duration _kUploadTimeout = Duration(seconds: 15);
-
-/// Outcome of a proof-of-delivery upload.
-class DeliveryResult {
-  const DeliveryResult.success()
-      : success = true,
-        errorMessage = null;
-
-  const DeliveryResult.failure(this.errorMessage) : success = false;
-
-  final bool success;
-  final String? errorMessage;
-}
+const Duration _kUploadTimeout = kDeliveryUploadTimeout;
 
 // ============================================================================
 // Model — mirrors the compact list shape returned by
@@ -75,6 +64,20 @@ class RiderActiveTrip {
     this.farmAddress,
     this.createdAt,
     this.completedAt,
+    this.poolId,
+    this.riderExpectedPickupAt,
+    this.pickupWindowStart,
+    this.pickupWindowEnd,
+    this.settlementId,
+    this.paymentStatus,
+    this.grossAmount,
+    this.riderFare,
+    this.platformFee,
+    this.netPayout,
+    this.ratePerKg,
+    this.rateSource,
+    this.paymentReference,
+    this.paidAt,
   });
 
   factory RiderActiveTrip.fromJson(Map<String, dynamic> json) {
@@ -102,6 +105,20 @@ class RiderActiveTrip {
       farmAddress: json['farm_address']?.toString(),
       createdAt: parseDate(json['created_at']),
       completedAt: parseDate(json['completed_at']),
+      poolId: json['pool_id']?.toString(),
+      riderExpectedPickupAt: parseDate(json['rider_expected_pickup_at']),
+      pickupWindowStart: parseDate(json['pickup_window_start']),
+      pickupWindowEnd: parseDate(json['pickup_window_end']),
+      settlementId: json['settlement_id']?.toString(),
+      paymentStatus: json['payment_status']?.toString(),
+      grossAmount: (json['gross_amount'] as num?)?.toDouble(),
+      riderFare: (json['rider_fare'] as num?)?.toDouble(),
+      platformFee: (json['platform_fee'] as num?)?.toDouble(),
+      netPayout: (json['net_payout'] as num?)?.toDouble(),
+      ratePerKg: (json['rate_per_kg'] as num?)?.toDouble(),
+      rateSource: json['rate_source']?.toString(),
+      paymentReference: json['payment_reference']?.toString(),
+      paidAt: parseDate(json['paid_at']),
     );
   }
 
@@ -141,6 +158,22 @@ class RiderActiveTrip {
 
   final DateTime? createdAt;
   final DateTime? completedAt;
+  final String? poolId;
+  final DateTime? riderExpectedPickupAt;
+  final DateTime? pickupWindowStart;
+  final DateTime? pickupWindowEnd;
+  final String? settlementId;
+  final String? paymentStatus;
+  final double? grossAmount;
+  final double? riderFare;
+  final double? platformFee;
+  final double? netPayout;
+  final double? ratePerKg;
+  final String? rateSource;
+  final String? paymentReference;
+  final DateTime? paidAt;
+
+  bool get isPaid => (paymentStatus ?? '').toUpperCase() == 'PAID';
 
   // ---------------------------------------------------------------------
   // Convenience accessors
@@ -244,7 +277,7 @@ class _RiderActiveTabState extends State<RiderActiveTab>
     (label: 'All', tag: null),
     (label: 'Accepted', tag: 'ACCEPTED'),
     (label: 'Picked Up', tag: 'PICKED_UP'),
-    (label: 'Completed', tag: 'COMPLETED'),
+    (label: 'Pooled', tag: 'POOLED'),
   ];
 
   @override
@@ -253,7 +286,18 @@ class _RiderActiveTabState extends State<RiderActiveTab>
   @override
   void initState() {
     super.initState();
+    kPaymentEventsNotifier.addListener(_onExternalPaymentEvent);
     WidgetsBinding.instance.addPostFrameCallback((_) => _fetch());
+  }
+
+  @override
+  void dispose() {
+    kPaymentEventsNotifier.removeListener(_onExternalPaymentEvent);
+    super.dispose();
+  }
+
+  void _onExternalPaymentEvent() {
+    if (mounted) _fetch();
   }
 
   Map<String, String> _headers(AuthProvider auth, {bool json = false}) {
@@ -274,7 +318,7 @@ class _RiderActiveTabState extends State<RiderActiveTab>
     if (auth.token == null) {
       setState(() {
         _isLoading = false;
-        _error = 'Not signed in.';
+        _error = AppStrings.tr('Not signed in.');
       });
       return;
     }
@@ -320,14 +364,20 @@ class _RiderActiveTabState extends State<RiderActiveTab>
       } else {
         setState(() {
           _error = _extractError(response) ??
-              'Failed to load trips (HTTP ${response.statusCode}).';
+              AppStrings.tr(
+                'Failed to load trips (HTTP {code}).',
+                args: {'code': '${response.statusCode}'},
+              );
           _isLoading = false;
         });
       }
     } catch (e) {
       if (!mounted) return;
       setState(() {
-        _error = 'Network error: $e';
+        _error = AppStrings.tr(
+          'Network error: {err}',
+          args: {'err': '$e'},
+        );
         _isLoading = false;
       });
     }
@@ -406,49 +456,32 @@ class _RiderActiveTabState extends State<RiderActiveTab>
   ) async {
     if (!_kCompletableTripStatuses.contains(trip.status)) {
       return DeliveryResult.failure(
-        'Trip must be PICKED_UP before completing '
-        '(current: ${trip.status}).',
+        AppStrings.tr(
+          'Trip must be PICKED_UP before completing (current: {status}).',
+          args: {'status': trip.status},
+        ),
       );
     }
 
     final auth = context.read<AuthProvider>();
     if (auth.token == null) {
-      return const DeliveryResult.failure('Not signed in.');
+      return DeliveryResult.failure(AppStrings.tr('Not signed in.'));
+    }
+
+    final uploaded = await uploadDeliveryProofPhoto(
+      token: auth.token!,
+      imageBytes: imageBytes,
+      sourceFilename: sourceFilename,
+      timeout: _kUploadTimeout,
+    );
+
+    if (uploaded.imageUrl == null) {
+      return DeliveryResult.failure(
+        uploaded.errorMessage ?? AppStrings.tr('Photo upload failed.'),
+      );
     }
 
     try {
-      // ----- Step 1: upload the photo -------------------------------
-      final request = http.MultipartRequest(
-        'POST',
-        Uri.parse('$kApiBaseUrl/uploads/delivery-photo'),
-      );
-      request.headers['Authorization'] = 'Bearer ${auth.token}';
-      request.headers['Accept'] = 'application/json';
-
-      final extension = _mimeSubtypeFromFilename(sourceFilename);
-
-      request.files.add(
-        http.MultipartFile.fromBytes(
-          'file',
-          imageBytes,
-          filename: 'proof.$extension',
-          contentType: MediaType('image', extension),
-        ),
-      );
-
-      final streamed = await request.send().timeout(_kUploadTimeout);
-      final uploadResp =
-          await http.Response.fromStream(streamed).timeout(_kUploadTimeout);
-
-      if (uploadResp.statusCode != 200 && uploadResp.statusCode != 201) {
-        return DeliveryResult.failure(
-          _extractErrorDetail(
-            uploadResp,
-            'Photo upload failed (HTTP ${uploadResp.statusCode}).',
-          ),
-        );
-      }
-
       // ----- Step 2: transition the trip to DELIVERED ---------------
       final patchResp = await http
           .patch(
@@ -462,7 +495,10 @@ class _RiderActiveTabState extends State<RiderActiveTab>
         return DeliveryResult.failure(
           _extractErrorDetail(
             patchResp,
-            'Could not mark trip delivered (HTTP ${patchResp.statusCode}).',
+            AppStrings.tr(
+              'Could not mark trip delivered (HTTP {code}).',
+              args: {'code': '${patchResp.statusCode}'},
+            ),
           ),
         );
       }
@@ -470,36 +506,14 @@ class _RiderActiveTabState extends State<RiderActiveTab>
       return const DeliveryResult.success();
     } on TimeoutException catch (e) {
       debugPrint('Upload Error (timeout): $e');
-      // ignore: avoid_print
-      print('Upload Error (timeout): $e');
-      return const DeliveryResult.failure(
-        'Connection timed out. Please check backend server.',
+      return DeliveryResult.failure(
+        AppStrings.tr('Connection timed out. Please check backend server.'),
       );
     } catch (e) {
       debugPrint('Upload Error: $e');
-      // ignore: avoid_print
-      print('Upload Error: $e');
-      return DeliveryResult.failure('Error: $e');
-    }
-  }
-
-  /// Maps a source filename to the MIME subtype the backend expects.
-  String _mimeSubtypeFromFilename(String filename) {
-    final lower = filename.toLowerCase();
-    final dot = lower.lastIndexOf('.');
-    if (dot == -1 || dot == lower.length - 1) return 'jpeg';
-
-    final ext = lower.substring(dot + 1);
-    switch (ext) {
-      case 'jpg':
-      case 'jpeg':
-        return 'jpeg';
-      case 'png':
-        return 'png';
-      case 'webp':
-        return 'webp';
-      default:
-        return 'jpeg';
+      return DeliveryResult.failure(
+        AppStrings.tr('Error: {err}', args: {'err': '$e'}),
+      );
     }
   }
 
@@ -545,10 +559,54 @@ class _RiderActiveTabState extends State<RiderActiveTab>
         onVerifyOtp: (otp) => _submitOtp(trip, otp),
         onCancel: () => _cancelTrip(trip),
         onMarkDelivered: () => _openDeliveryProofDialog(trip),
+        onGenerateQr: () => _openTripPaymentQr(trip),
       ),
     );
     if (!mounted) return;
     await _fetch();
+  }
+
+  Future<bool> _openTripPaymentQr(RiderActiveTrip trip) async {
+    final auth = context.read<AuthProvider>();
+    if (auth.token == null) return false;
+    final paid = await showTripPaymentQrDialog(
+      context,
+      token: auth.token!,
+      tripId: trip.id,
+    );
+    if (paid && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            context.trAsync('Payment received! Rider & Farmer accounts updated.'),
+          ),
+          backgroundColor: kRiderGreen,
+        ),
+      );
+      await _fetch();
+    }
+    return paid;
+  }
+
+  Future<void> _openPoolPaymentQr(String poolId) async {
+    final auth = context.read<AuthProvider>();
+    if (auth.token == null) return;
+    final paid = await showPoolPaymentQrDialog(
+      context,
+      token: auth.token!,
+      poolId: poolId,
+    );
+    if (paid && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            context.trAsync('Pool payment received! Auto-split complete.'),
+          ),
+          backgroundColor: kRiderGreen,
+        ),
+      );
+      await _fetch();
+    }
   }
 
   /// Shows the photo-upload proof dialog, returns `true` on a successful
@@ -560,12 +618,56 @@ class _RiderActiveTabState extends State<RiderActiveTab>
     final result = await showDialog<bool>(
       context: context,
       barrierDismissible: false,
-      builder: (_) => _DeliveryProofDialog(
+      builder: (_) => DeliveryProofDialog(
         onSubmit: (bytes, filename) =>
             _uploadProofAndDeliver(trip, bytes, filename),
       ),
     );
     return result == true;
+  }
+
+  Future<void> _openPoolDeliveryProofDialog(
+    String poolId,
+    List<RiderActiveTrip> poolTrips,
+  ) async {
+    final allPickedUp = poolTrips.isNotEmpty &&
+        poolTrips.every((t) =>
+            t.status == 'PICKED_UP' ||
+            t.status == 'COMPLETED' ||
+            t.status == 'DELIVERED');
+    final isDelivered = poolTrips.every(
+        (t) => t.status == 'COMPLETED' || t.status == 'DELIVERED');
+    if (!allPickedUp || isDelivered) return;
+
+    final auth = context.read<AuthProvider>();
+    if (auth.token == null) return;
+
+    final result = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => DeliveryProofDialog(
+        subtitleText: context.trAsync(
+          'Take a photo of the delivered pooled produce at the mandi. '
+          'This marks all pooled pickups as delivered.',
+        ),
+        onSubmit: (bytes, filename) => deliverPoolWithProof(
+          token: auth.token!,
+          poolId: poolId,
+          imageBytes: bytes,
+          sourceFilename: filename,
+        ),
+      ),
+    );
+
+    if (result == true && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(context.trAsync('Pool marked as delivered!')),
+          backgroundColor: kRiderGreen,
+        ),
+      );
+      await _fetch();
+    }
   }
 
   // -------------------------------------------------------------------------
@@ -576,6 +678,9 @@ class _RiderActiveTabState extends State<RiderActiveTab>
   List<RiderActiveTrip> get _filteredTrips {
     final tag = _filters[_activeFilterIndex].tag;
     if (tag == null) return _trips;
+    if (tag == 'POOLED') {
+      return _trips.where((t) => t.poolId != null && t.poolId!.isNotEmpty).toList(growable: false);
+    }
     return _trips.where((t) => t.status == tag).toList(growable: false);
   }
 
@@ -600,41 +705,17 @@ class _RiderActiveTabState extends State<RiderActiveTab>
   }
 
   Widget _buildFilterBar() {
-    return Container(
-      color: Colors.white,
-      padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
-      child: SingleChildScrollView(
-        scrollDirection: Axis.horizontal,
-        child: Row(
-          children: List.generate(_filters.length, (i) {
-            final selected = i == _activeFilterIndex;
-            return Padding(
-              padding: EdgeInsets.only(
-                right: i == _filters.length - 1 ? 0 : 8,
-              ),
-              child: ChoiceChip(
-                label: Text(
-                  _filters[i].label,
-                  style: TextStyle(
-                    fontSize: 13,
-                    fontWeight: FontWeight.w600,
-                    color: selected ? Colors.white : kRiderGreen,
-                  ),
-                ),
-                selected: selected,
-                onSelected: (_) =>
-                    setState(() => _activeFilterIndex = i),
-                selectedColor: kRiderGreen,
-                backgroundColor: Colors.white,
-                side: BorderSide(
-                  color: kRiderGreen.withOpacity(selected ? 0.0 : 0.4),
-                ),
-                showCheckmark: false,
-              ),
-            );
-          }),
-        ),
-      ),
+    return SegmentedFilterBar<int>(
+      options: [
+        for (int i = 0; i < _filters.length; i++)
+          SegmentedFilterOption(
+            value: i,
+            label: context.tr(_filters[i].label),
+          ),
+      ],
+      selectedValue: _activeFilterIndex,
+      onChanged: (i) => setState(() => _activeFilterIndex = i),
+      accentColor: kRiderGreen,
     );
   }
 
@@ -643,21 +724,81 @@ class _RiderActiveTabState extends State<RiderActiveTab>
       return RefreshIndicator(
         onRefresh: _fetch,
         child: ListView(
-          children: const [
-            SizedBox(height: 160),
-            Icon(
+          children: [
+            const SizedBox(height: 160),
+            const Icon(
               Icons.delivery_dining_outlined,
               size: 64,
               color: Colors.black26,
             ),
-            SizedBox(height: 12),
+            const SizedBox(height: 12),
             Center(
               child: Text(
-                'No active trips. Accept a request to get started.',
-                style: TextStyle(fontSize: 15, color: Colors.black54),
+                context.tr('No active trips. Accept a request to get started.'),
+                style: const TextStyle(fontSize: 15, color: Colors.black54),
               ),
             ),
           ],
+        ),
+      );
+    }
+
+    if (_filters[_activeFilterIndex].tag == 'POOLED') {
+      final Map<String, List<RiderActiveTrip>> poolGroups = {};
+      for (final trip in _trips) {
+        if (trip.poolId != null && trip.poolId!.isNotEmpty) {
+          poolGroups.putIfAbsent(trip.poolId!, () => []).add(trip);
+        }
+      }
+
+      if (poolGroups.isEmpty) {
+        return RefreshIndicator(
+          onRefresh: _fetch,
+          child: ListView(
+            physics: const AlwaysScrollableScrollPhysics(),
+            padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 80),
+            children: [
+              Icon(Icons.groups_outlined, size: 56, color: Colors.grey.shade400),
+              const SizedBox(height: 12),
+              Center(
+                child: Text(
+                  context.tr('No active pooled trips.'),
+                  textAlign: TextAlign.center,
+                  style: TextStyle(fontSize: 14, color: Colors.grey.shade700),
+                ),
+              ),
+            ],
+          ),
+        );
+      }
+
+      final poolIds = poolGroups.keys.toList();
+      return RefreshIndicator(
+        onRefresh: _fetch,
+        child: ListView.builder(
+          padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
+          itemCount: poolIds.length,
+          itemBuilder: (context, index) {
+            final pid = poolIds[index];
+            final poolTrips = poolGroups[pid]!;
+            return _GroupedPoolCard(
+              poolId: pid,
+              trips: poolTrips,
+              onMarkDelivered: () => _openPoolDeliveryProofDialog(pid, poolTrips),
+              onGeneratePaymentQr: () => _openPoolPaymentQr(pid),
+              onTap: () async {
+                await Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (_) => RiderPoolDetailScreen(
+                      poolId: pid,
+                      isActiveTrip: true,
+                    ),
+                  ),
+                );
+                if (mounted) _fetch();
+              },
+            );
+          },
         ),
       );
     }
@@ -680,7 +821,7 @@ class _RiderActiveTabState extends State<RiderActiveTab>
             const SizedBox(height: 12),
             Center(
               child: Text(
-                'No trips match this filter.',
+                context.tr('No trips match this filter.'),
                 textAlign: TextAlign.center,
                 style: TextStyle(
                   fontSize: 14,
@@ -726,16 +867,11 @@ class _TripCard extends StatelessWidget {
   final bool isBusy;
   final VoidCallback onTap;
 
-  static const List<String> _months = [
-    'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-    'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
-  ];
-
   /// "Oct 18, 2026" — three-letter month, comma before the year. Matches
   /// the format used on the farmer-side Order History card.
   String _formatDate(DateTime d) {
     final local = d.toLocal();
-    return '${_months[local.month - 1]} ${local.day}, ${local.year}';
+    return '${AppStrings.trShortMonth(local.month)} ${local.day}, ${local.year}';
   }
 
   @override
@@ -744,7 +880,7 @@ class _TripCard extends StatelessWidget {
 
     // Line 1: "CropName · 500 kg" + status badge
     final headerLine =
-        '${trip.cropName} · ${trip.weightKg.toStringAsFixed(0)} kg';
+        '${trip.cropName} · ${trip.weightKg.toStringAsFixed(0)} ${context.tr('kg')}';
 
     // Line 2: Dropoff label — mandi name preferred, fall back to the
     // legacy composite dropoff string.
@@ -793,6 +929,31 @@ class _TripCard extends StatelessWidget {
               ),
               const SizedBox(height: 8),
 
+              if (trip.riderExpectedPickupAt != null) ...[
+                Row(
+                  children: [
+                    const Icon(Icons.schedule, size: 14, color: kRiderGreen),
+                    const SizedBox(width: 6),
+                    Expanded(
+                      child: Text(
+                        context.tr(
+                          'Pickup: {addr}',
+                          args: {
+                            'addr': '${trip.riderExpectedPickupAt!.toLocal().day}/${trip.riderExpectedPickupAt!.toLocal().month} ${trip.riderExpectedPickupAt!.toLocal().hour.toString().padLeft(2, '0')}:${trip.riderExpectedPickupAt!.toLocal().minute.toString().padLeft(2, '0')}',
+                          },
+                        ),
+                        style: const TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
+                          color: kRiderGreen,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 4),
+              ],
+
               // ----- Line 2: dropoff ----------------------------------
               Row(
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -805,7 +966,10 @@ class _TripCard extends StatelessWidget {
                   const SizedBox(width: 6),
                   Expanded(
                     child: Text(
-                      'Dropoff: $dropoffLabel',
+                      context.tr(
+                        'Dropoff: {dropoff}',
+                        args: {'dropoff': dropoffLabel},
+                      ),
                       style: theme.textTheme.bodySmall?.copyWith(
                         color: const Color(0xFF1C1B1F),
                         fontSize: 13,
@@ -838,12 +1002,40 @@ class _TripCard extends StatelessWidget {
                       height: 14,
                       child: CircularProgressIndicator(strokeWidth: 2),
                     )
-                  else
+                  else ...[
+                    if (trip.status == 'COMPLETED')
+                      Container(
+                        margin: const EdgeInsets.only(right: 6),
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 8, vertical: 2),
+                        decoration: BoxDecoration(
+                          color: trip.isPaid
+                              ? const Color(0xFFE8F5E9)
+                              : Colors.amber.shade50,
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(
+                            color: trip.isPaid
+                                ? const Color(0xFFA5D6A7)
+                                : Colors.amber.shade300,
+                          ),
+                        ),
+                        child: Text(
+                          context.trStatus(trip.isPaid ? 'PAID' : 'QR PAY'),
+                          style: TextStyle(
+                            fontSize: 10,
+                            fontWeight: FontWeight.bold,
+                            color: trip.isPaid
+                                ? const Color(0xFF166534)
+                                : Colors.amber.shade900,
+                          ),
+                        ),
+                      ),
                     Icon(
                       Icons.chevron_right,
                       size: 16,
                       color: theme.colorScheme.onSurfaceVariant,
                     ),
+                  ],
                 ],
               ),
             ],
@@ -886,7 +1078,7 @@ class _TripStatusBadge extends StatelessWidget {
         border: Border.all(color: fg),
       ),
       child: Text(
-        label,
+        context.trStatus(label),
         style: TextStyle(
           color: fg,
           fontWeight: FontWeight.bold,
@@ -924,12 +1116,14 @@ class _TripOperationalSheet extends StatefulWidget {
     required this.onVerifyOtp,
     required this.onCancel,
     required this.onMarkDelivered,
+    required this.onGenerateQr,
   });
 
   final RiderActiveTrip trip;
   final Future<OtpSubmitResult> Function(String otp) onVerifyOtp;
   final Future<bool> Function() onCancel;
   final Future<bool> Function() onMarkDelivered;
+  final Future<bool> Function() onGenerateQr;
 
   @override
   State<_TripOperationalSheet> createState() => _TripOperationalSheetState();
@@ -939,6 +1133,8 @@ class _TripOperationalSheetState extends State<_TripOperationalSheet> {
   final TextEditingController _otpController = TextEditingController();
 
   bool _isSubmitting = false;
+  bool _deliveredNow = false;
+  bool _paidNow = false;
   String? _error;
 
   @override
@@ -954,7 +1150,7 @@ class _TripOperationalSheetState extends State<_TripOperationalSheet> {
   Future<void> _verifyOtp() async {
     final otp = _otpController.text.trim();
     if (otp.length != 4) {
-      setState(() => _error = 'Enter the 4-digit OTP.');
+      setState(() => _error = AppStrings.tr('Enter the 4-digit OTP.'));
       return;
     }
 
@@ -974,8 +1170,8 @@ class _TripOperationalSheetState extends State<_TripOperationalSheet> {
     setState(() {
       _isSubmitting = false;
       _error = result == OtpSubmitResult.invalidOtp
-          ? 'Invalid OTP. Please check with the farmer.'
-          : 'Could not verify OTP. Please try again.';
+          ? AppStrings.tr('Invalid OTP. Please check with the farmer.')
+          : AppStrings.tr('Could not verify OTP. Please try again.');
     });
   }
 
@@ -983,23 +1179,25 @@ class _TripOperationalSheetState extends State<_TripOperationalSheet> {
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (dialogCtx) => AlertDialog(
-        title: const Text('Cancel this trip?'),
-        content: const Text(
-          'The farmer will be notified and the request will go back to '
-          'the Available feed for another rider to accept. This cannot '
-          'be undone.',
+        title: Text(dialogCtx.tr('Cancel this trip?')),
+        content: Text(
+          dialogCtx.tr(
+            'The farmer will be notified and the request will go back to '
+            'the Available feed for another rider to accept. This cannot '
+            'be undone.',
+          ),
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(dialogCtx).pop(false),
-            child: const Text('Keep Trip'),
+            child: Text(dialogCtx.tr('Keep Trip')),
           ),
           FilledButton(
             onPressed: () => Navigator.of(dialogCtx).pop(true),
             style: FilledButton.styleFrom(
               backgroundColor: Colors.red.shade600,
             ),
-            child: const Text('Cancel Trip'),
+            child: Text(dialogCtx.tr('Cancel Trip')),
           ),
         ],
       ),
@@ -1021,7 +1219,9 @@ class _TripOperationalSheetState extends State<_TripOperationalSheet> {
 
     setState(() {
       _isSubmitting = false;
-      _error = 'Could not cancel the trip. Please try again.';
+      _error = AppStrings.tr(
+        'Could not cancel the trip. Please try again.',
+      );
     });
   }
 
@@ -1035,7 +1235,12 @@ class _TripOperationalSheetState extends State<_TripOperationalSheet> {
     if (!mounted) return;
 
     if (success) {
-      Navigator.of(context).pop();
+      // Transition in-place to Delivered so the QR payment button
+      // immediately replaces "Mark as Delivered".
+      setState(() {
+        _isSubmitting = false;
+        _deliveredNow = true;
+      });
       return;
     }
 
@@ -1043,6 +1248,19 @@ class _TripOperationalSheetState extends State<_TripOperationalSheet> {
     // the user probably cancelled the dialog. Just reset the loading
     // state without surfacing an error.
     setState(() => _isSubmitting = false);
+  }
+
+  Future<void> _generateQr() async {
+    setState(() {
+      _isSubmitting = true;
+      _error = null;
+    });
+    final paid = await widget.onGenerateQr();
+    if (!mounted) return;
+    setState(() {
+      _isSubmitting = false;
+      if (paid) _paidNow = true;
+    });
   }
 
   // -------------------------------------------------------------------------
@@ -1092,7 +1310,7 @@ class _TripOperationalSheetState extends State<_TripOperationalSheet> {
                         children: [
                           Text(
                             '${widget.trip.cropName} · '
-                            '${widget.trip.weightKg.toStringAsFixed(0)} kg',
+                            '${widget.trip.weightKg.toStringAsFixed(0)} ${context.tr('kg')}',
                             style: theme.textTheme.titleLarge?.copyWith(
                               fontWeight: FontWeight.bold,
                             ),
@@ -1110,15 +1328,17 @@ class _TripOperationalSheetState extends State<_TripOperationalSheet> {
                       ),
                     ),
                     const SizedBox(width: 8),
-                    _TripStatusBadge(status: widget.trip.status),
+                    _TripStatusBadge(
+                      status: _deliveredNow ? 'COMPLETED' : widget.trip.status,
+                    ),
                   ],
                 ),
                 const SizedBox(height: 16),
 
                 // ----- State-specific body --------------------------
-                if (widget.trip.status == 'ACCEPTED')
+                if (!_deliveredNow && widget.trip.status == 'ACCEPTED')
                   _buildAcceptedBody(theme)
-                else if (widget.trip.status == 'PICKED_UP')
+                else if (!_deliveredNow && widget.trip.status == 'PICKED_UP')
                   _buildPickedUpBody(theme)
                 else
                   _buildCompletedBody(theme),
@@ -1168,9 +1388,58 @@ class _TripOperationalSheetState extends State<_TripOperationalSheet> {
   // -------------------------------------------------------------------------
 
   Widget _buildAcceptedBody(ThemeData theme) {
+    final exp = widget.trip.riderExpectedPickupAt?.toLocal();
+    final winStart = widget.trip.pickupWindowStart?.toLocal();
+    final winEnd = widget.trip.pickupWindowEnd?.toLocal();
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
+        if (exp != null || winEnd != null) ...[
+          Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: Colors.blue.shade50,
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: Colors.blue.shade200),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                if (exp != null)
+                  Row(
+                    children: [
+                      Icon(Icons.schedule, size: 16, color: Colors.blue.shade800),
+                      const SizedBox(width: 8),
+                      Text(
+                        context.tr(
+                          'Expected Pickup: {time}',
+                          args: {
+                            'time': '${exp.day}/${exp.month} ${context.tr('at')} ${exp.hour.toString().padLeft(2, '0')}:${exp.minute.toString().padLeft(2, '0')}',
+                          },
+                        ),
+                        style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Colors.blue.shade900),
+                      ),
+                    ],
+                  ),
+                if (winStart != null && winEnd != null) ...[
+                  const SizedBox(height: 4),
+                  Text(
+                    context.tr(
+                      'Pickup Window: {window}',
+                      args: {
+                        'window': '${winStart.day}/${winStart.month} ${winStart.hour.toString().padLeft(2, '0')}:${winStart.minute.toString().padLeft(2, '0')} — ${winEnd.day}/${winEnd.month} ${winEnd.hour.toString().padLeft(2, '0')}:${winEnd.minute.toString().padLeft(2, '0')}',
+                      },
+                    ),
+                    style: TextStyle(fontSize: 12, color: Colors.blue.shade800),
+                  ),
+                ],
+              ],
+            ),
+          ),
+          const SizedBox(height: 14),
+        ],
+
         // ----- Farmer contact card -----------------------------------
         _FarmerContactCard(trip: widget.trip),
 
@@ -1178,7 +1447,7 @@ class _TripOperationalSheetState extends State<_TripOperationalSheet> {
 
         // ----- Pickup OTP input --------------------------------------
         Text(
-          'PICKUP VERIFICATION',
+          context.tr('PICKUP VERIFICATION'),
           style: theme.textTheme.labelMedium?.copyWith(
             color: const Color(0xFF6B7280),
             fontWeight: FontWeight.w700,
@@ -1200,9 +1469,9 @@ class _TripOperationalSheetState extends State<_TripOperationalSheet> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              const Text(
-                'Ask the farmer for the 4-digit code on their screen.',
-                style: TextStyle(
+              Text(
+                context.tr('Ask the farmer for the 4-digit code on their screen.'),
+                style: const TextStyle(
                   fontSize: 12.5,
                   color: Color(0xFF8A5A00),
                 ),
@@ -1264,7 +1533,7 @@ class _TripOperationalSheetState extends State<_TripOperationalSheet> {
                         )
                       : const Icon(Icons.check, size: 18),
                   label: Text(
-                    _isSubmitting ? 'Verifying…' : 'Verify OTP',
+                    context.tr(_isSubmitting ? 'Verifying…' : 'Verify OTP'),
                   ),
                 ),
               ),
@@ -1288,7 +1557,7 @@ class _TripOperationalSheetState extends State<_TripOperationalSheet> {
             ),
           ),
           icon: const Icon(Icons.close, size: 18),
-          label: const Text('Reject / Cancel Trip'),
+          label: Text(context.tr('Reject / Cancel Trip')),
         ),
       ],
     );
@@ -1328,7 +1597,7 @@ class _TripOperationalSheetState extends State<_TripOperationalSheet> {
                   ),
                   const SizedBox(width: 8),
                   Text(
-                    'Dropoff — Mandi Unloading',
+                    context.tr('Dropoff — Mandi Unloading'),
                     style: theme.textTheme.titleSmall?.copyWith(
                       fontWeight: FontWeight.bold,
                       color: kRiderGreen,
@@ -1339,14 +1608,14 @@ class _TripOperationalSheetState extends State<_TripOperationalSheet> {
               const SizedBox(height: 12),
               _SheetInfoRow(
                 icon: Icons.place_outlined,
-                label: 'Mandi',
+                label: context.tr('Mandi'),
                 value: dropoffDisplay,
               ),
               if (stall.isNotEmpty) ...[
                 const SizedBox(height: 8),
                 _SheetInfoRow(
                   icon: Icons.tag,
-                  label: 'Stall',
+                  label: context.tr('Stall'),
                   value: stall,
                 ),
               ],
@@ -1368,7 +1637,7 @@ class _TripOperationalSheetState extends State<_TripOperationalSheet> {
                     padding: const EdgeInsets.symmetric(vertical: 10),
                   ),
                   icon: const Icon(Icons.navigation_outlined, size: 18),
-                  label: const Text('Navigate to Mandi'),
+                  label: Text(context.tr('Navigate to Mandi')),
                 ),
               ),
             ],
@@ -1398,7 +1667,7 @@ class _TripOperationalSheetState extends State<_TripOperationalSheet> {
               const SizedBox(width: 8),
               Expanded(
                 child: Text(
-                  'Cancellation is locked after pickup verification.',
+                  context.tr('Cancellation is locked after pickup verification.'),
                   style: theme.textTheme.bodySmall?.copyWith(
                     color: Colors.grey.shade800,
                   ),
@@ -1433,9 +1702,11 @@ class _TripOperationalSheetState extends State<_TripOperationalSheet> {
                 )
               : const Icon(Icons.check_circle_outline, size: 20),
           label: Text(
-            _isSubmitting
-                ? 'Completing…'
-                : '✅ Mark as Delivered / Unloaded',
+            context.tr(
+              _isSubmitting
+                  ? 'Completing…'
+                  : '✅ Mark as Delivered / Unloaded',
+            ),
           ),
         ),
       ],
@@ -1449,6 +1720,11 @@ class _TripOperationalSheetState extends State<_TripOperationalSheet> {
   Widget _buildCompletedBody(ThemeData theme) {
     final mandi = (widget.trip.dropoffMandi ?? '').trim();
     final completedAt = widget.trip.completedAt;
+    final isPaid = widget.trip.isPaid || _paidNow;
+    final gross = widget.trip.grossAmount;
+    final riderFare = widget.trip.riderFare;
+    final platformFee = widget.trip.platformFee;
+    final netPayout = widget.trip.netPayout;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -1471,11 +1747,15 @@ class _TripOperationalSheetState extends State<_TripOperationalSheet> {
                     size: 22,
                   ),
                   const SizedBox(width: 8),
-                  Text(
-                    'Delivery Complete',
-                    style: theme.textTheme.titleSmall?.copyWith(
-                      fontWeight: FontWeight.bold,
-                      color: const Color(0xFF166534),
+                  Expanded(
+                    child: Text(
+                      context.tr(
+                        isPaid ? 'Delivery & Payment Complete' : 'Delivery Complete',
+                      ),
+                      style: theme.textTheme.titleSmall?.copyWith(
+                        fontWeight: FontWeight.bold,
+                        color: const Color(0xFF166534),
+                      ),
                     ),
                   ),
                 ],
@@ -1483,77 +1763,171 @@ class _TripOperationalSheetState extends State<_TripOperationalSheet> {
               const SizedBox(height: 12),
               _SheetInfoRow(
                 icon: Icons.eco_outlined,
-                label: 'Crop',
+                label: context.tr('Crop'),
                 value: '${widget.trip.cropName} · '
-                    '${widget.trip.weightKg.toStringAsFixed(0)} kg',
+                    '${widget.trip.weightKg.toStringAsFixed(0)} ${context.tr('kg')}',
               ),
               const SizedBox(height: 8),
               _SheetInfoRow(
                 icon: Icons.storefront_outlined,
-                label: 'Delivered to',
+                label: context.tr('Delivered to'),
                 value: mandi.isNotEmpty ? mandi : '—',
               ),
               if (completedAt != null) ...[
                 const SizedBox(height: 8),
                 _SheetInfoRow(
                   icon: Icons.schedule_outlined,
-                  label: 'Completed on',
+                  label: context.tr('Completed on'),
                   value: _formatCompletedAt(completedAt),
                 ),
               ],
               const SizedBox(height: 8),
               _SheetInfoRow(
                 icon: Icons.receipt_long_outlined,
-                label: 'Reference',
+                label: context.tr('Reference'),
                 value: widget.trip.shortRef,
               ),
+              if (widget.trip.paymentReference != null) ...[
+                const SizedBox(height: 8),
+                _SheetInfoRow(
+                  icon: Icons.qr_code_2_outlined,
+                  label: context.tr('Payment Ref'),
+                  value: widget.trip.paymentReference!,
+                ),
+              ],
             ],
           ),
         ),
-        const SizedBox(height: 20),
-        Container(
-          padding: const EdgeInsets.symmetric(
-            horizontal: 12,
-            vertical: 10,
+        if (gross != null) ...[
+          const SizedBox(height: 14),
+          Container(
+            padding: const EdgeInsets.all(14),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(color: Colors.grey.shade200),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        context.tr('PAYMENT BREAKDOWN'),
+                        style: const TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w700,
+                          color: Color(0xFF6B7280),
+                          letterSpacing: 0.8,
+                        ),
+                      ),
+                    ),
+                    Text(
+                      context.trStatus(isPaid ? 'PAID ✅' : 'PENDING QR'),
+                      style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.bold,
+                        color: isPaid ? kRiderGreen : Colors.amber.shade900,
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                _SheetInfoRow(
+                  icon: Icons.payments_outlined,
+                  label: context.tr('Total Value'),
+                  value: formatIndianRupees(gross),
+                ),
+                if (riderFare != null)
+                  _SheetInfoRow(
+                    icon: Icons.local_shipping_outlined,
+                    label: context.tr('Rider Fare'),
+                    value: formatIndianRupees(riderFare),
+                  ),
+                if (platformFee != null)
+                  _SheetInfoRow(
+                    icon: Icons.account_balance_outlined,
+                    label: context.tr('Platform Fee'),
+                    value: formatIndianRupees(platformFee),
+                  ),
+                if (netPayout != null)
+                  _SheetInfoRow(
+                    icon: Icons.agriculture_outlined,
+                    label: context.tr('Farmer Gets'),
+                    value: formatIndianRupees(netPayout),
+                  ),
+              ],
+            ),
           ),
-          decoration: BoxDecoration(
-            color: Colors.grey.shade100,
-            borderRadius: BorderRadius.circular(10),
-            border: Border.all(color: Colors.grey.shade300),
-          ),
-          child: Row(
-            children: [
-              Icon(
-                Icons.lock_outline,
-                size: 16,
-                color: Colors.grey.shade700,
+        ],
+        const SizedBox(height: 16),
+        if (!isPaid)
+          FilledButton.icon(
+            onPressed: _isSubmitting ? null : _generateQr,
+            style: FilledButton.styleFrom(
+              backgroundColor: kRiderGreen,
+              padding: const EdgeInsets.symmetric(vertical: 15),
+              textStyle: const TextStyle(
+                fontSize: 14.5,
+                fontWeight: FontWeight.w700,
+                letterSpacing: 0.4,
               ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Text(
-                  'This trip is closed. Full earnings live under '
-                  'Trip History in your Account.',
-                  style: theme.textTheme.bodySmall?.copyWith(
-                    color: Colors.grey.shade800,
+            ),
+            icon: _isSubmitting
+                ? const SizedBox(
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      color: Colors.white,
+                    ),
+                  )
+                : const Icon(Icons.qr_code_2_rounded, size: 22),
+            label: Text(context.tr('Generate Payment QR')),
+          )
+        else
+          Container(
+            padding: const EdgeInsets.symmetric(
+              horizontal: 12,
+              vertical: 12,
+            ),
+            decoration: BoxDecoration(
+              color: const Color(0xFFE8F5E9),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: const Color(0xFFA5D6A7)),
+            ),
+            child: Row(
+              children: [
+                const Icon(
+                  Icons.check_circle,
+                  size: 18,
+                  color: Color(0xFF166534),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    context.tr(
+                      'Payment done! Earnings updated under your Earnings tab.',
+                    ),
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: const Color(0xFF166534),
+                      fontWeight: FontWeight.w600,
+                    ),
                   ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
-        ),
       ],
     );
   }
 
   String _formatCompletedAt(DateTime d) {
-    const months = [
-      'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-      'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
-    ];
     final local = d.toLocal();
     final hh = local.hour.toString().padLeft(2, '0');
     final mm = local.minute.toString().padLeft(2, '0');
-    return '${local.day} ${months[local.month - 1]} ${local.year} · $hh:$mm';
+    return '${local.day} ${AppStrings.trShortMonth(local.month)} ${local.year} · $hh:$mm';
   }
 }
 
@@ -1573,7 +1947,7 @@ class _FarmerContactCard extends StatelessWidget {
     final name = (trip.farmerFullName != null &&
             trip.farmerFullName!.trim().isNotEmpty)
         ? trip.farmerFullName!.trim()
-        : 'Farmer';
+        : context.tr('Farmer');
 
     final pickup = (trip.pickupAddress != null &&
             trip.pickupAddress!.trim().isNotEmpty)
@@ -1601,7 +1975,7 @@ class _FarmerContactCard extends StatelessWidget {
               ),
               const SizedBox(width: 8),
               Text(
-                'Farmer Contact',
+                context.tr('Farmer Contact'),
                 style: theme.textTheme.titleSmall?.copyWith(
                   fontWeight: FontWeight.bold,
                   color: kRiderGreen,
@@ -1694,7 +2068,7 @@ class _FarmerContactCard extends StatelessWidget {
                   ),
                 ),
                 icon: const Icon(Icons.phone, size: 18),
-                label: const Text('📞 CALL FARMER'),
+                label: Text(context.tr('📞 CALL FARMER')),
               ),
             ),
           ],
@@ -1751,269 +2125,240 @@ class _SheetInfoRow extends StatelessWidget {
 }
 
 // ============================================================================
-// Delivery proof-of-photo dialog
+// Grouped Pool Card for Active Trips
 // ============================================================================
 
-class _DeliveryProofDialog extends StatefulWidget {
-  const _DeliveryProofDialog({required this.onSubmit});
+class _GroupedPoolCard extends StatelessWidget {
+  const _GroupedPoolCard({
+    required this.poolId,
+    required this.trips,
+    required this.onTap,
+    required this.onMarkDelivered,
+    required this.onGeneratePaymentQr,
+  });
 
-  final Future<DeliveryResult> Function(
-    Uint8List photoBytes,
-    String sourceFilename,
-  ) onSubmit;
-
-  @override
-  State<_DeliveryProofDialog> createState() => _DeliveryProofDialogState();
-}
-
-class _DeliveryProofDialogState extends State<_DeliveryProofDialog> {
-  final ImagePicker _picker = ImagePicker();
-
-  XFile? _pickedFile;
-  Uint8List? _imageBytes;
-
-  bool _isUploading = false;
-  String? _error;
-
-  Future<void> _pick(ImageSource source) async {
-    try {
-      final picked = await _picker.pickImage(
-        source: source,
-        maxWidth: 1600,
-        imageQuality: 85,
-      );
-      if (picked == null) return;
-
-      final bytes = await picked.readAsBytes();
-      if (!mounted) return;
-
-      setState(() {
-        _pickedFile = picked;
-        _imageBytes = bytes;
-        _error = null;
-      });
-    } catch (e) {
-      if (!mounted) return;
-      final hint = kIsWeb
-          ? ' (if using Camera, try Gallery instead — browsers often block '
-              'camera access on non-HTTPS origins or desktops without a webcam)'
-          : '';
-      setState(() => _error = 'Could not pick image: $e$hint');
-    }
-  }
-
-  Future<void> _submit() async {
-    final bytes = _imageBytes;
-    if (bytes == null || bytes.isEmpty) {
-      setState(() => _error = 'Please attach a photo first.');
-      return;
-    }
-
-    setState(() {
-      _isUploading = true;
-      _error = null;
-    });
-
-    final filename = _pickedFile?.name ?? 'proof.jpg';
-
-    try {
-      final result = await widget.onSubmit(bytes, filename);
-
-      if (!mounted) return;
-
-      if (result.success) {
-        Navigator.of(context).pop(true);
-        return;
-      }
-
-      setState(() {
-        _error = result.errorMessage ??
-            'Could not complete delivery. Please try again.';
-      });
-    } catch (e) {
-      debugPrint('Dialog submit error: $e');
-      // ignore: avoid_print
-      print('Dialog submit error: $e');
-      if (!mounted) return;
-      setState(() => _error = 'Error: $e');
-    } finally {
-      if (mounted) {
-        setState(() => _isUploading = false);
-      }
-    }
-  }
+  final String poolId;
+  final List<RiderActiveTrip> trips;
+  final VoidCallback onTap;
+  final VoidCallback onMarkDelivered;
+  final VoidCallback onGeneratePaymentQr;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final cropName =
+        trips.isNotEmpty ? trips.first.cropName : context.tr('Produce');
+    final totalWeight = trips.fold<double>(0.0, (acc, t) => acc + t.weightKg);
+    final totalFarmers = trips.length;
+    final completedPickups = trips
+        .where((t) =>
+            t.status == 'PICKED_UP' ||
+            t.status == 'COMPLETED' ||
+            t.status == 'DELIVERED')
+        .length;
+    final dropoff = trips.isNotEmpty
+        ? (trips.first.dropoffMandi ?? context.tr('Mandi Destination'))
+        : '—';
+    final isDelivered =
+        trips.isNotEmpty && trips.every((t) => t.status == 'COMPLETED' || t.status == 'DELIVERED');
+    final allPaid =
+        trips.isNotEmpty && trips.every((t) => t.isPaid);
+    final allPickedUp = totalFarmers > 0 && completedPickups == totalFarmers;
 
-    return AlertDialog(
-      title: const Text('Upload Delivery Proof'),
-      content: SizedBox(
-        width: 320,
-        child: SingleChildScrollView(
+    return Card(
+      elevation: 1,
+      margin: const EdgeInsets.only(bottom: 12),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.all(16),
           child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.stretch,
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const Text(
-                'Take a photo of the delivered crates at the mandi. '
-                'This is required before the trip can be completed.',
-                style: TextStyle(fontSize: 13),
-              ),
-              const SizedBox(height: 16),
-
-              if (_imageBytes == null)
-                Container(
-                  height: 180,
-                  decoration: BoxDecoration(
-                    color: theme.colorScheme.surfaceContainerHighest
-                        .withOpacity(0.4),
-                    borderRadius: BorderRadius.circular(12),
-                    border: Border.all(color: Colors.grey.shade300),
-                  ),
-                  child: const Center(
-                    child: Icon(
-                      Icons.image_outlined,
-                      size: 48,
-                      color: Colors.black26,
-                    ),
-                  ),
-                )
-              else
-                ClipRRect(
-                  borderRadius: BorderRadius.circular(12),
-                  child: Image.memory(
-                    _imageBytes!,
-                    height: 200,
-                    width: 320,
-                    fit: BoxFit.cover,
-                    gaplessPlayback: true,
-                    errorBuilder: (_, __, ___) => Container(
-                      height: 200,
-                      width: 320,
-                      color: Colors.grey.shade200,
-                      alignment: Alignment.center,
-                      child: const Icon(
-                        Icons.broken_image_outlined,
-                        size: 48,
-                        color: Colors.black26,
-                      ),
-                    ),
-                  ),
-                ),
-
-              const SizedBox(height: 12),
-
               Row(
                 children: [
                   Expanded(
-                    child: OutlinedButton.icon(
-                      onPressed: _isUploading
-                          ? null
-                          : () => _pick(ImageSource.camera),
-                      icon: const Icon(
-                        Icons.camera_alt_outlined,
-                        size: 18,
+                    child: Text(
+                      context.tr(
+                        '{crop} (Pooled Trip)',
+                        args: {'crop': cropName},
                       ),
-                      label: const Text('Camera'),
+                      style: theme.textTheme.titleMedium?.copyWith(
+                        fontWeight: FontWeight.bold,
+                        color: const Color(0xFF1C1B1F),
+                      ),
                     ),
                   ),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: OutlinedButton.icon(
-                      onPressed: _isUploading
-                          ? null
-                          : () => _pick(ImageSource.gallery),
-                      icon: const Icon(
-                        Icons.photo_library_outlined,
-                        size: 18,
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: kRiderGreen.withValues(alpha: 0.12),
+                      borderRadius: BorderRadius.circular(20),
+                      border: Border.all(color: kRiderGreen),
+                    ),
+                    child: Text(
+                      context.trStatus(isDelivered ? 'DELIVERED' : 'ACTIVE POOL'),
+                      style: const TextStyle(
+                        color: kRiderGreen,
+                        fontWeight: FontWeight.bold,
+                        fontSize: 11,
                       ),
-                      label: const Text('Gallery'),
                     ),
                   ),
                 ],
               ),
-
-              if (_isUploading) ...[
-                const SizedBox(height: 16),
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    const SizedBox(
-                      width: 18,
-                      height: 18,
-                      child: CircularProgressIndicator(strokeWidth: 2),
+              const SizedBox(height: 12),
+              Row(
+                children: [
+                  const Icon(Icons.inventory_2_outlined, size: 16, color: Colors.grey),
+                  const SizedBox(width: 6),
+                  Text(
+                    context.tr(
+                      'Combined: {weight} kg',
+                      args: {'weight': totalWeight.toStringAsFixed(0)},
                     ),
-                    const SizedBox(width: 10),
-                    Text(
-                      'Uploading proof of delivery…',
-                      style: theme.textTheme.bodySmall,
+                    style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
+                  ),
+                  const Spacer(),
+                  const Icon(Icons.people_alt_outlined, size: 16, color: Colors.grey),
+                  const SizedBox(width: 6),
+                  Text(
+                    context.tr(
+                      '{count} Farmer Pickups',
+                      args: {'count': '$totalFarmers'},
                     ),
-                  ],
+                    style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              Row(
+                children: [
+                  const Icon(Icons.check_circle_outline, size: 16, color: Colors.blue),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text(
+                      context.tr(
+                        'Pickup Progress: {done} of {total} completed',
+                        args: {
+                          'done': '$completedPickups',
+                          'total': '$totalFarmers',
+                        },
+                      ),
+                      style: TextStyle(
+                        fontSize: 12.5,
+                        color: completedPickups == totalFarmers ? kRiderGreen : Colors.blue.shade800,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              Row(
+                children: [
+                  const Icon(Icons.storefront_outlined, size: 16, color: Colors.grey),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text(
+                      context.tr(
+                        'Destination: {dropoff}',
+                        args: {'dropoff': dropoff},
+                      ),
+                      style: const TextStyle(fontSize: 12.5, color: Colors.black87),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                ],
+              ),
+              if (allPickedUp && !isDelivered) ...[
+                const SizedBox(height: 12),
+                SizedBox(
+                  width: double.infinity,
+                  child: FilledButton.icon(
+                    onPressed: onMarkDelivered,
+                    icon: const Icon(Icons.check_circle_outline, size: 18),
+                    label: Text(
+                      context.tr('✅ Mark as Delivered / Unloaded'),
+                      style: const TextStyle(fontWeight: FontWeight.bold),
+                    ),
+                    style: FilledButton.styleFrom(
+                      backgroundColor: kRiderGreen,
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                    ),
+                  ),
                 ),
-              ],
-
-              if (_error != null) ...[
+              ] else if (isDelivered && !allPaid) ...[
+                const SizedBox(height: 12),
+                SizedBox(
+                  width: double.infinity,
+                  child: FilledButton.icon(
+                    onPressed: onGeneratePaymentQr,
+                    icon: const Icon(Icons.qr_code_2_rounded, size: 19),
+                    label: Text(
+                      context.tr('Generate Payment QR'),
+                      style: const TextStyle(fontWeight: FontWeight.bold),
+                    ),
+                    style: FilledButton.styleFrom(
+                      backgroundColor: kRiderGreen,
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                    ),
+                  ),
+                ),
+              ] else if (isDelivered && allPaid) ...[
                 const SizedBox(height: 12),
                 Container(
-                  padding: const EdgeInsets.all(10),
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                   decoration: BoxDecoration(
-                    color: theme.colorScheme.errorContainer
-                        .withOpacity(0.4),
-                    borderRadius: BorderRadius.circular(8),
+                    color: const Color(0xFFE8F5E9),
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(color: const Color(0xFFA5D6A7)),
                   ),
                   child: Row(
-                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisAlignment: MainAxisAlignment.center,
                     children: [
-                      Icon(
-                        Icons.error_outline,
-                        size: 16,
-                        color: theme.colorScheme.error,
-                      ),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: Text(
-                          _error!,
-                          style: TextStyle(
-                            color: theme.colorScheme.error,
-                            fontSize: 12,
-                          ),
+                      const Icon(Icons.check_circle, size: 16, color: Color(0xFF166534)),
+                      const SizedBox(width: 6),
+                      Text(
+                        context.tr('Payment Done ✅'),
+                        style: const TextStyle(
+                          fontSize: 12.5,
+                          fontWeight: FontWeight.bold,
+                          color: Color(0xFF166534),
                         ),
                       ),
                     ],
                   ),
                 ),
               ],
+              const SizedBox(height: 12),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.end,
+                children: [
+                  Text(
+                    context.tr('Tap to view map & stops'),
+                    style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                      color: kRiderGreen,
+                    ),
+                  ),
+                  const SizedBox(width: 4),
+                  const Icon(Icons.chevron_right, size: 16, color: kRiderGreen),
+                ],
+              ),
             ],
           ),
         ),
       ),
-      actionsPadding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
-      actions: [
-        TextButton(
-          onPressed:
-              _isUploading ? null : () => Navigator.of(context).pop(),
-          child: const Text('Cancel'),
-        ),
-        FilledButton.icon(
-          onPressed: _isUploading ? null : _submit,
-          icon: _isUploading
-              ? const SizedBox(
-                  width: 16,
-                  height: 16,
-                  child: CircularProgressIndicator(
-                    strokeWidth: 2,
-                    color: Colors.white,
-                  ),
-                )
-              : const Icon(Icons.check, size: 18),
-          label: Text(
-            _isUploading ? 'Uploading…' : 'Upload Proof of Delivery',
-          ),
-          style: FilledButton.styleFrom(backgroundColor: kRiderGreen),
-        ),
-      ],
     );
   }
 }

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../l10n/app_strings.dart';
 import '../providers/auth_provider.dart';
 import 'rider_common.dart';
 
@@ -35,7 +36,7 @@ class RiderAccountTab extends StatelessWidget {
               ),
               const SizedBox(height: 24),
               Text(
-                'Account Settings',
+                context.tr('Account Settings'),
                 style: theme.textTheme.titleLarge?.copyWith(
                   fontWeight: FontWeight.w600,
                 ),
@@ -43,7 +44,7 @@ class RiderAccountTab extends StatelessWidget {
               ),
               const SizedBox(height: 8),
               Text(
-                'Driver Profile features coming soon',
+                context.tr('Driver Profile features coming soon'),
                 style: theme.textTheme.bodyMedium?.copyWith(
                   color: theme.colorScheme.onSurfaceVariant,
                 ),
@@ -61,7 +62,7 @@ class RiderAccountTab extends StatelessWidget {
                   ),
                 ),
                 icon: const Icon(Icons.logout),
-                label: const Text('Log Out'),
+                label: Text(context.tr('Log Out')),
               ),
             ],
           ),

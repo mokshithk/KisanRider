@@ -10,7 +10,6 @@ import {
   IndianRupee,
   RefreshCw,
   AlertCircle,
-  ArrowUpRight,
 } from 'lucide-react';
 import {
   ResponsiveContainer,
@@ -31,7 +30,7 @@ import { adminService } from '../services/adminService';
 import StatCard from '../components/common/StatCard';
 import Badge from '../components/common/Badge';
 
-const PIE_COLORS = ['#173D2C', '#23533D', '#3B82F6', '#10B981', '#F59E0B', '#EF4444', '#6B7280'];
+const PIE_COLORS = ['#173D2C', '#23533D', '#0284C7', '#10B981', '#F59E0B', '#EF4444', '#64748B'];
 
 export default function Dashboard() {
   const [data, setData] = useState(null);
@@ -60,7 +59,7 @@ export default function Dashboard() {
     return (
       <div className="flex items-center justify-center py-24">
         <div className="flex flex-col items-center space-y-3">
-          <RefreshCw className="w-8 h-8 text-forest animate-spin" />
+          <RefreshCw className="w-7 h-7 text-forest animate-spin" />
           <p className="text-xs font-medium text-text-secondary">Loading operational data...</p>
         </div>
       </div>
@@ -69,13 +68,13 @@ export default function Dashboard() {
 
   if (error && !data) {
     return (
-      <div className="bg-white rounded-lg border border-surface-border p-8 text-center max-w-lg mx-auto mt-12">
+      <div className="bg-white rounded-xl border border-surface-border p-8 text-center max-w-lg mx-auto mt-12 shadow-xs">
         <AlertCircle className="w-10 h-10 text-rose-600 mx-auto mb-3" />
         <h3 className="text-base font-bold text-text-primary">Unable to load dashboard</h3>
-        <p className="text-xs text-text-secondary mt-1 mb-4">{error}</p>
+        <p className="text-xs text-text-secondary mt-1 mb-5">{error}</p>
         <button
           onClick={fetchStats}
-          className="px-4 py-2 text-xs font-semibold rounded bg-forest text-white hover:bg-forest-light transition-colors"
+          className="px-4 py-2 text-xs font-semibold rounded-lg bg-forest text-white hover:bg-forest-light transition-colors shadow-xs"
         >
           Retry Connection
         </button>
@@ -104,7 +103,7 @@ export default function Dashboard() {
         <button
           onClick={fetchStats}
           disabled={loading}
-          className="inline-flex items-center space-x-2 px-3 py-1.5 rounded border border-surface-border bg-white text-xs font-medium text-text-primary hover:bg-surface-subtle transition-colors shadow-xs"
+          className="inline-flex items-center space-x-2 px-3.5 py-2 rounded-lg border border-surface-border bg-white text-xs font-medium text-text-primary hover:bg-surface-subtle transition-colors shadow-xs self-start sm:self-auto disabled:opacity-50"
         >
           <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin text-forest' : ''}`} />
           <span>Refresh Data</span>
@@ -173,40 +172,40 @@ export default function Dashboard() {
       {/* Visual Analytics / Charts */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* Monthly Transportation Activity */}
-        <div className="bg-white rounded-lg border border-surface-border p-5 shadow-xs">
+        <div className="bg-white rounded-xl border border-surface-border p-5 shadow-xs">
           <div className="flex items-center justify-between mb-4">
             <div>
-              <h3 className="text-sm font-bold text-text-primary">
+              <h3 className="text-sm font-bold text-text-primary tracking-tight">
                 Monthly Transportation Activity
               </h3>
-              <p className="text-xs text-text-secondary">Requests vs completed dispatches</p>
+              <p className="text-xs text-text-secondary mt-0.5">Requests vs completed dispatches</p>
             </div>
           </div>
           <div className="h-64">
             <ResponsiveContainer width="100%" height="100%">
               <BarChart data={charts.monthly_transportation || []} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#F0F3EF" />
-                <XAxis dataKey="month" tick={{ fontSize: 11, fill: '#778179' }} />
-                <YAxis tick={{ fontSize: 11, fill: '#778179' }} allowDecimals={false} />
+                <CartesianGrid strokeDasharray="3 3" stroke="#F1F5F0" />
+                <XAxis dataKey="month" tick={{ fontSize: 11, fill: '#64748B' }} />
+                <YAxis tick={{ fontSize: 11, fill: '#64748B' }} allowDecimals={false} />
                 <Tooltip
-                  contentStyle={{ backgroundColor: '#FFFFFF', borderColor: '#E4EAE3', fontSize: 12, borderRadius: 6 }}
+                  contentStyle={{ backgroundColor: '#FFFFFF', borderColor: '#E2E8E0', fontSize: 12, borderRadius: 8, boxShadow: '0 4px 6px -1px rgba(0,0,0,0.06)' }}
                 />
                 <Legend wrapperStyle={{ fontSize: 11, paddingTop: 8 }} />
                 <Bar dataKey="requests" name="Transport Requests" fill="#173D2C" radius={[4, 4, 0, 0]} />
-                <Bar dataKey="trips" name="Trips Scheduled" fill="#C8F53E" radius={[4, 4, 0, 0]} />
+                <Bar dataKey="trips" name="Trips Scheduled" fill="#84CC16" radius={[4, 4, 0, 0]} />
               </BarChart>
             </ResponsiveContainer>
           </div>
         </div>
 
         {/* Trip Status Distribution */}
-        <div className="bg-white rounded-lg border border-surface-border p-5 shadow-xs">
+        <div className="bg-white rounded-xl border border-surface-border p-5 shadow-xs">
           <div className="flex items-center justify-between mb-4">
             <div>
-              <h3 className="text-sm font-bold text-text-primary">
+              <h3 className="text-sm font-bold text-text-primary tracking-tight">
                 Trip Status Distribution
               </h3>
-              <p className="text-xs text-text-secondary">Current lifecycle distribution of trips</p>
+              <p className="text-xs text-text-secondary mt-0.5">Current lifecycle distribution of trips</p>
             </div>
           </div>
           <div className="h-64 flex items-center justify-center">
@@ -228,7 +227,7 @@ export default function Dashboard() {
                     ))}
                   </Pie>
                   <Tooltip
-                    contentStyle={{ backgroundColor: '#FFFFFF', borderColor: '#E4EAE3', fontSize: 12, borderRadius: 6 }}
+                    contentStyle={{ backgroundColor: '#FFFFFF', borderColor: '#E2E8E0', fontSize: 12, borderRadius: 8, boxShadow: '0 4px 6px -1px rgba(0,0,0,0.06)' }}
                   />
                   <Legend wrapperStyle={{ fontSize: 11 }} />
                 </PieChart>
@@ -240,23 +239,23 @@ export default function Dashboard() {
         </div>
 
         {/* Farmer Registration Trends */}
-        <div className="bg-white rounded-lg border border-surface-border p-5 shadow-xs">
+        <div className="bg-white rounded-xl border border-surface-border p-5 shadow-xs">
           <div className="flex items-center justify-between mb-4">
             <div>
-              <h3 className="text-sm font-bold text-text-primary">
+              <h3 className="text-sm font-bold text-text-primary tracking-tight">
                 Farmer Onboarding Growth
               </h3>
-              <p className="text-xs text-text-secondary">New verified producer registrations over time</p>
+              <p className="text-xs text-text-secondary mt-0.5">New verified producer registrations over time</p>
             </div>
           </div>
           <div className="h-64">
             <ResponsiveContainer width="100%" height="100%">
               <LineChart data={charts.farmer_registration_trends || []} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#F0F3EF" />
-                <XAxis dataKey="month" tick={{ fontSize: 11, fill: '#778179' }} />
-                <YAxis tick={{ fontSize: 11, fill: '#778179' }} allowDecimals={false} />
+                <CartesianGrid strokeDasharray="3 3" stroke="#F1F5F0" />
+                <XAxis dataKey="month" tick={{ fontSize: 11, fill: '#64748B' }} />
+                <YAxis tick={{ fontSize: 11, fill: '#64748B' }} allowDecimals={false} />
                 <Tooltip
-                  contentStyle={{ backgroundColor: '#FFFFFF', borderColor: '#E4EAE3', fontSize: 12, borderRadius: 6 }}
+                  contentStyle={{ backgroundColor: '#FFFFFF', borderColor: '#E2E8E0', fontSize: 12, borderRadius: 8, boxShadow: '0 4px 6px -1px rgba(0,0,0,0.06)' }}
                 />
                 <Line
                   type="monotone"
@@ -264,7 +263,7 @@ export default function Dashboard() {
                   name="New Farmers"
                   stroke="#173D2C"
                   strokeWidth={2.5}
-                  dot={{ r: 4, fill: '#C8F53E', stroke: '#173D2C' }}
+                  dot={{ r: 4, fill: '#84CC16', stroke: '#173D2C' }}
                 />
               </LineChart>
             </ResponsiveContainer>
@@ -272,13 +271,13 @@ export default function Dashboard() {
         </div>
 
         {/* District Transportation Breakdown */}
-        <div className="bg-white rounded-lg border border-surface-border p-5 shadow-xs">
+        <div className="bg-white rounded-xl border border-surface-border p-5 shadow-xs">
           <div className="flex items-center justify-between mb-4">
             <div>
-              <h3 className="text-sm font-bold text-text-primary">
+              <h3 className="text-sm font-bold text-text-primary tracking-tight">
                 Top Districts by Freight Volume
               </h3>
-              <p className="text-xs text-text-secondary">Total harvest dispatches by destination district</p>
+              <p className="text-xs text-text-secondary mt-0.5">Total harvest dispatches by destination district</p>
             </div>
           </div>
           <div className="h-64">
@@ -288,11 +287,11 @@ export default function Dashboard() {
                 data={charts.district_activity || []}
                 margin={{ top: 5, right: 20, left: 30, bottom: 5 }}
               >
-                <CartesianGrid strokeDasharray="3 3" stroke="#F0F3EF" />
-                <XAxis type="number" tick={{ fontSize: 11, fill: '#778179' }} allowDecimals={false} />
-                <YAxis type="category" dataKey="district" tick={{ fontSize: 11, fill: '#778179' }} />
+                <CartesianGrid strokeDasharray="3 3" stroke="#F1F5F0" />
+                <XAxis type="number" tick={{ fontSize: 11, fill: '#64748B' }} allowDecimals={false} />
+                <YAxis type="category" dataKey="district" tick={{ fontSize: 11, fill: '#64748B' }} />
                 <Tooltip
-                  contentStyle={{ backgroundColor: '#FFFFFF', borderColor: '#E4EAE3', fontSize: 12, borderRadius: 6 }}
+                  contentStyle={{ backgroundColor: '#FFFFFF', borderColor: '#E2E8E0', fontSize: 12, borderRadius: 8, boxShadow: '0 4px 6px -1px rgba(0,0,0,0.06)' }}
                 />
                 <Bar dataKey="count" name="Transport Requests" fill="#23533D" radius={[0, 4, 4, 0]} />
               </BarChart>
@@ -304,71 +303,77 @@ export default function Dashboard() {
       {/* Operational Overview / Recent Tables Grid */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* Recent Transport Requests */}
-        <div className="bg-white rounded-lg border border-surface-border p-5 shadow-xs">
-          <div className="flex items-center justify-between mb-4 pb-2 border-b border-surface-border">
-            <h3 className="text-sm font-bold text-text-primary">Recent Requests</h3>
-            <span className="text-[11px] text-text-secondary">Latest 5</span>
-          </div>
-          <div className="space-y-3">
-            {recent.requests && recent.requests.length > 0 ? (
-              recent.requests.map((req) => (
-                <div key={req.id} className="p-2.5 rounded bg-surface-bg border border-surface-border text-xs flex justify-between items-center">
-                  <div>
-                    <span className="font-semibold text-text-primary block">{req.crop_type} ({req.weight_kg} kg)</span>
-                    <span className="text-text-secondary block mt-0.5 truncate max-w-[180px]">{req.dropoff_mandi_name}</span>
+        <div className="bg-white rounded-xl border border-surface-border p-5 shadow-xs flex flex-col justify-between">
+          <div>
+            <div className="flex items-center justify-between mb-4 pb-2 border-b border-surface-border">
+              <h3 className="text-sm font-bold text-text-primary tracking-tight">Recent Requests</h3>
+              <span className="text-[11px] font-medium text-text-secondary">Latest 5</span>
+            </div>
+            <div className="space-y-2.5">
+              {recent.requests && recent.requests.length > 0 ? (
+                recent.requests.map((req) => (
+                  <div key={req.id} className="p-3 rounded-lg bg-surface-subtle/50 border border-surface-border text-xs flex justify-between items-center hover:bg-surface-subtle transition-colors">
+                    <div className="min-w-0 pr-2">
+                      <span className="font-semibold text-text-primary block truncate">{req.crop_type} ({req.weight_kg} kg)</span>
+                      <span className="text-text-secondary block mt-0.5 truncate">{req.dropoff_mandi_name || '-'}</span>
+                    </div>
+                    <Badge status={req.status} />
                   </div>
-                  <Badge status={req.status} />
-                </div>
-              ))
-            ) : (
-              <p className="text-xs text-text-secondary text-center py-4">No recent requests.</p>
-            )}
+                ))
+              ) : (
+                <p className="text-xs text-text-secondary text-center py-6">No recent requests.</p>
+              )}
+            </div>
           </div>
         </div>
 
         {/* Recent Trips */}
-        <div className="bg-white rounded-lg border border-surface-border p-5 shadow-xs">
-          <div className="flex items-center justify-between mb-4 pb-2 border-b border-surface-border">
-            <h3 className="text-sm font-bold text-text-primary">Recent Trips</h3>
-            <span className="text-[11px] text-text-secondary">Latest 5</span>
-          </div>
-          <div className="space-y-3">
-            {recent.trips && recent.trips.length > 0 ? (
-              recent.trips.map((trip) => (
-                <div key={trip.id} className="p-2.5 rounded bg-surface-bg border border-surface-border text-xs flex justify-between items-center">
-                  <div>
-                    <span className="font-semibold text-text-primary block">Trip #{trip.id.slice(0, 8)}</span>
-                    <span className="text-text-secondary block mt-0.5 truncate max-w-[180px]">{trip.pickup_address}</span>
+        <div className="bg-white rounded-xl border border-surface-border p-5 shadow-xs flex flex-col justify-between">
+          <div>
+            <div className="flex items-center justify-between mb-4 pb-2 border-b border-surface-border">
+              <h3 className="text-sm font-bold text-text-primary tracking-tight">Recent Trips</h3>
+              <span className="text-[11px] font-medium text-text-secondary">Latest 5</span>
+            </div>
+            <div className="space-y-2.5">
+              {recent.trips && recent.trips.length > 0 ? (
+                recent.trips.map((trip) => (
+                  <div key={trip.id} className="p-3 rounded-lg bg-surface-subtle/50 border border-surface-border text-xs flex justify-between items-center hover:bg-surface-subtle transition-colors">
+                    <div className="min-w-0 pr-2">
+                      <span className="font-semibold text-text-primary block">Trip #{trip.id.slice(0, 8)}</span>
+                      <span className="text-text-secondary block mt-0.5 truncate">{trip.pickup_address || '-'}</span>
+                    </div>
+                    <Badge status={trip.status} />
                   </div>
-                  <Badge status={trip.status} />
-                </div>
-              ))
-            ) : (
-              <p className="text-xs text-text-secondary text-center py-4">No recent trips.</p>
-            )}
+                ))
+              ) : (
+                <p className="text-xs text-text-secondary text-center py-6">No recent trips.</p>
+              )}
+            </div>
           </div>
         </div>
 
         {/* Latest Farmers */}
-        <div className="bg-white rounded-lg border border-surface-border p-5 shadow-xs">
-          <div className="flex items-center justify-between mb-4 pb-2 border-b border-surface-border">
-            <h3 className="text-sm font-bold text-text-primary">New Farmers</h3>
-            <span className="text-[11px] text-text-secondary">Latest 5</span>
-          </div>
-          <div className="space-y-3">
-            {recent.farmers && recent.farmers.length > 0 ? (
-              recent.farmers.map((farmer) => (
-                <div key={farmer.id} className="p-2.5 rounded bg-surface-bg border border-surface-border text-xs flex justify-between items-center">
-                  <div>
-                    <span className="font-semibold text-text-primary block">{farmer.full_name}</span>
-                    <span className="text-text-secondary block mt-0.5">{farmer.district} • {farmer.phone_number || 'No phone'}</span>
+        <div className="bg-white rounded-xl border border-surface-border p-5 shadow-xs flex flex-col justify-between">
+          <div>
+            <div className="flex items-center justify-between mb-4 pb-2 border-b border-surface-border">
+              <h3 className="text-sm font-bold text-text-primary tracking-tight">New Farmers</h3>
+              <span className="text-[11px] font-medium text-text-secondary">Latest 5</span>
+            </div>
+            <div className="space-y-2.5">
+              {recent.farmers && recent.farmers.length > 0 ? (
+                recent.farmers.map((farmer) => (
+                  <div key={farmer.id} className="p-3 rounded-lg bg-surface-subtle/50 border border-surface-border text-xs flex justify-between items-center hover:bg-surface-subtle transition-colors">
+                    <div className="min-w-0 pr-2">
+                      <span className="font-semibold text-text-primary block truncate">{farmer.full_name}</span>
+                      <span className="text-text-secondary block mt-0.5 truncate">{farmer.district || 'Karnataka'} • {farmer.phone_number || farmer.phone || 'No phone'}</span>
+                    </div>
+                    <Badge status={farmer.is_active ? 'ACTIVE' : 'SUSPENDED'} />
                   </div>
-                  <Badge status={farmer.is_active ? 'ACTIVE' : 'SUSPENDED'} />
-                </div>
-              ))
-            ) : (
-              <p className="text-xs text-text-secondary text-center py-4">No farmers registered.</p>
-            )}
+                ))
+              ) : (
+                <p className="text-xs text-text-secondary text-center py-6">No farmers registered.</p>
+              )}
+            </div>
           </div>
         </div>
       </div>

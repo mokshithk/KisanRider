@@ -1,20 +1,18 @@
 import 'dart:convert';
 
-import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:http/http.dart' as http;
 import 'package:provider/provider.dart';
 
+import '../../l10n/app_strings.dart';
 import '../../providers/auth_provider.dart';
+import '../../services/api_service.dart';
 import 'pool_detail_screen.dart';
 import 'pool_models.dart';
 import 'pools_api.dart';
 
-String get _kApiBaseUrl {
-  if (kIsWeb) return 'http://localhost:8000';
-  return 'http://10.28.1.142:8000';
-}
+String get _kApiBaseUrl => ApiService.baseUrl;
 
 const Color _kFarmerGreen = Color(0xFF2E7D32);
 const Color _kBackground = Color(0xFFF8F9FA);
@@ -55,7 +53,7 @@ class _AutoMatchScreenState extends State<AutoMatchScreen> {
     if (auth.token == null) {
       setState(() {
         _isLoading = false;
-        _error = 'Not signed in.';
+        _error = AppStrings.tr('Not signed in.');
       });
       return;
     }
@@ -74,7 +72,9 @@ class _AutoMatchScreenState extends State<AutoMatchScreen> {
       } catch (_) {}
 
       if (pos == null) {
-        throw Exception('Could not determine location. Please enable GPS.');
+        throw Exception(
+          AppStrings.tr('Could not determine location. Please enable GPS.'),
+        );
       }
 
       // 2. Fetch my PENDING PR to use as the anchor
@@ -93,7 +93,9 @@ class _AutoMatchScreenState extends State<AutoMatchScreen> {
       }
 
       if (_myPr == null) {
-        throw Exception('You need an active PENDING request to start a pool.');
+        throw Exception(
+          AppStrings.tr('You need an active PENDING request to start a pool.'),
+        );
       }
 
       // 3. Fetch nearby farmers
@@ -184,7 +186,7 @@ class _AutoMatchScreenState extends State<AutoMatchScreen> {
     return Scaffold(
       backgroundColor: _kBackground,
       appBar: AppBar(
-        title: const Text('Nearby Farmers'),
+        title: Text(context.tr('Nearby Farmers')),
         backgroundColor: _kFarmerGreen,
         foregroundColor: Colors.white,
       ),
@@ -207,7 +209,10 @@ class _AutoMatchScreenState extends State<AutoMatchScreen> {
               const SizedBox(height: 16),
               Text(_error!, textAlign: TextAlign.center),
               const SizedBox(height: 16),
-              OutlinedButton(onPressed: _init, child: const Text('Retry')),
+              OutlinedButton(
+                onPressed: _init,
+                child: Text(context.tr('Retry')),
+              ),
             ],
           ),
         ),
@@ -242,7 +247,7 @@ class _AutoMatchScreenState extends State<AutoMatchScreen> {
                 child: Row(
                   children: [
                     Text(
-                      '${_myPr!['crop_type']} • ≤10 km',
+                      '${_myPr!['crop_type']} • ≤10 ${context.tr('km')}',
                       style: const TextStyle(color: _kFarmerGreen, fontWeight: FontWeight.bold, fontSize: 13),
                     ),
                     const SizedBox(width: 4),
@@ -282,7 +287,10 @@ class _AutoMatchScreenState extends State<AutoMatchScreen> {
                     ],
                   ),
                   child: Text(
-                    '${_nearbyFarmers.length + 1} matches within 10 km',
+                    context.tr(
+                      '{count} matches within 10 km',
+                      args: {'count': '${_nearbyFarmers.length + 1}'},
+                    ),
                     style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: _kTextPrimary),
                   ),
                 ),
@@ -297,18 +305,18 @@ class _AutoMatchScreenState extends State<AutoMatchScreen> {
           child: ListView(
             padding: const EdgeInsets.symmetric(horizontal: 16),
             children: [
-              const Text(
-                'COMPATIBLE REQUESTS',
-                style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: _kTextSecondary, letterSpacing: 1.2),
+              Text(
+                context.tr('COMPATIBLE REQUESTS'),
+                style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: _kTextSecondary, letterSpacing: 1.2),
               ),
               const SizedBox(height: 12),
               
               // Creator's own request (locked)
               _buildFarmerCard(
-                name: 'You (Creator)',
+                name: context.tr('You (Creator)'),
                 weight: (_myPr!['weight_kg'] as num).toDouble(),
                 crop: _myPr!['crop_type'].toString(),
-                distance: '0 km',
+                distance: '0 ${context.tr('km')}',
                 isSelected: true,
                 isLocked: true,
                 onToggle: () {},
@@ -320,7 +328,7 @@ class _AutoMatchScreenState extends State<AutoMatchScreen> {
                   name: f.farmerName,
                   weight: f.weightKg,
                   crop: f.cropType,
-                  distance: '${f.distanceKm.toStringAsFixed(1)} km',
+                  distance: '${f.distanceKm.toStringAsFixed(1)} ${context.tr('km')}',
                   isSelected: isSelected,
                   isLocked: false,
                   onToggle: () => _toggleFarmer(f.produceRequestId),
@@ -331,7 +339,10 @@ class _AutoMatchScreenState extends State<AutoMatchScreen> {
                 Container(
                   padding: const EdgeInsets.all(32),
                   alignment: Alignment.center,
-                  child: const Text('No other farmers found nearby.', style: TextStyle(color: _kTextSecondary)),
+                  child: Text(
+                    context.tr('No other farmers found nearby.'),
+                    style: const TextStyle(color: _kTextSecondary),
+                  ),
                 ),
             ],
           ),
@@ -355,11 +366,17 @@ class _AutoMatchScreenState extends State<AutoMatchScreen> {
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
                     Text(
-                      'Pooled total:',
+                      context.tr('Pooled total:'),
                       style: TextStyle(color: _kTextSecondary, fontSize: 13, fontWeight: FontWeight.w600),
                     ),
                     Text(
-                      '${totalWeight.toStringAsFixed(0)} kg / $farmerCount farmers',
+                      context.tr(
+                        '{weight} kg / {count} farmers',
+                        args: {
+                          'weight': totalWeight.toStringAsFixed(0),
+                          'count': '$farmerCount',
+                        },
+                      ),
                       style: const TextStyle(color: _kTextPrimary, fontSize: 13, fontWeight: FontWeight.bold),
                     ),
                   ],
@@ -369,7 +386,7 @@ class _AutoMatchScreenState extends State<AutoMatchScreen> {
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
                     Text(
-                      'Est. shared freight:',
+                      context.tr('Est. shared freight:'),
                       style: TextStyle(color: _kTextSecondary, fontSize: 13, fontWeight: FontWeight.w600),
                     ),
                     Row(
@@ -380,7 +397,10 @@ class _AutoMatchScreenState extends State<AutoMatchScreen> {
                         ),
                         const SizedBox(width: 8),
                         Text(
-                          '₹${farePerFarmer.toStringAsFixed(0)} each',
+                          context.tr(
+                            '₹{fare} each',
+                            args: {'fare': farePerFarmer.toStringAsFixed(0)},
+                          ),
                           style: const TextStyle(color: _kFarmerGreen, fontSize: 15, fontWeight: FontWeight.bold),
                         ),
                       ],
@@ -397,7 +417,10 @@ class _AutoMatchScreenState extends State<AutoMatchScreen> {
                       padding: const EdgeInsets.symmetric(vertical: 16),
                       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                     ),
-                    child: const Text('Request shared trip', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                    child: Text(
+                      context.tr('Request shared trip'),
+                      style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                    ),
                   ),
                 ),
               ],
@@ -460,7 +483,7 @@ class _AutoMatchScreenState extends State<AutoMatchScreen> {
                 ),
                 const SizedBox(height: 2),
                 Text(
-                  '$crop • ${weight.toStringAsFixed(0)} kg',
+                  '$crop • ${weight.toStringAsFixed(0)} ${context.tr('kg')}',
                   style: const TextStyle(fontSize: 12, color: _kTextSecondary),
                 ),
               ],

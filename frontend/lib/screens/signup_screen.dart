@@ -1,21 +1,19 @@
 import 'dart:async';
 import 'dart:convert';
 
-import 'package:flutter/foundation.dart' show kIsWeb;   // <-- ADDED
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import 'package:provider/provider.dart';
 
+import '../l10n/app_strings.dart';
 import '../providers/auth_provider.dart';
+import '../services/api_service.dart';
 import 'farmer_dashboard.dart';
 import 'rider_dashboard.dart';
 
 /// Base URL of the FastAPI backend.
-String get _kApiBaseUrl {
-  if (kIsWeb) return 'http://localhost:8000';
-  return 'http://10.28.1.142:8000';
-}
+String get _kApiBaseUrl => ApiService.baseUrl;
 
 /// Brand green, matching the rest of the app.
 const Color _kBrandGreen = Color(0xFF2E7D32);
@@ -141,7 +139,9 @@ class _SignupScreenState extends State<SignupScreen> {
     if (!_formKey.currentState!.validate()) return;
 
     if (!_acceptedTerms) {
-      _showErrorSnack('Please accept the Terms & Conditions to continue.');
+      _showErrorSnack(
+        context.trAsync('Please accept the Terms & Conditions to continue.'),
+      );
       return;
     }
 
@@ -185,15 +185,22 @@ class _SignupScreenState extends State<SignupScreen> {
       } else {
         _showErrorSnack(
           _extractError(response) ??
-              'Signup failed (HTTP ${response.statusCode}).',
+              context.trAsync(
+                'Signup failed (HTTP {code}).',
+                args: {'code': '${response.statusCode}'},
+              ),
         );
       }
     } on TimeoutException {
       _showErrorSnack(
-        'Connection timed out. Please check your internet and try again.',
+        context.trAsync(
+          'Connection timed out. Please check your internet and try again.',
+        ),
       );
     } catch (e) {
-      _showErrorSnack('Network error: $e');
+      _showErrorSnack(
+        context.trAsync('Network error: {err}', args: {'err': '$e'}),
+      );
     } finally {
       if (mounted) setState(() => _isSubmitting = false);
     }
@@ -226,7 +233,9 @@ class _SignupScreenState extends State<SignupScreen> {
     final userId = (user?['id'] ?? '').toString();
 
     if (token == null || token.isEmpty || userId.isEmpty) {
-      _showErrorSnack('Server returned an incomplete session. Please retry.');
+      _showErrorSnack(
+        context.trAsync('Server returned an incomplete session. Please retry.'),
+      );
       return;
     }
 
@@ -239,13 +248,13 @@ class _SignupScreenState extends State<SignupScreen> {
     if (!mounted) return;
 
     if (!ok) {
-      _showErrorSnack(auth.lastError ?? 'Could not save session.');
+      _showErrorSnack(auth.lastError ?? context.trAsync('Could not save session.'));
       return;
     }
 
     ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('Account created successfully!'),
+      SnackBar(
+        content: Text(context.trAsync('Account created successfully!')),
         backgroundColor: _kBrandGreen,
       ),
     );
@@ -272,7 +281,7 @@ class _SignupScreenState extends State<SignupScreen> {
     return Scaffold(
       backgroundColor: Colors.grey.shade50,
       appBar: AppBar(
-        title: const Text('Sign Up'),
+        title: Text(context.tr('Sign Up')),
         backgroundColor: _kBrandGreen,
         foregroundColor: Colors.white,
         elevation: 0,
@@ -338,7 +347,7 @@ class _SignupScreenState extends State<SignupScreen> {
         ),
         const SizedBox(height: 16),
         Text(
-          'Create KisanRider Account',
+          context.tr('Create KisanRider Account'),
           textAlign: TextAlign.center,
           style: theme.textTheme.titleLarge?.copyWith(
             fontWeight: FontWeight.bold,
@@ -346,7 +355,7 @@ class _SignupScreenState extends State<SignupScreen> {
         ),
         const SizedBox(height: 6),
         Text(
-          'Agricultural logistics, connected across Karnataka',
+          context.tr('Agricultural logistics, connected across Karnataka'),
           textAlign: TextAlign.center,
           style: theme.textTheme.bodySmall?.copyWith(
             color: theme.colorScheme.onSurfaceVariant,
@@ -361,15 +370,17 @@ class _SignupScreenState extends State<SignupScreen> {
       controller: _fullNameController,
       enabled: !_isSubmitting,
       textCapitalization: TextCapitalization.words,
-      decoration: const InputDecoration(
-        labelText: 'Full Name',
-        hintText: 'e.g. Ravi Kumar',
-        border: OutlineInputBorder(),
-        prefixIcon: Icon(Icons.person_outline),
+      decoration: InputDecoration(
+        labelText: context.tr('Full Name'),
+        hintText: context.tr('e.g. Ravi Kumar'),
+        border: const OutlineInputBorder(),
+        prefixIcon: const Icon(Icons.person_outline),
       ),
       validator: (v) {
-        if (v == null || v.trim().isEmpty) return 'Full name is required';
-        if (v.trim().length < 2) return 'Name is too short';
+        if (v == null || v.trim().isEmpty) {
+          return context.trAsync('Full name is required');
+        }
+        if (v.trim().length < 2) return context.trAsync('Name is too short');
         return null;
       },
     );
@@ -382,20 +393,19 @@ class _SignupScreenState extends State<SignupScreen> {
       keyboardType: TextInputType.emailAddress,
       textInputAction: TextInputAction.next,
       autocorrect: false,
-      decoration: const InputDecoration(
-        labelText: 'Email Address',
+      decoration: InputDecoration(
+        labelText: context.tr('Email Address'),
         hintText: 'you@example.com',
-        border: OutlineInputBorder(),
-        prefixIcon: Icon(Icons.email_outlined),
+        border: const OutlineInputBorder(),
+        prefixIcon: const Icon(Icons.email_outlined),
       ),
       validator: (v) {
         final value = (v ?? '').trim();
-        if (value.isEmpty) return 'Email is required';
-        // Pragmatic email check — matches what the backend's EmailStr
-        // accepts in the common case (one @, a dot after it, no spaces).
-        // The backend runs its own validation; this is just for fast UX.
+        if (value.isEmpty) return context.trAsync('Email is required');
         final emailRe = RegExp(r'^[^@\s]+@[^@\s]+\.[^@\s]+$');
-        if (!emailRe.hasMatch(value)) return 'Enter a valid email address';
+        if (!emailRe.hasMatch(value)) {
+          return context.trAsync('Enter a valid email address');
+        }
         return null;
       },
     );
@@ -407,12 +417,12 @@ class _SignupScreenState extends State<SignupScreen> {
       enabled: !_isSubmitting,
       obscureText: _obscurePassword,
       decoration: InputDecoration(
-        labelText: 'Password',
-        hintText: 'At least 6 characters',
+        labelText: context.tr('Password'),
+        hintText: context.tr('At least 6 characters'),
         border: const OutlineInputBorder(),
         prefixIcon: const Icon(Icons.lock_outline),
         suffixIcon: IconButton(
-          tooltip: _obscurePassword ? 'Show password' : 'Hide password',
+          tooltip: context.tr(_obscurePassword ? 'Show password' : 'Hide password'),
           icon: Icon(
             _obscurePassword
                 ? Icons.visibility_outlined
@@ -424,8 +434,10 @@ class _SignupScreenState extends State<SignupScreen> {
       ),
       validator: (v) {
         final value = (v ?? '');
-        if (value.isEmpty) return 'Password is required';
-        if (value.length < 6) return 'Password must be at least 6 characters';
+        if (value.isEmpty) return context.trAsync('Password is required');
+        if (value.length < 6) {
+          return context.trAsync('Password must be at least 6 characters');
+        }
         return null;
       },
     );
@@ -435,69 +447,66 @@ class _SignupScreenState extends State<SignupScreen> {
     return DropdownButtonFormField<String>(
       value: _selectedRole,
       isExpanded: true,
-      decoration: const InputDecoration(
-        labelText: 'I am a',
-        border: OutlineInputBorder(),
-        prefixIcon: Icon(Icons.badge_outlined),
+      decoration: InputDecoration(
+        labelText: context.tr('I am a'),
+        border: const OutlineInputBorder(),
+        prefixIcon: const Icon(Icons.badge_outlined),
       ),
-      items: const [
+      items: [
         DropdownMenuItem<String>(
           value: 'FARMER',
-          child: Text('Farmer — I want to ship my produce'),
+          child: Text(context.tr('Farmer — I want to ship my produce')),
         ),
         DropdownMenuItem<String>(
           value: 'RIDER',
-          child: Text('Rider — I want to transport produce'),
+          child: Text(context.tr('Rider — I want to transport produce')),
         ),
       ],
       onChanged: _isSubmitting
           ? null
           : (v) => setState(() => _selectedRole = v),
-      validator: (v) => v == null ? 'Please select a role' : null,
+      validator: (v) => v == null ? context.trAsync('Please select a role') : null,
     );
   }
 
   Widget _buildStateField() {
-    // Locked to Karnataka for MVP. If this expands beyond one state, turn
-    // it into a dropdown with the same pattern as District.
     return TextFormField(
       enabled: false,
-      initialValue: 'Karnataka',
-      decoration: const InputDecoration(
-        labelText: 'State',
-        border: OutlineInputBorder(),
-        prefixIcon: Icon(Icons.map_outlined),
-        helperText: 'Currently available only in Karnataka',
+      initialValue: context.tr('Karnataka'),
+      decoration: InputDecoration(
+        labelText: context.tr('State'),
+        border: const OutlineInputBorder(),
+        prefixIcon: const Icon(Icons.map_outlined),
+        helperText: context.tr('Currently available only in Karnataka'),
       ),
     );
   }
 
   Widget _buildDistrictDropdown() {
-    // Display labels come from the Map keys (with parenthetical English
-    // transliterations); the API value is resolved from the Map on submit.
     final labels = _kKarnatakaDistricts.keys.toList(growable: false);
 
     return DropdownButtonFormField<String>(
       value: _selectedDistrict,
       isExpanded: true,
       menuMaxHeight: 320,
-      decoration: const InputDecoration(
-        labelText: 'District',
-        border: OutlineInputBorder(),
-        prefixIcon: Icon(Icons.location_city_outlined),
+      decoration: InputDecoration(
+        labelText: context.tr('District'),
+        border: const OutlineInputBorder(),
+        prefixIcon: const Icon(Icons.location_city_outlined),
       ),
       items: labels
           .map(
             (label) => DropdownMenuItem<String>(
               value: label,
-              child: Text(label, overflow: TextOverflow.ellipsis),
+              child: Text(context.tr(label), overflow: TextOverflow.ellipsis),
             ),
           )
           .toList(),
       onChanged: _isSubmitting
           ? null
           : (v) => setState(() => _selectedDistrict = v),
-      validator: (v) => v == null ? 'Please select your district' : null,
+      validator: (v) =>
+          v == null ? context.trAsync('Please select your district') : null,
     );
   }
 
@@ -512,7 +521,7 @@ class _SignupScreenState extends State<SignupScreen> {
       contentPadding: EdgeInsets.zero,
       dense: true,
       title: Text(
-        'I agree to the Terms & Conditions and Privacy Policy',
+        context.tr('I agree to the Terms & Conditions and Privacy Policy'),
         style: theme.textTheme.bodySmall,
       ),
       activeColor: _kBrandGreen,
@@ -541,7 +550,9 @@ class _SignupScreenState extends State<SignupScreen> {
               ),
             )
           : const Icon(Icons.mark_email_read_outlined),
-      label: Text(_isSubmitting ? 'Sending OTP…' : 'VERIFY EMAIL & REGISTER'),
+      label: Text(
+        context.tr(_isSubmitting ? 'Sending OTP…' : 'VERIFY EMAIL & REGISTER'),
+      ),
     );
   }
 }
@@ -620,16 +631,19 @@ class _OtpBottomSheetState extends State<_OtpBottomSheet> {
         if (decoded is Map<String, dynamic>) {
           successPayload = decoded;
         } else {
-          _error = 'Unexpected response format from server.';
+          _error = context.trAsync('Unexpected response format from server.');
         }
       } else {
         _error = _extractError(response) ??
-            'Verification failed (HTTP ${response.statusCode}).';
+            context.trAsync(
+              'Verification failed (HTTP {code}).',
+              args: {'code': '${response.statusCode}'},
+            );
       }
     } on TimeoutException {
-      _error = 'Connection timed out. Please try again.';
+      _error = context.trAsync('Connection timed out. Please try again.');
     } catch (e) {
-      _error = 'Network error: $e';
+      _error = context.trAsync('Network error: {err}', args: {'err': '$e'});
     } finally {
       if (mounted) {
         setState(() => _isVerifying = false);
@@ -673,7 +687,7 @@ class _OtpBottomSheetState extends State<_OtpBottomSheet> {
               ),
 
               Text(
-                'Enter OTP sent to your Email',
+                context.tr('Enter OTP sent to your Email'),
                 textAlign: TextAlign.center,
                 style: theme.textTheme.titleLarge?.copyWith(
                   fontWeight: FontWeight.bold,
@@ -681,7 +695,9 @@ class _OtpBottomSheetState extends State<_OtpBottomSheet> {
               ),
               const SizedBox(height: 8),
               Text(
-                "We sent a 4-digit code to\nDidn't receive it? Check your Spam folder.",
+                context.tr(
+                  "We sent a 4-digit code to\nDidn't receive it? Check your Spam folder.",
+                ),
                 textAlign: TextAlign.center,
                 style: theme.textTheme.bodySmall?.copyWith(
                   color: theme.colorScheme.onSurfaceVariant,
@@ -721,8 +737,10 @@ class _OtpBottomSheetState extends State<_OtpBottomSheet> {
                 ),
                 validator: (v) {
                   final value = (v ?? '').trim();
-                  if (value.isEmpty) return 'Enter the OTP';
-                  if (value.length != 4) return 'OTP must be 4 digits';
+                  if (value.isEmpty) return context.trAsync('Enter the OTP');
+                  if (value.length != 4) {
+                    return context.trAsync('OTP must be 4 digits');
+                  }
                   return null;
                 },
                 onFieldSubmitted: (_) {
@@ -782,7 +800,7 @@ class _OtpBottomSheetState extends State<_OtpBottomSheet> {
                       )
                     : const Icon(Icons.verified_outlined),
                 label: Text(
-                  _isVerifying ? 'Verifying…' : 'CONFIRM & REGISTER',
+                  context.tr(_isVerifying ? 'Verifying…' : 'CONFIRM & REGISTER'),
                 ),
               ),
               const SizedBox(height: 8),
@@ -790,7 +808,7 @@ class _OtpBottomSheetState extends State<_OtpBottomSheet> {
                 onPressed: _isVerifying
                     ? null
                     : () => Navigator.of(context).pop(),
-                child: const Text('Cancel'),
+                child: Text(context.tr('Cancel')),
               ),
             ],
           ),

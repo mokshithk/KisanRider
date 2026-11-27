@@ -5,7 +5,9 @@ import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import 'package:provider/provider.dart';
 
+import '../l10n/app_strings.dart';
 import '../providers/auth_provider.dart';
+import '../providers/language_provider.dart';
 import 'login_screen.dart';
 import 'rider_common.dart';
 import 'rider_trip_history_screen.dart';
@@ -34,12 +36,12 @@ Future<void> showLogoutConfirmation(BuildContext context) async {
   final confirmed = await showDialog<bool>(
     context: context,
     builder: (dialogContext) => AlertDialog(
-      title: const Text('Log out?'),
-      content: const Text('Are you sure you want to log out?'),
+      title: Text(dialogContext.tr('Log out?')),
+      content: Text(dialogContext.tr('Are you sure you want to log out?')),
       actions: [
         TextButton(
           onPressed: () => Navigator.of(dialogContext).pop(false),
-          child: const Text('Cancel'),
+          child: Text(dialogContext.tr('Cancel')),
         ),
         FilledButton(
           onPressed: () => Navigator.of(dialogContext).pop(true),
@@ -47,7 +49,7 @@ Future<void> showLogoutConfirmation(BuildContext context) async {
             backgroundColor: kRiderGreen,
             foregroundColor: Colors.white,
           ),
-          child: const Text('Logout'),
+          child: Text(dialogContext.tr('Logout')),
         ),
       ],
     ),
@@ -100,11 +102,6 @@ class _RiderAccountScreenState extends State<RiderAccountScreen>
   /// the user can't spam-toggle and cause a lost-update race.
   bool _isTogglingDuty = false;
 
-  /// Local mirror of `preferred_language` so the picker has something to
-  /// render immediately. The backend's RiderProfileUpdate doesn't accept
-  /// this field yet, so persistence is local-only for now.
-  String _preferredLanguage = 'en';
-
   @override
   bool get wantKeepAlive => true;
 
@@ -132,7 +129,7 @@ class _RiderAccountScreenState extends State<RiderAccountScreen>
     if (auth.token == null) {
       setState(() {
         _isLoading = false;
-        _error = 'Not signed in.';
+        _error = context.trAsync('Not signed in.');
       });
       return;
     }
@@ -153,21 +150,22 @@ class _RiderAccountScreenState extends State<RiderAccountScreen>
         final data = jsonDecode(response.body) as Map<String, dynamic>;
         setState(() {
           _account = data;
-          _preferredLanguage =
-              (data['preferred_language'] ?? 'en').toString();
           _isLoading = false;
         });
       } else {
         setState(() {
           _error = _extractError(response) ??
-              'Failed to load account (HTTP ${response.statusCode}).';
+              context.trAsync(
+                'Failed to load account (HTTP {code}).',
+                args: {'code': '${response.statusCode}'},
+              );
           _isLoading = false;
         });
       }
     } catch (e) {
       if (!mounted) return;
       setState(() {
-        _error = 'Network error: $e';
+        _error = context.trAsync('Network error: {err}', args: {'err': '$e'});
         _isLoading = false;
       });
     }
@@ -194,6 +192,74 @@ class _RiderAccountScreenState extends State<RiderAccountScreen>
 
     final auth = context.read<AuthProvider>();
     if (auth.token == null) return;
+
+    if (newValue) {
+      final missing = <String>[];
+      final fullName = (_account?['full_name'] ?? auth.fullName ?? '').toString().trim();
+      final district = (_account?['district'] ?? auth.district ?? '').toString().trim();
+      final vehicleType = (_account?['vehicle_type'] ?? '').toString().trim();
+      final vehicleNumber = (_account?['vehicle_number'] ?? '').toString().trim();
+      final payload = (_account?['payload_capacity_kg'] as num?)?.toDouble() ?? 0.0;
+      final license = (_account?['license_number'] ?? '').toString().trim();
+      final routes = (_account?['operating_routes'] ?? '').toString().trim();
+
+      if (fullName.isEmpty) missing.add(context.trAsync('Personal Info (Full Name)'));
+      if (district.isEmpty) missing.add(context.trAsync('Operating District'));
+      if (vehicleType.isEmpty) missing.add(context.trAsync('Vehicle Type'));
+      if (vehicleNumber.isEmpty) {
+        missing.add(context.trAsync('Vehicle Registration Number'));
+      }
+      if (payload <= 0) missing.add(context.trAsync('Payload Capacity (> 0 kg)'));
+      if (license.isEmpty) missing.add(context.trAsync('Driving Licence Number'));
+      if (routes.isEmpty) {
+        missing.add(context.trAsync('Operating Routes / Coverage Area'));
+      }
+
+      if (missing.isNotEmpty) {
+        await showDialog<void>(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+            title: Text(ctx.tr('Complete Profile to Go On-Duty')),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  ctx.tr(
+                    'Before you can go On-Duty and accept trips, please complete the following mandatory profile details:',
+                  ),
+                  style: const TextStyle(fontSize: 14),
+                ),
+                const SizedBox(height: 12),
+                ...missing.map((m) => Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 2),
+                  child: Row(
+                    children: [
+                      const Icon(Icons.error_outline, size: 16, color: Colors.orange),
+                      const SizedBox(width: 8),
+                      Expanded(child: Text(m, style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13))),
+                    ],
+                  ),
+                )),
+                const SizedBox(height: 12),
+                Text(
+                  ctx.tr('Note: Bank details and UPI ID are optional.'),
+                  style: const TextStyle(fontSize: 12, color: Colors.grey, fontStyle: FontStyle.italic),
+                ),
+              ],
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: Text(ctx.tr('OK')),
+              ),
+            ],
+          ),
+        );
+        return;
+      }
+    }
 
     // Capture the current value so we can revert on failure.
     final previousValue =
@@ -226,9 +292,11 @@ class _RiderAccountScreenState extends State<RiderAccountScreen>
           ..showSnackBar(
             SnackBar(
               content: Text(
-                newValue
-                    ? 'You are now On-Duty — accepting trips.'
-                    : 'You are now Offline — no new trips will appear.',
+                context.trAsync(
+                  newValue
+                      ? 'You are now On-Duty — accepting trips.'
+                      : 'You are now Offline — no new trips will appear.',
+                ),
               ),
               backgroundColor: kRiderGreen,
               duration: const Duration(seconds: 2),
@@ -242,7 +310,10 @@ class _RiderAccountScreenState extends State<RiderAccountScreen>
         });
         _showRedSnack(
           _extractError(response) ??
-              'Could not update duty status (HTTP ${response.statusCode}).',
+              context.trAsync(
+                'Could not update duty status (HTTP {code}).',
+                args: {'code': '${response.statusCode}'},
+              ),
         );
       }
     } catch (e) {
@@ -251,7 +322,7 @@ class _RiderAccountScreenState extends State<RiderAccountScreen>
         _account = {...?_account, 'is_on_duty': previousValue};
         _isTogglingDuty = false;
       });
-      _showRedSnack('Network error: $e');
+      _showRedSnack(context.trAsync('Network error: {err}', args: {'err': '$e'}));
     }
   }
 
@@ -332,16 +403,18 @@ class _RiderAccountScreenState extends State<RiderAccountScreen>
       builder: (_) => sheet,
     );
     if (changed == true && mounted) {
-      _showGreenSnack('Saved successfully.');
+      _showGreenSnack(context.trAsync('Saved successfully.'));
       await _fetchAccount();
     }
   }
 
   Future<void> _onLanguageSelected(String code) async {
-    // Local-only — see `_preferredLanguage` comment.
-    setState(() => _preferredLanguage = code);
+    await LanguageProvider.instance.setLanguage(code);
+    if (!mounted) return;
     _showGreenSnack(
-      code == 'kn' ? 'Language set to ಕನ್ನಡ.' : 'Language set to English.',
+      context.trAsync(
+        code == 'kn' ? 'Language set to ಕನ್ನಡ.' : 'Language set to English.',
+      ),
     );
   }
 
@@ -401,13 +474,13 @@ class _RiderAccountScreenState extends State<RiderAccountScreen>
             // same "Edit Profile" affordance farmers do. Kept above the
             // vehicle section — identity before equipment, matching the
             // farmer screen's ordering.
-            _SectionHeader(title: 'PERSONAL INFORMATION'),
+            _SectionHeader(title: context.tr('PERSONAL INFORMATION')),
             _SettingsCard(
               children: [
                 _SettingsTile(
                   icon: Icons.person_outline,
-                  title: 'Edit Profile',
-                  subtitle: 'Name, phone & base district',
+                  title: context.tr('Edit Profile'),
+                  subtitle: context.tr('Name, phone & base district'),
                   onTap: () => _openSheet(
                     _RiderEditProfileSheet(account: _account),
                   ),
@@ -416,13 +489,13 @@ class _RiderAccountScreenState extends State<RiderAccountScreen>
             ),
 
             // ----- Vehicle & Driver Details -------------------------------
-            _SectionHeader(title: 'VEHICLE & DRIVER DETAILS'),
+            _SectionHeader(title: context.tr('VEHICLE & DRIVER DETAILS')),
             _SettingsCard(
               children: [
                 _SettingsTile(
                   icon: Icons.directions_car_outlined,
-                  title: 'Vehicle & License Info',
-                  subtitle: 'License, model, plate number, payload',
+                  title: context.tr('Vehicle & License Info'),
+                  subtitle: context.tr('License, model, plate number, payload'),
                   onTap: () => _openSheet(
                     _VehicleDetailsSheet(account: _account),
                   ),
@@ -431,13 +504,13 @@ class _RiderAccountScreenState extends State<RiderAccountScreen>
             ),
 
             // ----- Service Area & Routes ----------------------------------
-            _SectionHeader(title: 'SERVICE AREA & ROUTES'),
+            _SectionHeader(title: context.tr('SERVICE AREA & ROUTES')),
             _SettingsCard(
               children: [
                 _SettingsTile(
                   icon: Icons.alt_route_outlined,
-                  title: 'Operating Districts & Routes',
-                  subtitle: 'Where you want to haul',
+                  title: context.tr('Operating Districts & Routes'),
+                  subtitle: context.tr('Where you want to haul'),
                   onTap: () => _openSheet(
                     _RoutesSheet(account: _account),
                   ),
@@ -446,32 +519,28 @@ class _RiderAccountScreenState extends State<RiderAccountScreen>
             ),
 
             // ----- Trips & Earnings ---------------------------------------
-            // NEW — sits between the vehicle/routes sections and the
-            // payouts section, matching the task's "between VEHICLE
-            // DETAILS and PAYOUT BANK DETAILS" placement spec. Contains
-            // the Trip History tile that navigates to
-            // RiderTripHistoryScreen.
-            _SectionHeader(title: 'TRIPS & EARNINGS'),
+            _SectionHeader(title: context.tr('TRIPS & EARNINGS')),
             _SettingsCard(
               children: [
                 _SettingsTile(
                   icon: Icons.history,
-                  title: 'Trip History',
-                  subtitle:
-                      'Past deliveries, fares earned & cash records',
+                  title: context.tr('Trip History'),
+                  subtitle: context.tr(
+                    'Past deliveries, fares earned & cash records',
+                  ),
                   onTap: _openTripHistory,
                 ),
               ],
             ),
 
             // ----- Payouts & Banking --------------------------------------
-            _SectionHeader(title: 'PAYOUTS & BANKING'),
+            _SectionHeader(title: context.tr('PAYOUTS & BANKING')),
             _SettingsCard(
               children: [
                 _SettingsTile(
                   icon: Icons.account_balance_outlined,
-                  title: 'Bank Account & UPI Details',
-                  subtitle: 'Where trip earnings are settled',
+                  title: context.tr('Bank Account & UPI Details'),
+                  subtitle: context.tr('Where trip earnings are settled'),
                   onTap: () => _openSheet(
                     _PayoutDetailsSheet(account: _account),
                   ),
@@ -480,18 +549,18 @@ class _RiderAccountScreenState extends State<RiderAccountScreen>
             ),
 
             // ----- Preferences & Security ---------------------------------
-            _SectionHeader(title: 'PREFERENCES & SECURITY'),
+            _SectionHeader(title: context.tr('PREFERENCES & SECURITY')),
             _SettingsCard(
               children: [
                 _SettingsTile(
                   icon: Icons.language_outlined,
-                  title: 'App Language',
-                  trailingText: 'English / ಕನ್ನಡ',
+                  title: context.tr('App Language'),
+                  trailingText: context.tr('English / ಕನ್ನಡ'),
                   onTap: () => showModalBottomSheet<void>(
                     context: context,
                     backgroundColor: Colors.transparent,
                     builder: (_) => _LanguagePickerSheet(
-                      current: _preferredLanguage,
+                      current: context.read<LanguageProvider>().languageCode,
                       onSelected: _onLanguageSelected,
                     ),
                   ),
@@ -499,8 +568,8 @@ class _RiderAccountScreenState extends State<RiderAccountScreen>
                 const Divider(height: 1, indent: 56),
                 _SettingsTile(
                   icon: Icons.lock_outline,
-                  title: 'Change Password',
-                  subtitle: 'Verify with an OTP sent to your email',
+                  title: context.tr('Change Password'),
+                  subtitle: context.tr('Verify with an OTP sent to your email'),
                   onTap: () => _openSheet(
                     _ChangePasswordSheet(email: _displayEmail),
                   ),
@@ -509,51 +578,55 @@ class _RiderAccountScreenState extends State<RiderAccountScreen>
             ),
 
             // ----- Support & Legal ----------------------------------------
-            _SectionHeader(title: 'SUPPORT & LEGAL'),
+            _SectionHeader(title: context.tr('SUPPORT & LEGAL')),
             _SettingsCard(
               children: [
                 _SettingsTile(
                   icon: Icons.headset_mic_outlined,
-                  title: 'Rider Helpline & Support',
+                  title: context.tr('Rider Helpline & Support'),
                   onTap: () => _showInfoDialog(
                     context,
-                    title: 'Rider Helpline',
-                    body: 'Need help on the road?\n\n'
-                        'Rider Helpline: +91 1800 000 111\n'
-                        'Email: riders@kisanrider.app\n'
-                        'Hours: Mon–Sat, 9 AM to 9 PM IST\n\n'
-                        'For safety emergencies, dial 112 directly.\n\n'
-                        'Common questions:\n'
-                        '• How is my payout calculated? — Tap a completed '
-                        'trip under Earnings.\n'
-                        '• What if the farmer\'s OTP does not work? — Ask '
-                        'them to open My Orders and read the 4-digit code.\n'
-                        '• Trip cancelled mid-route? — Contact the helpline '
-                        'immediately with the trip ID.',
+                    title: context.trAsync('Rider Helpline'),
+                    body: context.trAsync(
+                      'Need help on the road?\n\n'
+                      'Rider Helpline: +91 1800 000 111\n'
+                      'Email: riders@kisanrider.app\n'
+                      'Hours: Mon–Sat, 9 AM to 9 PM IST\n\n'
+                      'For safety emergencies, dial 112 directly.\n\n'
+                      'Common questions:\n'
+                      '• How is my payout calculated? — Tap a completed '
+                      'trip under Earnings.\n'
+                      '• What if the farmer\'s OTP does not work? — Ask '
+                      'them to open My Orders and read the 4-digit code.\n'
+                      '• Trip cancelled mid-route? — Contact the helpline '
+                      'immediately with the trip ID.',
+                    ),
                   ),
                 ),
                 const Divider(height: 1, indent: 56),
                 _SettingsTile(
                   icon: Icons.gavel_outlined,
-                  title: 'Terms & Transport Rules',
+                  title: context.tr('Terms & Transport Rules'),
                   onTap: () => _showInfoDialog(
                     context,
-                    title: 'Transport Rules & Terms',
-                    body: 'Guidelines for safe freight hauling on '
-                        'KisanRider:\n\n'
-                        '1. Verify the pickup OTP before loading any '
-                        'crates. Never load without it.\n'
-                        '2. Photograph the loaded crates and the delivered '
-                        'consignment as proof.\n'
-                        '3. Payload limits: do not exceed your vehicle\'s '
-                        'declared capacity.\n'
-                        '4. Crate handling: stack no more than three high, '
-                        'and keep produce out of direct sun.\n'
-                        '5. Report accidents or spills within 15 minutes.\n'
-                        '6. Earnings settle within 24 hours of a '
-                        'successful delivery.\n\n'
-                        'By continuing to accept trips you agree to these '
-                        'rules and to KisanRider\'s privacy practices.',
+                    title: context.trAsync('Transport Rules & Terms'),
+                    body: context.trAsync(
+                      'Guidelines for safe freight hauling on '
+                      'KisanRider:\n\n'
+                      '1. Verify the pickup OTP before loading any '
+                      'crates. Never load without it.\n'
+                      '2. Photograph the loaded crates and the delivered '
+                      'consignment as proof.\n'
+                      '3. Payload limits: do not exceed your vehicle\'s '
+                      'declared capacity.\n'
+                      '4. Crate handling: stack no more than three high, '
+                      'and keep produce out of direct sun.\n'
+                      '5. Report accidents or spills within 15 minutes.\n'
+                      '6. Earnings settle within 24 hours of a '
+                      'successful delivery.\n\n'
+                      'By continuing to accept trips you agree to these '
+                      'rules and to KisanRider\'s privacy practices.',
+                    ),
                   ),
                 ),
               ],
@@ -575,7 +648,7 @@ class _RiderAccountScreenState extends State<RiderAccountScreen>
                 ),
               ),
               icon: const Icon(Icons.exit_to_app_rounded),
-              label: const Text('LOG OUT'),
+              label: Text(context.tr('LOG OUT')),
             ),
           ],
         ),
@@ -597,7 +670,7 @@ class _RiderAccountScreenState extends State<RiderAccountScreen>
           TextButton(
             onPressed: () => Navigator.of(dialogContext).pop(),
             style: TextButton.styleFrom(foregroundColor: kRiderGreen),
-            child: const Text('Close'),
+            child: Text(dialogContext.tr('Close')),
           ),
         ],
       ),
@@ -718,16 +791,24 @@ class _ProfileHeaderCard extends StatelessWidget {
             children: [
               _PillChip(
                 icon: Icons.location_on_outlined,
-                label: district.isEmpty
-                    ? 'Base District: Karnataka'
-                    : 'Base District: $district',
+                label: context.tr(
+                  'Base District: {district}',
+                  args: {
+                    'district': context.tr(
+                      district.isEmpty ? 'Karnataka' : district,
+                    ),
+                  },
+                ),
                 foreground: Colors.grey.shade800,
                 background: Colors.white,
                 border: Colors.grey.shade300,
               ),
               _PillChip(
                 icon: Icons.verified_user_outlined,
-                label: 'Role: $role',
+                label: context.tr(
+                  'Role: {role}',
+                  args: {'role': AppStrings.trRole(role, lang: context.watch<LanguageProvider>().languageCode)},
+                ),
                 foreground: kRiderGreen,
                 background: kRiderGreen.withOpacity(0.15),
                 border: kRiderGreen.withOpacity(0.5),
@@ -843,14 +924,14 @@ class _DutyStatusCard extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  'On-Duty Status',
+                  context.tr('On-Duty Status'),
                   style: theme.textTheme.titleSmall?.copyWith(
                     fontWeight: FontWeight.bold,
                   ),
                 ),
                 const SizedBox(height: 2),
                 Text(
-                  isOnDuty ? 'Available for Trips' : 'Offline',
+                  context.tr(isOnDuty ? 'Available for Trips' : 'Offline'),
                   style: theme.textTheme.bodySmall?.copyWith(
                     color: accent,
                     fontWeight: FontWeight.w600,
@@ -1089,7 +1170,7 @@ Future<Map<String, dynamic>?> _putRiderField({
   if (auth.token == null) {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
-        content: const Text('Not signed in.'),
+        content: Text(AppStrings.tr('Not signed in.')),
         backgroundColor: Colors.red.shade700,
       ),
     );
@@ -1111,7 +1192,10 @@ Future<Map<String, dynamic>?> _putRiderField({
       return jsonDecode(response.body) as Map<String, dynamic>;
     }
 
-    String message = 'Save failed (HTTP ${response.statusCode}).';
+    String message = AppStrings.tr(
+      'Save failed (HTTP {code}).',
+      args: {'code': '${response.statusCode}'},
+    );
     try {
       final decoded = jsonDecode(response.body);
       if (decoded is Map && decoded['detail'] != null) {
@@ -1136,7 +1220,9 @@ Future<Map<String, dynamic>?> _putRiderField({
         ..hideCurrentSnackBar()
         ..showSnackBar(
           SnackBar(
-            content: Text('Network error: $e'),
+            content: Text(
+              AppStrings.tr('Network error: {err}', args: {'err': '$e'}),
+            ),
             backgroundColor: Colors.red.shade700,
             behavior: SnackBarBehavior.floating,
           ),
@@ -1239,9 +1325,10 @@ class _RiderEditProfileSheetState extends State<_RiderEditProfileSheet> {
   @override
   Widget build(BuildContext context) {
     return _SheetScaffold(
-      title: 'Edit Profile',
-      subtitle:
-          'Your name and contact details as they appear to farmers.',
+      title: context.tr('Edit Profile'),
+      subtitle: context.tr(
+        'Your name and contact details as they appear to farmers.',
+      ),
       child: Form(
         key: _formKey,
         child: Column(
@@ -1251,22 +1338,20 @@ class _RiderEditProfileSheetState extends State<_RiderEditProfileSheet> {
               controller: _fullName,
               enabled: !_isSubmitting,
               textCapitalization: TextCapitalization.words,
-              decoration: const InputDecoration(
-                labelText: 'Full Name',
-                border: OutlineInputBorder(),
-                prefixIcon: Icon(Icons.person_outline),
+              decoration: InputDecoration(
+                labelText: context.tr('Full Name'),
+                border: const OutlineInputBorder(),
+                prefixIcon: const Icon(Icons.person_outline),
               ),
               validator: (v) {
-                if ((v ?? '').trim().isEmpty) return 'Name is required';
+                if ((v ?? '').trim().isEmpty) {
+                  return context.trAsync('Name is required');
+                }
                 return null;
               },
             ),
             const SizedBox(height: 14),
 
-            // Contact phone number. The "+91 " prefix is decoration; the
-            // controller value is just the 10 digits. inputFormatters
-            // enforce digits-only + max length so the field can't produce
-            // a value the validator would reject on shape grounds.
             TextFormField(
               controller: _phone,
               enabled: !_isSubmitting,
@@ -1275,39 +1360,35 @@ class _RiderEditProfileSheetState extends State<_RiderEditProfileSheet> {
                 FilteringTextInputFormatter.digitsOnly,
                 LengthLimitingTextInputFormatter(10),
               ],
-              decoration: const InputDecoration(
-                labelText: 'Contact Phone Number',
+              decoration: InputDecoration(
+                labelText: context.tr('Contact Phone Number'),
                 hintText: '9876543210',
-                border: OutlineInputBorder(),
-                prefixIcon: Icon(Icons.phone),
+                border: const OutlineInputBorder(),
+                prefixIcon: const Icon(Icons.phone),
                 prefixText: '+91 ',
-                helperText:
-                    'Shared with the farmer on active trips',
+                helperText: context.tr('Shared with the farmer on active trips'),
               ),
               validator: (v) {
                 final value = (v ?? '').trim();
-                // Optional field — a rider who doesn't want to share a
-                // number can leave it blank.
                 if (value.isEmpty) return null;
                 if (!RegExp(r'^\d{10}$').hasMatch(value)) {
-                  return 'Enter a valid 10-digit mobile number';
+                  return context.trAsync('Enter a valid 10-digit mobile number');
                 }
                 return null;
               },
             ),
             const SizedBox(height: 14),
 
-            // Email is intentionally read-only: changing it is a privileged
-            // operation that would need re-verification. Shown so the user
-            // sees which address their OTPs go to.
             TextFormField(
               initialValue: (widget.account?['email'] ?? '').toString(),
               enabled: false,
-              decoration: const InputDecoration(
-                labelText: 'Email Address',
-                helperText: 'Contact support to change your login email',
-                border: OutlineInputBorder(),
-                prefixIcon: Icon(Icons.email_outlined),
+              decoration: InputDecoration(
+                labelText: context.tr('Email Address'),
+                helperText: context.tr(
+                  'Contact support to change your login email',
+                ),
+                border: const OutlineInputBorder(),
+                prefixIcon: const Icon(Icons.email_outlined),
                 filled: true,
               ),
             ),
@@ -1316,15 +1397,15 @@ class _RiderEditProfileSheetState extends State<_RiderEditProfileSheet> {
             DropdownButtonFormField<String>(
               value: _district,
               isExpanded: true,
-              decoration: const InputDecoration(
-                labelText: 'Base District',
-                border: OutlineInputBorder(),
-                prefixIcon: Icon(Icons.map_outlined),
+              decoration: InputDecoration(
+                labelText: context.tr('Base District'),
+                border: const OutlineInputBorder(),
+                prefixIcon: const Icon(Icons.map_outlined),
               ),
               items: _districts
                   .map((d) => DropdownMenuItem<String>(
                         value: d,
-                        child: Text(d, overflow: TextOverflow.ellipsis),
+                        child: Text(context.tr(d), overflow: TextOverflow.ellipsis),
                       ))
                   .toList(),
               onChanged: _isSubmitting
@@ -1334,7 +1415,7 @@ class _RiderEditProfileSheetState extends State<_RiderEditProfileSheet> {
             const SizedBox(height: 22),
 
             _SheetSubmitButton(
-              label: 'SAVE PROFILE',
+              label: context.tr('SAVE PROFILE'),
               isSubmitting: _isSubmitting,
               onPressed: _submit,
             ),
@@ -1419,9 +1500,10 @@ class _VehicleDetailsSheetState extends State<_VehicleDetailsSheet> {
   @override
   Widget build(BuildContext context) {
     return _SheetScaffold(
-      title: 'Vehicle & License Info',
-      subtitle:
-          'Shown to farmers so they know what kind of vehicle to expect.',
+      title: context.tr('Vehicle & License Info'),
+      subtitle: context.tr(
+        'Shown to farmers so they know what kind of vehicle to expect.',
+      ),
       child: Form(
         key: _formKey,
         child: Column(
@@ -1431,11 +1513,11 @@ class _VehicleDetailsSheetState extends State<_VehicleDetailsSheet> {
               controller: _license,
               enabled: !_isSubmitting,
               textCapitalization: TextCapitalization.characters,
-              decoration: const InputDecoration(
-                labelText: 'Driving License Number',
-                hintText: 'e.g. KA0120190001234',
-                border: OutlineInputBorder(),
-                prefixIcon: Icon(Icons.badge_outlined),
+              decoration: InputDecoration(
+                labelText: context.tr('Driving License Number'),
+                hintText: context.tr('e.g. KA0120190001234'),
+                border: const OutlineInputBorder(),
+                prefixIcon: const Icon(Icons.badge_outlined),
               ),
             ),
             const SizedBox(height: 14),
@@ -1444,11 +1526,11 @@ class _VehicleDetailsSheetState extends State<_VehicleDetailsSheet> {
               controller: _vehicleType,
               enabled: !_isSubmitting,
               textCapitalization: TextCapitalization.words,
-              decoration: const InputDecoration(
-                labelText: 'Vehicle Model',
-                hintText: 'e.g. Tata Ace / Bolero Pickup',
-                border: OutlineInputBorder(),
-                prefixIcon: Icon(Icons.local_shipping_outlined),
+              decoration: InputDecoration(
+                labelText: context.tr('Vehicle Model'),
+                hintText: context.tr('e.g. Tata Ace / Bolero Pickup'),
+                border: const OutlineInputBorder(),
+                prefixIcon: const Icon(Icons.local_shipping_outlined),
               ),
             ),
             const SizedBox(height: 14),
@@ -1457,11 +1539,11 @@ class _VehicleDetailsSheetState extends State<_VehicleDetailsSheet> {
               controller: _vehicleNumber,
               enabled: !_isSubmitting,
               textCapitalization: TextCapitalization.characters,
-              decoration: const InputDecoration(
-                labelText: 'Vehicle Plate Number',
-                hintText: 'e.g. KA01AB1234',
-                border: OutlineInputBorder(),
-                prefixIcon: Icon(Icons.directions_car_outlined),
+              decoration: InputDecoration(
+                labelText: context.tr('Vehicle Plate Number'),
+                hintText: context.tr('e.g. KA01AB1234'),
+                border: const OutlineInputBorder(),
+                prefixIcon: const Icon(Icons.directions_car_outlined),
               ),
             ),
             const SizedBox(height: 14),
@@ -1474,20 +1556,20 @@ class _VehicleDetailsSheetState extends State<_VehicleDetailsSheet> {
               inputFormatters: [
                 FilteringTextInputFormatter.allow(RegExp(r'[0-9.]')),
               ],
-              decoration: const InputDecoration(
-                labelText: 'Max Payload Capacity',
-                hintText: 'e.g. 750',
-                helperText: 'Total weight your vehicle can safely carry',
-                border: OutlineInputBorder(),
-                prefixIcon: Icon(Icons.scale_outlined),
-                suffixText: 'kg',
+              decoration: InputDecoration(
+                labelText: context.tr('Max Payload Capacity'),
+                hintText: context.tr('e.g. 750'),
+                helperText: context.tr('Total weight your vehicle can safely carry'),
+                border: const OutlineInputBorder(),
+                prefixIcon: const Icon(Icons.scale_outlined),
+                suffixText: context.tr('kg'),
               ),
               validator: (v) {
                 final value = (v ?? '').trim();
                 if (value.isEmpty) return null; // optional
                 final parsed = double.tryParse(value);
                 if (parsed == null || parsed < 0) {
-                  return 'Enter a valid non-negative number';
+                  return context.trAsync('Enter a valid non-negative number');
                 }
                 return null;
               },
@@ -1495,7 +1577,7 @@ class _VehicleDetailsSheetState extends State<_VehicleDetailsSheet> {
             const SizedBox(height: 22),
 
             _SheetSubmitButton(
-              label: 'SAVE VEHICLE DETAILS',
+              label: context.tr('SAVE VEHICLE DETAILS'),
               isSubmitting: _isSubmitting,
               onPressed: _submit,
             ),
@@ -1591,10 +1673,10 @@ class _RoutesSheetState extends State<_RoutesSheet> {
     final theme = Theme.of(context);
 
     return _SheetScaffold(
-      title: 'Operating Districts & Routes',
-      subtitle:
-          'You will only see trips that start in these districts. Leave '
-          'blank to see everything.',
+      title: context.tr('Operating Districts & Routes'),
+      subtitle: context.tr(
+        'You will only see trips that start in these districts. Leave blank to see everything.',
+      ),
       child: Form(
         key: _formKey,
         child: Column(
@@ -1606,18 +1688,18 @@ class _RoutesSheetState extends State<_RoutesSheet> {
               maxLines: 2,
               minLines: 2,
               textCapitalization: TextCapitalization.words,
-              decoration: const InputDecoration(
-                labelText: 'Operating Districts / Routes',
-                hintText: 'e.g. Kolar, Bengaluru Urban, Tumakuru',
-                helperText: 'Separate multiple districts with commas',
-                border: OutlineInputBorder(),
+              decoration: InputDecoration(
+                labelText: context.tr('Operating Districts / Routes'),
+                hintText: context.tr('e.g. Kolar, Bengaluru Urban, Tumakuru'),
+                helperText: context.tr('Separate multiple districts with commas'),
+                border: const OutlineInputBorder(),
                 alignLabelWithHint: true,
               ),
             ),
             const SizedBox(height: 18),
 
             Text(
-              'Quick add',
+              context.tr('Quick add'),
               style: theme.textTheme.bodySmall?.copyWith(
                 color: theme.colorScheme.onSurfaceVariant,
                 fontWeight: FontWeight.w600,
@@ -1630,7 +1712,7 @@ class _RoutesSheetState extends State<_RoutesSheet> {
               children: _commonDistricts
                   .map(
                     (d) => ActionChip(
-                      label: Text(d, style: const TextStyle(fontSize: 12.5)),
+                      label: Text(context.tr(d), style: const TextStyle(fontSize: 12.5)),
                       onPressed:
                           _isSubmitting ? null : () => _appendDistrict(d),
                       backgroundColor: kRiderGreen.withOpacity(0.08),
@@ -1645,7 +1727,7 @@ class _RoutesSheetState extends State<_RoutesSheet> {
             const SizedBox(height: 22),
 
             _SheetSubmitButton(
-              label: 'SAVE ROUTES',
+              label: context.tr('SAVE ROUTES'),
               isSubmitting: _isSubmitting,
               onPressed: _submit,
             ),
@@ -1724,10 +1806,10 @@ class _PayoutDetailsSheetState extends State<_PayoutDetailsSheet> {
   @override
   Widget build(BuildContext context) {
     return _SheetScaffold(
-      title: 'Payout Details',
-      subtitle:
-          'Where your trip earnings are settled. Either bank or UPI is '
-          'enough.',
+      title: context.tr('Payout Details'),
+      subtitle: context.tr(
+        'Where your trip earnings are settled. Either bank or UPI is enough.',
+      ),
       child: Form(
         key: _formKey,
         child: Column(
@@ -1737,11 +1819,11 @@ class _PayoutDetailsSheetState extends State<_PayoutDetailsSheet> {
               controller: _bankName,
               enabled: !_isSubmitting,
               textCapitalization: TextCapitalization.words,
-              decoration: const InputDecoration(
-                labelText: 'Bank Name',
-                hintText: 'e.g. State Bank of India',
-                border: OutlineInputBorder(),
-                prefixIcon: Icon(Icons.account_balance_outlined),
+              decoration: InputDecoration(
+                labelText: context.tr('Bank Name'),
+                hintText: context.tr('e.g. State Bank of India'),
+                border: const OutlineInputBorder(),
+                prefixIcon: const Icon(Icons.account_balance_outlined),
               ),
             ),
             const SizedBox(height: 14),
@@ -1754,10 +1836,10 @@ class _PayoutDetailsSheetState extends State<_PayoutDetailsSheet> {
                 FilteringTextInputFormatter.digitsOnly,
                 LengthLimitingTextInputFormatter(30),
               ],
-              decoration: const InputDecoration(
-                labelText: 'Account Number',
-                border: OutlineInputBorder(),
-                prefixIcon: Icon(Icons.numbers_outlined),
+              decoration: InputDecoration(
+                labelText: context.tr('Account Number'),
+                border: const OutlineInputBorder(),
+                prefixIcon: const Icon(Icons.numbers_outlined),
               ),
             ),
             const SizedBox(height: 14),
@@ -1770,11 +1852,11 @@ class _PayoutDetailsSheetState extends State<_PayoutDetailsSheet> {
                 LengthLimitingTextInputFormatter(11),
                 FilteringTextInputFormatter.allow(RegExp(r'[A-Za-z0-9]')),
               ],
-              decoration: const InputDecoration(
-                labelText: 'IFSC Code',
-                hintText: 'e.g. SBIN0001234',
-                border: OutlineInputBorder(),
-                prefixIcon: Icon(Icons.tag_outlined),
+              decoration: InputDecoration(
+                labelText: context.tr('IFSC Code'),
+                hintText: context.tr('e.g. SBIN0001234'),
+                border: const OutlineInputBorder(),
+                prefixIcon: const Icon(Icons.tag_outlined),
               ),
             ),
             const SizedBox(height: 14),
@@ -1783,17 +1865,17 @@ class _PayoutDetailsSheetState extends State<_PayoutDetailsSheet> {
               controller: _upiId,
               enabled: !_isSubmitting,
               autocorrect: false,
-              decoration: const InputDecoration(
-                labelText: 'UPI ID (optional)',
-                hintText: 'e.g. name@okicici',
-                border: OutlineInputBorder(),
-                prefixIcon: Icon(Icons.qr_code_2_outlined),
+              decoration: InputDecoration(
+                labelText: context.tr('UPI ID (optional)'),
+                hintText: context.tr('e.g. name@okicici'),
+                border: const OutlineInputBorder(),
+                prefixIcon: const Icon(Icons.qr_code_2_outlined),
               ),
             ),
             const SizedBox(height: 22),
 
             _SheetSubmitButton(
-              label: 'SAVE PAYOUT DETAILS',
+              label: context.tr('SAVE PAYOUT DETAILS'),
               isSubmitting: _isSubmitting,
               onPressed: _submit,
             ),
@@ -1820,13 +1902,13 @@ class _LanguagePickerSheet extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return _SheetScaffold(
-      title: 'App Language',
-      subtitle: 'Choose the language used across KisanRider.',
+      title: context.tr('App Language'),
+      subtitle: context.tr('Choose the language used across KisanRider.'),
       child: Column(
         children: [
           _LanguageOption(
             code: 'en',
-            label: 'English',
+            label: context.tr('English'),
             nativeLabel: 'English',
             selected: current == 'en',
             onTap: () {
@@ -1837,7 +1919,7 @@ class _LanguagePickerSheet extends StatelessWidget {
           const SizedBox(height: 8),
           _LanguageOption(
             code: 'kn',
-            label: 'Kannada',
+            label: context.tr('Kannada'),
             nativeLabel: 'ಕನ್ನಡ',
             selected: current == 'kn',
             onTap: () {
@@ -1963,7 +2045,9 @@ class _ChangePasswordSheetState extends State<_ChangePasswordSheet> {
 
   Future<void> _sendOtp() async {
     if (widget.email.isEmpty) {
-      _showError('No email on file. Please contact support.');
+      _showError(
+        context.trAsync('No email on file. Please contact support.'),
+      );
       return;
     }
     setState(() => _isSubmitting = true);
@@ -1989,13 +2073,18 @@ class _ChangePasswordSheetState extends State<_ChangePasswordSheet> {
           ..hideCurrentSnackBar()
           ..showSnackBar(
             SnackBar(
-              content: Text('OTP sent to ${widget.email}'),
+              content: Text(
+                context.trAsync('OTP sent to {email}', args: {'email': widget.email}),
+              ),
               backgroundColor: kRiderGreen,
             ),
           );
       } else {
         setState(() => _isSubmitting = false);
-        String message = 'Could not send OTP (HTTP ${response.statusCode}).';
+        String message = context.trAsync(
+          'Could not send OTP (HTTP {code}).',
+          args: {'code': '${response.statusCode}'},
+        );
         try {
           final decoded = jsonDecode(response.body);
           if (decoded is Map && decoded['detail'] != null) {
@@ -2007,7 +2096,7 @@ class _ChangePasswordSheetState extends State<_ChangePasswordSheet> {
     } catch (e) {
       if (!mounted) return;
       setState(() => _isSubmitting = false);
-      _showError('Network error: $e');
+      _showError(context.trAsync('Network error: {err}', args: {'err': '$e'}));
     }
   }
 
@@ -2035,8 +2124,10 @@ class _ChangePasswordSheetState extends State<_ChangePasswordSheet> {
         Navigator.of(context).pop(true);
       } else {
         setState(() => _isSubmitting = false);
-        String message =
-            'Password change failed (HTTP ${response.statusCode}).';
+        String message = context.trAsync(
+          'Password change failed (HTTP {code}).',
+          args: {'code': '${response.statusCode}'},
+        );
         try {
           final decoded = jsonDecode(response.body);
           if (decoded is Map && decoded['detail'] != null) {
@@ -2048,17 +2139,19 @@ class _ChangePasswordSheetState extends State<_ChangePasswordSheet> {
     } catch (e) {
       if (!mounted) return;
       setState(() => _isSubmitting = false);
-      _showError('Network error: $e');
+      _showError(context.trAsync('Network error: {err}', args: {'err': '$e'}));
     }
   }
 
   @override
   Widget build(BuildContext context) {
     return _SheetScaffold(
-      title: 'Change Password',
-      subtitle: _step == _stepRequest
-          ? 'We will email a one-time code to confirm it is you.'
-          : 'Enter the code we sent and choose a new password.',
+      title: context.tr('Change Password'),
+      subtitle: context.tr(
+        _step == _stepRequest
+            ? 'We will email a one-time code to confirm it is you.'
+            : 'Enter the code we sent and choose a new password.',
+      ),
       child: AnimatedSize(
         duration: const Duration(milliseconds: 240),
         curve: Curves.easeOutCubic,
@@ -2092,7 +2185,7 @@ class _ChangePasswordSheetState extends State<_ChangePasswordSheet> {
               const SizedBox(width: 10),
               Expanded(
                 child: Text(
-                  widget.email.isEmpty ? 'No email on file' : widget.email,
+                  widget.email.isEmpty ? context.tr('No email on file') : widget.email,
                   style: const TextStyle(fontWeight: FontWeight.w600),
                   overflow: TextOverflow.ellipsis,
                 ),
@@ -2102,7 +2195,7 @@ class _ChangePasswordSheetState extends State<_ChangePasswordSheet> {
         ),
         const SizedBox(height: 22),
         _SheetSubmitButton(
-          label: 'SEND OTP',
+          label: context.tr('SEND OTP'),
           isSubmitting: _isSubmitting,
           onPressed: _sendOtp,
         ),
@@ -2125,17 +2218,17 @@ class _ChangePasswordSheetState extends State<_ChangePasswordSheet> {
               FilteringTextInputFormatter.digitsOnly,
               LengthLimitingTextInputFormatter(4),
             ],
-            decoration: const InputDecoration(
-              labelText: '4-Digit OTP',
+            decoration: InputDecoration(
+              labelText: context.tr('4-Digit OTP'),
               hintText: '••••',
-              border: OutlineInputBorder(),
-              prefixIcon: Icon(Icons.password_rounded),
+              border: const OutlineInputBorder(),
+              prefixIcon: const Icon(Icons.password_rounded),
               counterText: '',
             ),
             validator: (v) {
               final value = (v ?? '').trim();
               if (!RegExp(r'^\d{4}$').hasMatch(value)) {
-                return 'Enter the 4-digit code';
+                return context.trAsync('Enter the 4-digit code');
               }
               return null;
             },
@@ -2147,12 +2240,12 @@ class _ChangePasswordSheetState extends State<_ChangePasswordSheet> {
             enabled: !_isSubmitting,
             obscureText: _obscureNew,
             decoration: InputDecoration(
-              labelText: 'New Password',
-              hintText: 'At least 6 characters',
+              labelText: context.tr('New Password'),
+              hintText: context.tr('At least 6 characters'),
               border: const OutlineInputBorder(),
               prefixIcon: const Icon(Icons.lock_outline),
               suffixIcon: IconButton(
-                tooltip: _obscureNew ? 'Show' : 'Hide',
+                tooltip: context.tr(_obscureNew ? 'Show' : 'Hide'),
                 icon: Icon(
                   _obscureNew
                       ? Icons.visibility_outlined
@@ -2163,8 +2256,8 @@ class _ChangePasswordSheetState extends State<_ChangePasswordSheet> {
             ),
             validator: (v) {
               final value = v ?? '';
-              if (value.isEmpty) return 'New password is required';
-              if (value.length < 6) return 'At least 6 characters';
+              if (value.isEmpty) return context.trAsync('New password is required');
+              if (value.length < 6) return context.trAsync('At least 6 characters');
               return null;
             },
           ),
@@ -2175,11 +2268,11 @@ class _ChangePasswordSheetState extends State<_ChangePasswordSheet> {
             enabled: !_isSubmitting,
             obscureText: _obscureConfirm,
             decoration: InputDecoration(
-              labelText: 'Confirm New Password',
+              labelText: context.tr('Confirm New Password'),
               border: const OutlineInputBorder(),
               prefixIcon: const Icon(Icons.lock_reset_outlined),
               suffixIcon: IconButton(
-                tooltip: _obscureConfirm ? 'Show' : 'Hide',
+                tooltip: context.tr(_obscureConfirm ? 'Show' : 'Hide'),
                 icon: Icon(
                   _obscureConfirm
                       ? Icons.visibility_outlined
@@ -2191,9 +2284,11 @@ class _ChangePasswordSheetState extends State<_ChangePasswordSheet> {
             ),
             validator: (v) {
               final value = v ?? '';
-              if (value.isEmpty) return 'Please confirm your new password';
+              if (value.isEmpty) {
+                return context.trAsync('Please confirm your new password');
+              }
               if (value != _newPasswordController.text) {
-                return 'Passwords do not match';
+                return context.trAsync('Passwords do not match');
               }
               return null;
             },
@@ -2201,7 +2296,7 @@ class _ChangePasswordSheetState extends State<_ChangePasswordSheet> {
           const SizedBox(height: 22),
 
           _SheetSubmitButton(
-            label: 'RESET PASSWORD',
+            label: context.tr('RESET PASSWORD'),
             isSubmitting: _isSubmitting,
             onPressed: _resetPassword,
           ),
@@ -2234,7 +2329,7 @@ class _ErrorView extends StatelessWidget {
                 size: 56, color: theme.colorScheme.error),
             const SizedBox(height: 16),
             Text(
-              'Could not load account',
+              context.tr('Could not load account'),
               style: theme.textTheme.titleMedium
                   ?.copyWith(fontWeight: FontWeight.w600),
             ),
@@ -2249,7 +2344,7 @@ class _ErrorView extends StatelessWidget {
             OutlinedButton.icon(
               onPressed: onRetry,
               icon: const Icon(Icons.refresh),
-              label: const Text('Retry'),
+              label: Text(context.tr('Retry')),
             ),
           ],
         ),

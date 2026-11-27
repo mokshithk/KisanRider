@@ -84,6 +84,7 @@ class PoolMember {
   final String status;
   final DateTime requestedAt;
   final String? farmerFullName;
+  final String? pickupOtp;
 
   PoolMember({
     required this.id,
@@ -93,6 +94,7 @@ class PoolMember {
     required this.status,
     required this.requestedAt,
     this.farmerFullName,
+    this.pickupOtp,
   });
 
   factory PoolMember.fromJson(Map<String, dynamic> json) {
@@ -104,6 +106,7 @@ class PoolMember {
       status: json['status']?.toString() ?? 'REQUESTED',
       requestedAt: DateTime.tryParse(json['requested_at']?.toString() ?? '') ?? DateTime.now(),
       farmerFullName: json['farmer_full_name']?.toString(),
+      pickupOtp: json['pickup_otp']?.toString(),
     );
   }
 }
@@ -128,9 +131,64 @@ class PoolStop {
   }
 }
 
+class PoolMemberSettlement {
+  final String id;
+  final String status;
+  final String? cropName;
+  final double? quantityKg;
+  final double? ratePerKg;
+  final String? rateSource;
+  final double? grossAmount;
+  final double? riderFare;
+  final double? platformFee;
+  final double? netPayout;
+  final String? paymentReference;
+  final DateTime? paidAt;
+
+  PoolMemberSettlement({
+    required this.id,
+    required this.status,
+    this.cropName,
+    this.quantityKg,
+    this.ratePerKg,
+    this.rateSource,
+    this.grossAmount,
+    this.riderFare,
+    this.platformFee,
+    this.netPayout,
+    this.paymentReference,
+    this.paidAt,
+  });
+
+  factory PoolMemberSettlement.fromJson(Map<String, dynamic> json) {
+    return PoolMemberSettlement(
+      id: (json['id'] ?? '').toString(),
+      status: (json['status'] ?? 'PENDING').toString(),
+      cropName: json['crop_name']?.toString(),
+      quantityKg: (json['quantity_kg'] as num?)?.toDouble(),
+      ratePerKg: (json['rate_per_kg'] as num?)?.toDouble(),
+      rateSource: json['rate_source']?.toString(),
+      grossAmount: (json['gross_amount'] as num?)?.toDouble(),
+      riderFare: (json['rider_fare'] as num?)?.toDouble(),
+      platformFee: (json['platform_fee'] as num?)?.toDouble(),
+      netPayout: (json['net_payout'] as num?)?.toDouble(),
+      paymentReference: json['payment_reference']?.toString(),
+      paidAt: json['paid_at'] is String
+          ? DateTime.tryParse(json['paid_at'] as String)
+          : null,
+    );
+  }
+
+  bool get isPaid => status.toUpperCase() == 'PAID';
+}
+
 class PoolDetail extends Pool {
   final List<PoolMember> members;
   final List<PoolStop> stops;
+  final PoolMemberSettlement? mySettlement;
+  final String? poolPaymentStatus;
+  final double? poolTotalCropValue;
+  final String? poolPaymentReference;
 
   PoolDetail({
     required super.id,
@@ -156,6 +214,10 @@ class PoolDetail extends Pool {
     super.driverVehicle,
     required this.members,
     required this.stops,
+    this.mySettlement,
+    this.poolPaymentStatus,
+    this.poolTotalCropValue,
+    this.poolPaymentReference,
   });
 
   factory PoolDetail.fromJson(Map<String, dynamic> json) {
@@ -168,6 +230,7 @@ class PoolDetail extends Pool {
             ?.map((e) => PoolStop.fromJson(e as Map<String, dynamic>))
             .toList() ??
         [];
+    final rawSettle = json['my_settlement'];
 
     return PoolDetail(
       id: pool.id,
@@ -193,6 +256,12 @@ class PoolDetail extends Pool {
       driverVehicle: pool.driverVehicle,
       members: membersList,
       stops: stopsList,
+      mySettlement: rawSettle is Map<String, dynamic>
+          ? PoolMemberSettlement.fromJson(rawSettle)
+          : null,
+      poolPaymentStatus: json['pool_payment_status']?.toString(),
+      poolTotalCropValue: (json['pool_total_crop_value'] as num?)?.toDouble(),
+      poolPaymentReference: json['pool_payment_reference']?.toString(),
     );
   }
 }

@@ -4,11 +4,7 @@ import {
   Eye,
   XCircle,
   RefreshCw,
-  Navigation,
-  QrCode,
   AlertCircle,
-  CheckCircle2,
-  Calendar,
 } from 'lucide-react';
 import { adminService } from '../services/adminService';
 import DataTable from '../components/common/DataTable';
@@ -119,8 +115,8 @@ export default function Trips() {
       accessor: 'rider_name',
       render: (row) => (
         <div>
-          <span className="font-semibold text-text-primary block">{row.rider_name}</span>
-          <span className="text-[11px] text-text-secondary">{row.rider_phone || '-'}</span>
+          <span className="font-semibold text-text-primary block leading-tight">{row.rider_name}</span>
+          <span className="text-[11px] text-text-secondary mt-0.5 block">{row.rider_phone || '-'}</span>
         </div>
       ),
     },
@@ -129,8 +125,8 @@ export default function Trips() {
       accessor: 'farmer_name',
       render: (row) => (
         <div>
-          <span className="font-medium text-text-primary block">{row.farmer_name}</span>
-          <span className="text-[11px] text-text-secondary">
+          <span className="font-medium text-text-primary block leading-tight">{row.farmer_name}</span>
+          <span className="text-[11px] text-text-secondary mt-0.5 block">
             {row.crop_type} ({row.weight_kg} kg)
           </span>
         </div>
@@ -141,7 +137,7 @@ export default function Trips() {
       accessor: 'pool_id',
       render: (row) =>
         row.pool_id ? (
-          <span className="font-mono text-[11px] px-2 py-0.5 rounded bg-surface-subtle text-forest border border-surface-border">
+          <span className="font-mono text-[11px] px-2.5 py-0.5 rounded-full bg-surface-subtle text-forest border border-surface-border inline-block">
             Pool #{row.pool_id.slice(0, 6)}
           </span>
         ) : (
@@ -156,7 +152,7 @@ export default function Trips() {
           <span className="block truncate text-text-primary text-xs" title={row.pickup_address}>
             From: {row.pickup_address || 'Origin'}
           </span>
-          <span className="block truncate text-text-secondary text-[11px]" title={row.destination}>
+          <span className="block truncate text-text-secondary text-[11px] mt-0.5" title={row.destination}>
             To: {row.destination || 'Mandi'}
           </span>
         </div>
@@ -182,16 +178,18 @@ export default function Trips() {
           <div className="flex items-center justify-end space-x-1.5">
             <button
               onClick={() => openDetail(row)}
-              className="p-1.5 rounded text-text-secondary hover:text-forest hover:bg-surface-subtle transition-colors"
+              className="p-1.5 rounded-lg text-text-secondary hover:text-forest hover:bg-surface-subtle transition-colors"
               title="Inspect Trip"
+              aria-label="Inspect Trip"
             >
               <Eye className="w-4 h-4" />
             </button>
             {isEligibleForCancel && (
               <button
                 onClick={() => setCancelModal({ isOpen: true, trip: row })}
-                className="p-1.5 rounded text-rose-600 hover:bg-rose-50 transition-colors"
+                className="p-1.5 rounded-lg text-rose-600 hover:bg-rose-50 transition-colors"
                 title="Cancel Trip"
+                aria-label="Cancel Trip"
               >
                 <XCircle className="w-4 h-4" />
               </button>
@@ -205,37 +203,37 @@ export default function Trips() {
   return (
     <div className="space-y-5">
       {/* Information Header */}
-      <div className="p-3.5 bg-white rounded-lg border border-surface-border text-xs text-text-secondary flex items-start space-x-2.5 shadow-xs">
+      <div className="p-4 bg-white rounded-xl border border-surface-border text-xs text-text-secondary flex items-start space-x-3 shadow-xs">
         <AlertCircle className="w-4 h-4 text-forest shrink-0 mt-0.5" />
         <p className="leading-relaxed">
-          <strong className="text-text-primary">Operational Rule:</strong> Completed or delivered
+          <strong className="text-text-primary font-semibold">Operational Rule:</strong> Completed or delivered
           trips cannot be cancelled. Administrative cancellation requires a mandatory audit reason
           and safely transitions active telemetry states.
         </p>
       </div>
 
       {toastMessage && (
-        <div className="p-3 rounded-lg bg-emerald-50 border border-emerald-200 text-xs font-semibold text-emerald-900 animate-in fade-in">
+        <div className="p-3.5 rounded-xl bg-emerald-50 border border-emerald-200/80 text-xs font-semibold text-emerald-900 animate-in fade-in">
           {toastMessage}
         </div>
       )}
 
       {/* Search and Filters */}
-      <div className="bg-white p-4 rounded-lg border border-surface-border flex flex-col md:flex-row md:items-center justify-between gap-3 shadow-xs">
+      <div className="bg-white p-4 rounded-xl border border-surface-border flex flex-col md:flex-row md:items-center justify-between gap-3 shadow-xs">
         <form onSubmit={handleSearchSubmit} className="flex-1 flex items-center space-x-2">
           <div className="relative flex-1 max-w-md">
-            <Search className="w-4 h-4 absolute left-3 top-2.5 text-text-secondary" />
+            <Search className="w-4 h-4 absolute left-3 top-2.5 text-text-muted" />
             <input
               type="text"
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
               placeholder="Search by pickup address or trip ID..."
-              className="w-full text-xs rounded border border-surface-border pl-9 pr-3 py-2 focus:outline-none focus:ring-1 focus:ring-forest text-text-primary"
+              className="w-full text-xs rounded-lg border border-surface-border pl-9 pr-3 py-2 bg-white text-text-primary placeholder:text-text-muted focus:outline-none focus:ring-2 focus:ring-forest/20 focus:border-forest transition-all"
             />
           </div>
           <button
             type="submit"
-            className="px-3.5 py-2 text-xs font-medium rounded bg-forest text-white hover:bg-forest-light transition-colors"
+            className="px-4 py-2 text-xs font-semibold rounded-lg bg-forest text-white hover:bg-forest-light transition-colors shadow-xs"
           >
             Search
           </button>
@@ -245,9 +243,10 @@ export default function Trips() {
           <select
             value={statusFilter}
             onChange={(e) => setStatusFilter(e.target.value)}
-            className="text-xs rounded border border-surface-border px-3 py-2 bg-white text-text-primary focus:outline-none focus:ring-1 focus:ring-forest"
+            className="text-xs rounded-lg border border-surface-border px-3 py-2 bg-white text-text-primary focus:outline-none focus:ring-2 focus:ring-forest/20 focus:border-forest transition-all"
           >
             <option value="ALL">All Trip Statuses</option>
+            <option value="DRIVER_ASSIGNED">Driver Assigned</option>
             <option value="ACCEPTED">Accepted</option>
             <option value="IN_TRANSIT">In Transit</option>
             <option value="DELIVERED">Delivered</option>
@@ -256,10 +255,11 @@ export default function Trips() {
 
           <button
             onClick={() => fetchTrips(page)}
-            className="p-2 rounded border border-surface-border text-text-secondary hover:text-text-primary hover:bg-surface-subtle transition-colors"
+            className="p-2 rounded-lg border border-surface-border text-text-secondary hover:text-text-primary hover:bg-surface-subtle transition-colors shadow-xs"
             title="Refresh list"
+            aria-label="Refresh list"
           >
-            <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
+            <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin text-forest' : ''}`} />
           </button>
         </div>
       </div>
@@ -274,22 +274,24 @@ export default function Trips() {
         totalPages={totalPages}
         onPageChange={(p) => fetchTrips(p)}
         isLoading={loading}
-        emptyMessage="No trips matching criteria."
+        emptyMessage="No trips matching criteria found."
       />
 
-      {/* Cancellation Confirmation Modal */}
+      {/* Cancellation Modal */}
       <ConfirmationModal
         isOpen={cancelModal.isOpen}
         onClose={() => setCancelModal({ isOpen: false, trip: null })}
         onConfirm={handleCancelConfirm}
-        title="Administrative Trip Cancellation"
+        title="Cancel Trip Dispatch"
         actionType="danger"
         affectedRecord={
-          cancelModal.trip ? `Trip #${cancelModal.trip.id.slice(0, 8)} (${cancelModal.trip.rider_name})` : ''
+          cancelModal.trip
+            ? `Trip #${cancelModal.trip.id.slice(0, 8)} (${cancelModal.trip.crop_type} - ${cancelModal.trip.farmer_name})`
+            : ''
         }
-        consequences="Cancelling this trip immediately halts transit tracking and marks both the trip and the linked produce dispatch as CANCELLED."
+        consequences="Cancelling this trip immediately revokes driver assignment, returns produce to pending queue, and logs this action in the activity audit trail."
         requireReason={true}
-        reasonPlaceholder="Specify operational reason for cancelling this trip..."
+        reasonPlaceholder="Specify administrative reason for trip cancellation..."
         confirmText="Confirm Trip Cancellation"
         isLoading={cancelLoading}
       />
@@ -298,7 +300,7 @@ export default function Trips() {
       <DetailModal
         isOpen={isDetailOpen}
         onClose={() => setIsDetailOpen(false)}
-        title={selectedTrip ? `Trip #${selectedTrip.trip.id.slice(0, 8)}` : 'Trip Detail'}
+        title={selectedTrip ? `Trip #${selectedTrip.trip.id.slice(0, 8)} Details` : 'Trip Overview'}
         subtitle={
           selectedTrip?.trip.created_at
             ? `Dispatched on ${new Date(selectedTrip.trip.created_at).toLocaleString()}`
@@ -309,84 +311,71 @@ export default function Trips() {
         {detailLoading ? (
           <div className="py-12 text-center text-text-secondary text-xs">Loading trip lifecycle...</div>
         ) : selectedTrip ? (
-          <div className="space-y-5">
-            {/* Highlights */}
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 bg-surface-subtle p-3.5 rounded-lg border border-surface-border text-xs">
+          <div className="space-y-6">
+            {/* Top Stat Overview */}
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 bg-surface-subtle/70 p-4 rounded-xl border border-surface-border text-xs">
               <div>
-                <span className="text-text-secondary block">Trip Status</span>
-                <Badge status={selectedTrip.trip.status} />
+                <span className="text-text-secondary block font-medium">Trip Status</span>
+                <div className="mt-1">
+                  <Badge status={selectedTrip.trip.status} />
+                </div>
               </div>
               <div>
-                <span className="text-text-secondary block">Driver Assigned</span>
-                <span className="font-semibold text-text-primary block mt-0.5">
+                <span className="text-text-secondary block font-medium">Driver</span>
+                <span className="font-semibold text-text-primary block mt-1">
                   {selectedTrip.rider?.full_name || 'Unassigned'}
                 </span>
               </div>
               <div>
-                <span className="text-text-secondary block">Completed At</span>
-                <span className="font-semibold text-text-primary block mt-0.5">
-                  {selectedTrip.trip.completed_at
-                    ? new Date(selectedTrip.trip.completed_at).toLocaleTimeString()
-                    : 'In Progress'}
+                <span className="text-text-secondary block font-medium">Crop & Weight</span>
+                <span className="font-semibold text-text-primary block mt-1">
+                  {selectedTrip.produce_request?.crop_type || '-'} ({selectedTrip.produce_request?.weight_kg || 0} kg)
                 </span>
               </div>
               <div>
-                <span className="text-text-secondary block">Handoff OTP</span>
-                <span className="font-mono font-bold text-forest block mt-0.5">
-                  {selectedTrip.produce_request?.pickup_otp || 'N/A'}
+                <span className="text-text-secondary block font-medium">Delivery Mandi</span>
+                <span className="font-semibold text-text-primary block mt-1 truncate">
+                  {selectedTrip.produce_request?.dropoff_mandi_name || 'APMC Yard'}
                 </span>
               </div>
             </div>
 
-            {/* Produce & Route Info */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs bg-white p-4 rounded border border-surface-border">
-              <div className="space-y-1.5">
-                <span className="font-bold uppercase tracking-wider text-text-secondary block">
-                  Producer / Farm Origin
-                </span>
-                <p>
-                  <strong className="text-text-primary">Farmer:</strong> {selectedTrip.farmer?.full_name}
-                </p>
-                <p>
-                  <strong className="text-text-primary">Pickup:</strong> {selectedTrip.trip.pickup_address || 'Farm Gate'}
-                </p>
-                <p>
-                  <strong className="text-text-primary">Crop:</strong> {selectedTrip.produce_request?.crop_type} ({selectedTrip.produce_request?.weight_kg} kg)
-                </p>
+            {/* Origin & Destination Locations */}
+            <div className="p-4 bg-white rounded-xl border border-surface-border space-y-3 text-xs">
+              <h4 className="font-bold uppercase tracking-wider text-text-secondary text-[11px]">Route & Waypoints</h4>
+              <div>
+                <span className="text-text-secondary">Pickup Address (Farm Gate):</span>
+                <p className="font-medium text-text-primary mt-0.5">{selectedTrip.produce_request?.pickup_address || '-'}</p>
               </div>
-              <div className="space-y-1.5">
-                <span className="font-bold uppercase tracking-wider text-text-secondary block">
-                  Destination Market & Transport
-                </span>
-                <p>
-                  <strong className="text-text-primary">Destination:</strong> {selectedTrip.produce_request?.dropoff_mandi_name || 'APMC Yard'}
-                </p>
-                <p>
-                  <strong className="text-text-primary">Driver Phone:</strong> {selectedTrip.rider?.phone || '-'}
-                </p>
-                <p>
-                  <strong className="text-text-primary">Vehicle Plate:</strong> {selectedTrip.rider?.vehicle_number || '-'}
+              <div>
+                <span className="text-text-secondary">Dropoff Market:</span>
+                <p className="font-medium text-text-primary mt-0.5">
+                  {selectedTrip.produce_request?.dropoff_mandi_name} ({selectedTrip.produce_request?.dropoff_district || 'Karnataka'})
                 </p>
               </div>
             </div>
 
             {/* Crate Scans */}
             <div>
-              <h4 className="text-xs font-bold uppercase tracking-wider text-text-secondary mb-2 flex items-center space-x-1.5">
-                <QrCode className="w-4 h-4 text-forest" />
-                <span>Crate Telemetry Scans ({selectedTrip.crate_scans?.length || 0})</span>
+              <h4 className="font-bold uppercase tracking-wider text-text-secondary mb-2.5 text-[11px]">
+                Telemetry Crate Scans ({selectedTrip.crate_scans?.length || 0})
               </h4>
               <div className="space-y-2">
-                {selectedTrip.crate_scans?.length > 0 ? (
-                  selectedTrip.crate_scans.map((cs) => (
-                    <div key={cs.id} className="p-2.5 rounded bg-surface-bg border border-surface-border text-xs flex justify-between items-center">
+                {selectedTrip.crate_scans && selectedTrip.crate_scans.length > 0 ? (
+                  selectedTrip.crate_scans.map((scan) => (
+                    <div
+                      key={scan.id}
+                      className="p-3 rounded-lg bg-surface-subtle/50 border border-surface-border text-xs flex justify-between items-center"
+                    >
                       <div>
-                        <span className="font-mono font-semibold text-text-primary">{cs.qr_code}</span>
-                        <span className="text-[11px] text-text-secondary block mt-0.5">
-                          Type: {cs.scan_type} • {cs.scanned_at ? new Date(cs.scanned_at).toLocaleString() : ''}
+                        <span className="font-mono font-semibold text-text-primary block">
+                          Crate #{scan.crate_code || scan.id.slice(0, 8)}
+                        </span>
+                        <span className="text-text-secondary text-[11px] block mt-0.5">
+                          {scan.scanned_at ? new Date(scan.scanned_at).toLocaleString() : 'Timestamp unavailable'}
                         </span>
                       </div>
-                      <Badge status="COMPLETED" text="Verified" />
+                      <Badge status={scan.scan_type || 'COMPLETED'} />
                     </div>
                   ))
                 ) : (
@@ -394,19 +383,6 @@ export default function Trips() {
                 )}
               </div>
             </div>
-
-            {/* Linked Settlement */}
-            {selectedTrip.settlement && (
-              <div className="p-3.5 bg-surface-subtle rounded border border-surface-border text-xs flex justify-between items-center">
-                <div>
-                  <span className="font-bold text-text-primary block">Financial Settlement Attached</span>
-                  <span className="text-text-secondary mt-0.5 block">
-                    Gross: ₹{selectedTrip.settlement.gross_amount} • Net Payout: ₹{selectedTrip.settlement.net_payout}
-                  </span>
-                </div>
-                <Badge status={selectedTrip.settlement.status} />
-              </div>
-            )}
           </div>
         ) : null}
       </DetailModal>

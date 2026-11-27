@@ -91,6 +91,7 @@ class PoolMemberOut(BaseModel):
     decided_at: Optional[datetime] = None
     cancellation_reason: Optional[str] = None
     farmer_full_name: Optional[str] = None
+    pickup_otp: Optional[str] = None
 
 
 class PoolStopOut(BaseModel):
@@ -101,9 +102,30 @@ class PoolStopOut(BaseModel):
     status: str
 
 
+class PoolMemberSettlementInfo(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    status: str
+    crop_name: Optional[str] = None
+    quantity_kg: Optional[float] = None
+    rate_per_kg: Optional[float] = None
+    rate_source: Optional[str] = None
+    gross_amount: Optional[float] = None
+    rider_fare: Optional[float] = None
+    platform_fee: Optional[float] = None
+    net_payout: Optional[float] = None
+    payment_reference: Optional[str] = None
+    paid_at: Optional[datetime] = None
+
+
 class PoolDetailOut(PoolOut):
     members: List[PoolMemberOut] = Field(default_factory=list)
     stops: List[PoolStopOut] = Field(default_factory=list)
+    my_settlement: Optional[PoolMemberSettlementInfo] = None
+    pool_payment_status: Optional[str] = None
+    pool_total_crop_value: Optional[float] = None
+    pool_payment_reference: Optional[str] = None
 
 
 class PoolAcceptResult(BaseModel):
@@ -129,3 +151,23 @@ class PoolGroupCreate(BaseModel):
     other_produce_request_ids: List[UUID]
     pickup_window_start: datetime
     pickup_window_end: datetime
+class PoolAcceptPayload(BaseModel):
+    rider_expected_pickup_at: Optional[datetime] = Field(
+        None,
+        description="Expected pickup date and time entered by rider, must fall within pool pickup window."
+    )
+
+
+class PoolDeliverPayload(BaseModel):
+    delivery_photo_url: str = Field(..., min_length=1, max_length=500)
+    distance_km: Optional[float] = Field(None, gt=0, le=1000)
+
+
+class PoolDeliverResult(BaseModel):
+    success: bool
+    message: str
+    pool_id: UUID
+    pool_status: str
+    trips_delivered: int
+    completed_at: datetime
+    delivery_photo_url: Optional[str] = None

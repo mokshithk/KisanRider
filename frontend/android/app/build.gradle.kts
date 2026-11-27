@@ -14,9 +14,13 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
 
+    val customAppId = (project.findProperty("appId") as String?) ?: "com.example.frontend"
+    val customAppName = (project.findProperty("appName") as String?) ?: "KisanRider"
+
     defaultConfig {
         // TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).
-        applicationId = "com.example.frontend"
+        applicationId = customAppId
+        manifestPlaceholders["appName"] = customAppName
         // You can update the following values to match your application needs.
         // For more information, see: https://flutter.dev/to/review-gradle-config.
         minSdk = flutter.minSdkVersion

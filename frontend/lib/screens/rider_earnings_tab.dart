@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:provider/provider.dart';
 
+import '../l10n/app_strings.dart';
 import '../providers/auth_provider.dart';
 import 'rider_common.dart';
 
@@ -13,10 +14,10 @@ class RiderEarningsTab extends StatefulWidget {
   const RiderEarningsTab({super.key});
 
   @override
-  State<RiderEarningsTab> createState() => _RiderEarningsTabState();
+  RiderEarningsTabState createState() => RiderEarningsTabState();
 }
 
-class _RiderEarningsTabState extends State<RiderEarningsTab>
+class RiderEarningsTabState extends State<RiderEarningsTab>
     with AutomaticKeepAliveClientMixin {
   /// Raw settlement rows as returned by the backend. Kept as maps rather
   /// than typed models because the field set is small and stable, and the
@@ -33,9 +34,23 @@ class _RiderEarningsTabState extends State<RiderEarningsTab>
   @override
   void initState() {
     super.initState();
+    kPaymentEventsNotifier.addListener(_onPaymentEvent);
     // Provider/context is only safe after the first frame.
     WidgetsBinding.instance.addPostFrameCallback((_) => _fetch());
   }
+
+  @override
+  void dispose() {
+    kPaymentEventsNotifier.removeListener(_onPaymentEvent);
+    super.dispose();
+  }
+
+  void _onPaymentEvent() {
+    if (mounted) _fetch();
+  }
+
+  /// Triggers an immediate refresh (used when switching to Earnings tab).
+  void refresh() => _fetch();
 
   // -------------------------------------------------------------------------
   // Networking
@@ -53,7 +68,7 @@ class _RiderEarningsTabState extends State<RiderEarningsTab>
     if (auth.token == null) {
       setState(() {
         _isLoading = false;
-        _error = 'Not signed in.';
+        _error = AppStrings.tr('Not signed in.');
       });
       return;
     }
@@ -81,14 +96,20 @@ class _RiderEarningsTabState extends State<RiderEarningsTab>
       } else {
         setState(() {
           _error = _extractError(response) ??
-              'Failed to load earnings (HTTP ${response.statusCode}).';
+              AppStrings.tr(
+                'Failed to load earnings (HTTP {code}).',
+                args: {'code': '${response.statusCode}'},
+              );
           _isLoading = false;
         });
       }
     } catch (e) {
       if (!mounted) return;
       setState(() {
-        _error = 'Network error: $e';
+        _error = AppStrings.tr(
+          'Network error: {err}',
+          args: {'err': '$e'},
+        );
         _isLoading = false;
       });
     }
@@ -204,7 +225,7 @@ class _RiderEarningsTabState extends State<RiderEarningsTab>
 
           // ----- Section title -----------------------------------------
           Text(
-            'Recent Trip History',
+            context.tr('Recent Trip History'),
             style: theme.textTheme.titleMedium?.copyWith(
               fontWeight: FontWeight.bold,
             ),
@@ -216,13 +237,25 @@ class _RiderEarningsTabState extends State<RiderEarningsTab>
             const _EmptyEarningsState()
           else
             ..._settlements.map(
-              (s) => _SettlementTile(
-                payoutLabel: _formatRupees(
-                  ((s['total_payout'] ?? 0) as num).toDouble(),
-                ),
-                timestampLabel: _formatTimestamp(s['created_at']),
-                status: (s['status'] ?? 'PENDING').toString(),
-              ),
+              (s) {
+                final crop = (s['crop_name'] ?? '').toString().trim();
+                final kg = (s['quantity_kg'] as num?)?.round();
+                final ref = (s['payment_reference'] ?? '').toString().trim();
+                final metaParts = <String>[
+                  if (crop.isNotEmpty)
+                    kg != null ? '$crop · $kg ${context.tr('kg')}' : crop,
+                  _formatTimestamp(s['created_at']),
+                  if (ref.isNotEmpty)
+                    context.tr('Ref: {ref}', args: {'ref': ref}),
+                ];
+                return _SettlementTile(
+                  payoutLabel: _formatRupees(
+                    ((s['total_payout'] ?? 0) as num).toDouble(),
+                  ),
+                  timestampLabel: metaParts.join(' · '),
+                  status: (s['status'] ?? 'PENDING').toString(),
+                );
+              },
             ),
         ],
       ),
@@ -270,7 +303,7 @@ class _EarningsHeader extends StatelessWidget {
                   color: kRiderGreen, size: 22),
               const SizedBox(width: 8),
               Text(
-                'Today\'s Earnings',
+                context.tr("Today's Earnings"),
                 style: theme.textTheme.titleSmall?.copyWith(
                   fontWeight: FontWeight.bold,
                   color: kRiderGreen,
@@ -288,8 +321,12 @@ class _EarningsHeader extends StatelessWidget {
           ),
           const SizedBox(height: 6),
           Text(
-            '$completedTrips completed trip'
-            '${completedTrips == 1 ? "" : "s"}',
+            context.tr(
+              completedTrips == 1
+                  ? '{count} completed trip'
+                  : '{count} completed trips',
+              args: {'count': '$completedTrips'},
+            ),
             style: theme.textTheme.bodySmall?.copyWith(
               color: theme.colorScheme.onSurfaceVariant,
             ),
@@ -407,7 +444,7 @@ class _SettlementStatusBadge extends StatelessWidget {
         border: Border.all(color: fg),
       ),
       child: Text(
-        normalized,
+        context.trStatus(normalized),
         style: TextStyle(
           color: fg,
           fontWeight: FontWeight.bold,
@@ -443,15 +480,17 @@ class _EmptyEarningsState extends StatelessWidget {
               size: 56, color: Colors.grey.shade400),
           const SizedBox(height: 12),
           Text(
-            'No completed trips yet',
+            context.tr('No completed trips yet'),
             style: theme.textTheme.titleSmall?.copyWith(
               fontWeight: FontWeight.w600,
             ),
           ),
           const SizedBox(height: 4),
           Text(
-            'Completed deliveries will appear here along with their '
-            'payout amounts.',
+            context.tr(
+              'Completed deliveries will appear here along with their '
+              'payout amounts.',
+            ),
             textAlign: TextAlign.center,
             style: theme.textTheme.bodySmall?.copyWith(
               color: theme.colorScheme.onSurfaceVariant,

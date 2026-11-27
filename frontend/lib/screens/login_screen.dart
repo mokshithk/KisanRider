@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
+import '../l10n/app_strings.dart';
 import '../providers/auth_provider.dart';
 import '../services/api_service.dart';
 import 'farmer_dashboard.dart';
@@ -61,7 +62,8 @@ class _LoginScreenState extends State<LoginScreen> {
     if (!mounted) return;
 
     if (!success) {
-      final message = auth.lastError ?? 'Login failed. Please try again.';
+      final message =
+          auth.lastError ?? context.trAsync('Login failed. Please try again.');
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(message),
@@ -71,16 +73,11 @@ class _LoginScreenState extends State<LoginScreen> {
       return;
     }
 
-    // `auth.role` is populated by the provider's `login()` from the user
-    // object the backend returned. Route on it, not on any client-side
-    // guess — the server is the authority on which role this session has.
     final role = auth.role ?? 'FARMER';
 
-    // Success feedback, then replace the nav stack so "back" doesn't
-    // return to the login form.
     ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('Logged in successfully!'),
+      SnackBar(
+        content: Text(context.trAsync('Logged in successfully!')),
         backgroundColor: _kBrandGreen,
       ),
     );
@@ -118,12 +115,14 @@ class _LoginScreenState extends State<LoginScreen> {
     _emailController.text = resetEmail;
 
     ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
+      SnackBar(
         content: Text(
-          'Password reset successfully! Please log in with your new password.',
+          context.trAsync(
+            'Password reset successfully! Please log in with your new password.',
+          ),
         ),
         backgroundColor: _kBrandGreen,
-        duration: Duration(seconds: 4),
+        duration: const Duration(seconds: 4),
       ),
     );
   }
@@ -170,7 +169,7 @@ class _LoginScreenState extends State<LoginScreen> {
                         const SizedBox(height: 12),
                         Center(
                           child: Text(
-                            'Trouble signing in? Contact support.',
+                            context.tr('Trouble signing in? Contact support.'),
                             style: theme.textTheme.bodySmall?.copyWith(
                               color: theme.colorScheme.onSurfaceVariant,
                             ),
@@ -206,7 +205,7 @@ class _LoginScreenState extends State<LoginScreen> {
         ),
         const SizedBox(height: 20),
         Text(
-          'KisanRider',
+          context.tr('KisanRider'),
           textAlign: TextAlign.center,
           style: theme.textTheme.headlineSmall?.copyWith(
             fontWeight: FontWeight.bold,
@@ -216,7 +215,7 @@ class _LoginScreenState extends State<LoginScreen> {
         ),
         const SizedBox(height: 6),
         Text(
-          'Agricultural logistics, connected.',
+          context.tr('Agricultural logistics, connected.'),
           textAlign: TextAlign.center,
           style: theme.textTheme.bodyMedium?.copyWith(
             color: theme.colorScheme.onSurfaceVariant,
@@ -233,20 +232,22 @@ class _LoginScreenState extends State<LoginScreen> {
       keyboardType: TextInputType.emailAddress,
       textInputAction: TextInputAction.next,
       autocorrect: false,
-      decoration: const InputDecoration(
-        labelText: 'Email Address',
+      decoration: InputDecoration(
+        labelText: context.tr('Email Address'),
         hintText: 'you@example.com',
-        border: OutlineInputBorder(),
-        prefixIcon: Icon(Icons.email_outlined),
+        border: const OutlineInputBorder(),
+        prefixIcon: const Icon(Icons.email_outlined),
       ),
       validator: (v) {
         final value = (v ?? '').trim();
-        if (value.isEmpty) return 'Email is required';
+        if (value.isEmpty) return context.trAsync('Email is required');
         // Pragmatic check — matches what the backend's EmailStr accepts in
         // the common case. The server runs its own validation too; this is
         // just for fast client-side feedback.
         final emailRe = RegExp(r'^[^@\s]+@[^@\s]+\.[^@\s]+$');
-        if (!emailRe.hasMatch(value)) return 'Enter a valid email address';
+        if (!emailRe.hasMatch(value)) {
+          return context.trAsync('Enter a valid email address');
+        }
         return null;
       },
     );
@@ -258,12 +259,12 @@ class _LoginScreenState extends State<LoginScreen> {
       enabled: !context.watch<AuthProvider>().isLoggingIn,
       obscureText: _obscurePassword,
       decoration: InputDecoration(
-        labelText: 'Password',
-        hintText: 'Enter your password',
+        labelText: context.tr('Password'),
+        hintText: context.tr('Enter your password'),
         border: const OutlineInputBorder(),
         prefixIcon: const Icon(Icons.lock_outline),
         suffixIcon: IconButton(
-          tooltip: _obscurePassword ? 'Show password' : 'Hide password',
+          tooltip: context.tr(_obscurePassword ? 'Show password' : 'Hide password'),
           icon: Icon(
             _obscurePassword
                 ? Icons.visibility_outlined
@@ -274,7 +275,7 @@ class _LoginScreenState extends State<LoginScreen> {
         ),
       ),
       validator: (v) {
-        if ((v ?? '').isEmpty) return 'Password is required';
+        if ((v ?? '').isEmpty) return context.trAsync('Password is required');
         return null;
       },
       onFieldSubmitted: (_) {
@@ -295,9 +296,9 @@ class _LoginScreenState extends State<LoginScreen> {
           minimumSize: const Size(0, 32),
           tapTargetSize: MaterialTapTargetSize.shrinkWrap,
         ),
-        child: const Text(
-          'Forgot Password?',
-          style: TextStyle(
+        child: Text(
+          context.tr('Forgot Password?'),
+          style: const TextStyle(
             fontSize: 13.5,
             fontWeight: FontWeight.w600,
           ),
@@ -328,7 +329,7 @@ class _LoginScreenState extends State<LoginScreen> {
               ),
             )
           : const Icon(Icons.login_rounded),
-      label: Text(auth.isLoggingIn ? 'Logging in…' : 'Log In'),
+      label: Text(context.tr(auth.isLoggingIn ? 'Logging in…' : 'Log In')),
     );
   }
 
@@ -346,7 +347,7 @@ class _LoginScreenState extends State<LoginScreen> {
         ),
       ),
       icon: const Icon(Icons.person_add_alt_1_outlined),
-      label: const Text('Create a new account'),
+      label: Text(context.tr('Create a new account')),
     );
   }
 }
@@ -425,11 +426,13 @@ class _ForgotPasswordSheetState extends State<_ForgotPasswordSheet> {
     } on DioException catch (e) {
       if (!mounted) return;
       setState(() => _isSubmitting = false);
-      _showError(_messageFromDioException(e, 'Could not send reset OTP.'));
+      _showError(
+        _messageFromDioException(e, context.trAsync('Could not send reset OTP.')),
+      );
     } catch (e) {
       if (!mounted) return;
       setState(() => _isSubmitting = false);
-      _showError('Unexpected error: $e');
+      _showError(context.trAsync('Unexpected error: {err}', args: {'err': '$e'}));
     }
   }
 
@@ -457,11 +460,13 @@ class _ForgotPasswordSheetState extends State<_ForgotPasswordSheet> {
     } on DioException catch (e) {
       if (!mounted) return;
       setState(() => _isSubmitting = false);
-      _showError(_messageFromDioException(e, 'Password reset failed.'));
+      _showError(
+        _messageFromDioException(e, context.trAsync('Password reset failed.')),
+      );
     } catch (e) {
       if (!mounted) return;
       setState(() => _isSubmitting = false);
-      _showError('Unexpected error: $e');
+      _showError(context.trAsync('Unexpected error: {err}', args: {'err': '$e'}));
     }
   }
 
@@ -469,10 +474,13 @@ class _ForgotPasswordSheetState extends State<_ForgotPasswordSheet> {
     if (e.type == DioExceptionType.connectionTimeout ||
         e.type == DioExceptionType.receiveTimeout ||
         e.type == DioExceptionType.sendTimeout) {
-      return 'Connection to server timed out. Is the backend running?';
+      return AppStrings.tr('Connection to server timed out. Is the backend running?');
     }
     if (e.type == DioExceptionType.connectionError) {
-      return 'Could not connect to server at ${ApiService.baseUrl}.';
+      return AppStrings.tr(
+        'Could not connect to server at {url}.',
+        args: {'url': ApiService.baseUrl},
+      );
     }
     final status = e.response?.statusCode;
     if (status != null) {
@@ -583,10 +591,12 @@ class _ForgotPasswordSheetState extends State<_ForgotPasswordSheet> {
 
   Widget _buildHeader(ThemeData theme) {
     final isRequest = _step == _stepRequest;
-    final title = isRequest ? 'Forgot Password?' : 'Reset Password';
-    final subtitle = isRequest
-        ? 'Enter your account email — we will send you a 4-digit reset code.'
-        : 'Enter the code we sent and choose a new password.';
+    final title = context.tr(isRequest ? 'Forgot Password?' : 'Reset Password');
+    final subtitle = context.tr(
+      isRequest
+          ? 'Enter your account email — we will send you a 4-digit reset code.'
+          : 'Enter the code we sent and choose a new password.',
+    );
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -646,18 +656,18 @@ class _ForgotPasswordSheetState extends State<_ForgotPasswordSheet> {
               keyboardType: TextInputType.emailAddress,
               textInputAction: TextInputAction.done,
               autocorrect: false,
-              decoration: const InputDecoration(
-                labelText: 'Email Address',
+              decoration: InputDecoration(
+                labelText: context.tr('Email Address'),
                 hintText: 'you@example.com',
-                border: OutlineInputBorder(),
-                prefixIcon: Icon(Icons.email_outlined),
+                border: const OutlineInputBorder(),
+                prefixIcon: const Icon(Icons.email_outlined),
               ),
               validator: (v) {
                 final value = (v ?? '').trim();
-                if (value.isEmpty) return 'Email is required';
+                if (value.isEmpty) return context.trAsync('Email is required');
                 final emailRe = RegExp(r'^[^@\s]+@[^@\s]+\.[^@\s]+$');
                 if (!emailRe.hasMatch(value)) {
-                  return 'Enter a valid email address';
+                  return context.trAsync('Enter a valid email address');
                 }
                 return null;
               },
@@ -667,7 +677,7 @@ class _ForgotPasswordSheetState extends State<_ForgotPasswordSheet> {
             ),
             const SizedBox(height: 20),
             _buildSubmitButton(
-              label: 'SEND RESET OTP',
+              label: context.tr('SEND RESET OTP'),
               onPressed: _sendResetOtp,
             ),
           ],
@@ -712,7 +722,7 @@ class _ForgotPasswordSheetState extends State<_ForgotPasswordSheet> {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(
-                          'Code sent to',
+                          context.tr('Code sent to'),
                           style: theme.textTheme.bodySmall?.copyWith(
                             color: theme.colorScheme.onSurfaceVariant,
                           ),
@@ -743,18 +753,18 @@ class _ForgotPasswordSheetState extends State<_ForgotPasswordSheet> {
                 FilteringTextInputFormatter.digitsOnly,
                 LengthLimitingTextInputFormatter(4),
               ],
-              decoration: const InputDecoration(
-                labelText: '4-Digit OTP',
+              decoration: InputDecoration(
+                labelText: context.tr('4-Digit OTP'),
                 hintText: '••••',
-                border: OutlineInputBorder(),
-                prefixIcon: Icon(Icons.password_rounded),
+                border: const OutlineInputBorder(),
+                prefixIcon: const Icon(Icons.password_rounded),
                 counterText: '',
               ),
               validator: (v) {
                 final value = (v ?? '').trim();
-                if (value.isEmpty) return 'OTP is required';
+                if (value.isEmpty) return context.trAsync('OTP is required');
                 if (!RegExp(r'^\d{4}$').hasMatch(value)) {
-                  return 'Enter the 4-digit code from your email';
+                  return context.trAsync('Enter the 4-digit code from your email');
                 }
                 return null;
               },
@@ -767,13 +777,14 @@ class _ForgotPasswordSheetState extends State<_ForgotPasswordSheet> {
               enabled: !_isSubmitting,
               obscureText: _obscureNewPassword,
               decoration: InputDecoration(
-                labelText: 'New Password',
-                hintText: 'At least 6 characters',
+                labelText: context.tr('New Password'),
+                hintText: context.tr('At least 6 characters'),
                 border: const OutlineInputBorder(),
                 prefixIcon: const Icon(Icons.lock_outline),
                 suffixIcon: IconButton(
-                  tooltip:
-                      _obscureNewPassword ? 'Show password' : 'Hide password',
+                  tooltip: context.tr(
+                    _obscureNewPassword ? 'Show password' : 'Hide password',
+                  ),
                   icon: Icon(
                     _obscureNewPassword
                         ? Icons.visibility_outlined
@@ -786,9 +797,9 @@ class _ForgotPasswordSheetState extends State<_ForgotPasswordSheet> {
               ),
               validator: (v) {
                 final value = v ?? '';
-                if (value.isEmpty) return 'New password is required';
+                if (value.isEmpty) return context.trAsync('New password is required');
                 if (value.length < 6) {
-                  return 'Password must be at least 6 characters';
+                  return context.trAsync('Password must be at least 6 characters');
                 }
                 return null;
               },
@@ -801,14 +812,14 @@ class _ForgotPasswordSheetState extends State<_ForgotPasswordSheet> {
               enabled: !_isSubmitting,
               obscureText: _obscureConfirmPassword,
               decoration: InputDecoration(
-                labelText: 'Confirm New Password',
-                hintText: 'Re-enter your new password',
+                labelText: context.tr('Confirm New Password'),
+                hintText: context.tr('Re-enter your new password'),
                 border: const OutlineInputBorder(),
                 prefixIcon: const Icon(Icons.lock_reset_outlined),
                 suffixIcon: IconButton(
-                  tooltip: _obscureConfirmPassword
-                      ? 'Show password'
-                      : 'Hide password',
+                  tooltip: context.tr(
+                    _obscureConfirmPassword ? 'Show password' : 'Hide password',
+                  ),
                   icon: Icon(
                     _obscureConfirmPassword
                         ? Icons.visibility_outlined
@@ -821,9 +832,11 @@ class _ForgotPasswordSheetState extends State<_ForgotPasswordSheet> {
               ),
               validator: (v) {
                 final value = v ?? '';
-                if (value.isEmpty) return 'Please confirm your new password';
+                if (value.isEmpty) {
+                  return context.trAsync('Please confirm your new password');
+                }
                 if (value != _newPasswordController.text) {
-                  return 'Passwords do not match';
+                  return context.trAsync('Passwords do not match');
                 }
                 return null;
               },
@@ -834,7 +847,7 @@ class _ForgotPasswordSheetState extends State<_ForgotPasswordSheet> {
             const SizedBox(height: 20),
 
             _buildSubmitButton(
-              label: 'RESET PASSWORD',
+              label: context.tr('RESET PASSWORD'),
               onPressed: _resetPassword,
             ),
             const SizedBox(height: 4),
@@ -850,7 +863,7 @@ class _ForgotPasswordSheetState extends State<_ForgotPasswordSheet> {
                     fontWeight: FontWeight.w600,
                   ),
                 ),
-                child: const Text('Use a different email'),
+                child: Text(context.tr('Use a different email')),
               ),
             ),
           ],

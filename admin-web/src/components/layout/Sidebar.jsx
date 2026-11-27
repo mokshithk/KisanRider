@@ -15,7 +15,6 @@ import {
   UserCheck,
   LogOut,
   X,
-  Wheat,
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 
@@ -88,45 +87,47 @@ export default function Sidebar({ isOpen, onClose }) {
       {/* Mobile overlay */}
       {isOpen && (
         <div
-          className="fixed inset-0 z-40 bg-black/50 md:hidden backdrop-blur-xs"
+          className="fixed inset-0 z-40 bg-black/60 md:hidden backdrop-blur-xs transition-opacity duration-200"
           onClick={onClose}
+          aria-hidden="true"
         />
       )}
 
       {/* Sidebar container */}
       <aside
-        className={`fixed top-0 bottom-0 left-0 z-40 w-64 bg-forest text-white flex flex-col transition-transform duration-200 ease-in-out md:translate-x-0 border-r border-forest-dark/40 ${
+        className={`fixed top-0 bottom-0 left-0 z-40 w-64 bg-forest text-white flex flex-col transition-transform duration-200 ease-in-out md:translate-x-0 border-r border-forest-dark/50 shadow-lg md:shadow-none ${
           isOpen ? 'translate-x-0' : '-translate-x-full'
         }`}
       >
         {/* Brand header */}
-        <div className="h-16 flex items-center justify-between px-6 border-b border-white/10">
-          <div className="flex items-center space-x-2.5">
-            <div className="w-8 h-8 rounded bg-lime-accent flex items-center justify-center text-forest font-black tracking-tighter">
+        <div className="h-16 flex items-center justify-between px-5 border-b border-white/10 shrink-0">
+          <div className="flex items-center space-x-3">
+            <div className="w-8 h-8 rounded-lg bg-lime-accent flex items-center justify-center text-forest font-black tracking-tighter text-sm shadow-xs">
               KR
             </div>
             <div>
-              <span className="font-bold text-base tracking-tight text-white block leading-none">
+              <span className="font-bold text-base tracking-tight text-white block leading-tight">
                 KisanRider
               </span>
-              <span className="text-[10px] font-semibold text-lime-accent uppercase tracking-widest block mt-0.5">
+              <span className="text-[10px] font-semibold text-lime-accent uppercase tracking-widest block">
                 Admin Web
               </span>
             </div>
           </div>
           <button
             onClick={onClose}
-            className="md:hidden text-gray-400 hover:text-white p-1 rounded"
+            className="md:hidden text-gray-400 hover:text-white p-1 rounded-md hover:bg-forest-light transition-colors"
+            aria-label="Close sidebar"
           >
             <X className="w-5 h-5" />
           </button>
         </div>
 
         {/* Scrollable Navigation */}
-        <div className="flex-1 overflow-y-auto px-4 py-5 space-y-6">
+        <div className="flex-1 overflow-y-auto px-3.5 py-4 space-y-5">
           {navigationGroups.map((grp, gIdx) => (
             <div key={gIdx} className="space-y-1">
-              <span className="text-[10px] font-bold text-gray-400/80 uppercase tracking-wider px-3 block mb-1.5">
+              <span className="text-[10px] font-bold text-emerald-200/60 uppercase tracking-wider px-3 block mb-1">
                 {grp.group}
               </span>
               {grp.items.map((item, iIdx) => {
@@ -139,8 +140,9 @@ export default function Sidebar({ isOpen, onClose }) {
                     onClick={() => {
                       if (window.innerWidth < 768) onClose();
                     }}
+                    title={item.name}
                     className={({ isActive }) =>
-                      `flex items-center space-x-3 px-3 py-2 rounded-md text-xs font-medium transition-colors ${
+                      `flex items-center space-x-3 px-3 py-2 rounded-lg text-xs font-medium transition-all ${
                         isActive
                           ? 'bg-lime-accent text-forest font-semibold shadow-xs'
                           : 'text-gray-300 hover:bg-forest-light hover:text-white'
@@ -155,11 +157,11 @@ export default function Sidebar({ isOpen, onClose }) {
             </div>
           ))}
 
-          {/* Quick Logout Button in nav */}
+          {/* Quick Logout Button */}
           <div className="pt-2 border-t border-white/10">
             <button
               onClick={handleLogout}
-              className="w-full flex items-center space-x-3 px-3 py-2 rounded-md text-xs font-medium text-rose-300 hover:bg-rose-950/40 hover:text-rose-200 transition-colors"
+              className="w-full flex items-center space-x-3 px-3 py-2 rounded-lg text-xs font-medium text-rose-300 hover:bg-rose-950/40 hover:text-rose-200 transition-colors"
             >
               <LogOut className="w-4 h-4 shrink-0" />
               <span>Log out</span>
@@ -168,8 +170,8 @@ export default function Sidebar({ isOpen, onClose }) {
         </div>
 
         {/* Current user badge in bottom footer */}
-        <div className="p-4 border-t border-white/10 bg-forest-dark/40 flex items-center space-x-3">
-          <div className="w-8 h-8 rounded-full bg-forest-light border border-lime-accent/40 flex items-center justify-center text-xs font-bold text-lime-accent">
+        <div className="p-3.5 border-t border-white/10 bg-forest-dark/40 flex items-center space-x-3 shrink-0">
+          <div className="w-8 h-8 rounded-full bg-forest-light border border-lime-accent/40 flex items-center justify-center text-xs font-bold text-lime-accent shrink-0">
             {user?.full_name ? user.full_name.charAt(0).toUpperCase() : 'A'}
           </div>
           <div className="flex-1 min-w-0">
