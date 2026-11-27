@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:provider/provider.dart';
 
+import '../l10n/app_strings.dart';
 import '../providers/auth_provider.dart';
 import '../services/api_service.dart';
 import 'order_detail_screen.dart';
@@ -195,7 +196,7 @@ class FarmerOrdersTabState extends State<FarmerOrdersTab> {
       if (!silent) {
         setState(() {
           isLoading = false;
-          _error = 'Not signed in.';
+          _error = AppStrings.tr('Not signed in.');
         });
       }
       return;
@@ -238,7 +239,10 @@ class FarmerOrdersTabState extends State<FarmerOrdersTab> {
         if (!silent) {
           setState(() {
             _error = _extractError(response) ??
-                'Failed to load orders (HTTP ${response.statusCode}).';
+                AppStrings.tr(
+                  'Failed to load orders (HTTP {code}).',
+                  args: {'code': '${response.statusCode}'},
+                );
             isLoading = false;
           });
         }
@@ -247,7 +251,10 @@ class FarmerOrdersTabState extends State<FarmerOrdersTab> {
       if (!mounted) return;
       if (!silent) {
         setState(() {
-          _error = 'Network error: $e';
+          _error = AppStrings.tr(
+            'Network error: {err}',
+            args: {'err': '$e'},
+          );
           isLoading = false;
         });
       }
@@ -311,7 +318,7 @@ class FarmerOrdersTabState extends State<FarmerOrdersTab> {
               ),
               child: ChoiceChip(
                 label: Text(
-                  _filters[i].label,
+                  context.tr(_filters[i].label),
                   style: TextStyle(
                     fontSize: 13,
                     fontWeight: FontWeight.w600,
@@ -373,7 +380,7 @@ class FarmerOrdersTabState extends State<FarmerOrdersTab> {
             const SizedBox(height: 12),
             Center(
               child: Text(
-                'No orders match this filter.',
+                context.tr('No orders match this filter.'),
                 textAlign: TextAlign.center,
                 style: TextStyle(
                   fontSize: 14,
@@ -414,14 +421,9 @@ class _OrderCard extends StatelessWidget {
   final FarmerOrder order;
   final VoidCallback onTap;
 
-  static const List<String> _months = [
-    'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-    'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
-  ];
-
   String _formatDate(DateTime d) {
     final local = d.toLocal();
-    return '${_months[local.month - 1]} ${local.day}, ${local.year}';
+    return '${AppStrings.trShortMonth(local.month)} ${local.day}, ${local.year}';
   }
 
   @override
@@ -448,7 +450,7 @@ class _OrderCard extends StatelessWidget {
                 children: [
                   Expanded(
                     child: Text(
-                      '${order.cropType} · ${order.weightKg.toStringAsFixed(0)} kg',
+                      '${order.cropType} · ${order.weightKg.toStringAsFixed(0)} ${context.tr('kg')}',
                       style: theme.textTheme.titleMedium?.copyWith(
                         fontWeight: FontWeight.bold,
                       ),
@@ -474,7 +476,10 @@ class _OrderCard extends StatelessWidget {
                   const SizedBox(width: 6),
                   Expanded(
                     child: Text(
-                      'Dropoff: ${order.dropoffDisplay}',
+                      context.tr(
+                        'Dropoff: {dropoff}',
+                        args: {'dropoff': order.dropoffDisplay},
+                      ),
                       style: theme.textTheme.bodySmall?.copyWith(
                         color: const Color(0xFF1C1B1F),
                         fontSize: 13,
@@ -539,7 +544,7 @@ class _StatusChip extends StatelessWidget {
         border: Border.all(color: fg),
       ),
       child: Text(
-        status.toUpperCase(),
+        context.trStatus(status.toUpperCase()),
         style: TextStyle(
           color: fg,
           fontWeight: FontWeight.bold,
@@ -582,7 +587,7 @@ class _OrdersEmptyState extends StatelessWidget {
         ),
         const SizedBox(height: 24),
         Text(
-          'No active shipments found.',
+          context.tr('No active shipments found.'),
           textAlign: TextAlign.center,
           style: theme.textTheme.titleMedium?.copyWith(
             fontWeight: FontWeight.w600,
@@ -590,7 +595,7 @@ class _OrdersEmptyState extends StatelessWidget {
         ),
         const SizedBox(height: 8),
         Text(
-          'Book transport to get started!',
+          context.tr('Book transport to get started!'),
           textAlign: TextAlign.center,
           style: theme.textTheme.bodyMedium?.copyWith(
             color: theme.colorScheme.onSurfaceVariant,
@@ -604,7 +609,7 @@ class _OrdersEmptyState extends StatelessWidget {
             padding: const EdgeInsets.symmetric(vertical: 14),
           ),
           icon: const Icon(Icons.add),
-          label: const Text('Book Transport'),
+          label: Text(context.tr('Book Transport')),
         ),
       ],
     );
@@ -630,7 +635,7 @@ class _OrdersErrorState extends StatelessWidget {
                 size: 56, color: theme.colorScheme.error),
             const SizedBox(height: 16),
             Text(
-              'Could not load orders',
+              context.tr('Could not load orders'),
               style: theme.textTheme.titleMedium
                   ?.copyWith(fontWeight: FontWeight.w600),
             ),
@@ -645,7 +650,7 @@ class _OrdersErrorState extends StatelessWidget {
             OutlinedButton.icon(
               onPressed: onRetry,
               icon: const Icon(Icons.refresh),
-              label: const Text('Retry'),
+              label: Text(context.tr('Retry')),
             ),
           ],
         ),

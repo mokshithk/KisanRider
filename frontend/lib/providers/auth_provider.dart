@@ -2,6 +2,7 @@ import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
+import '../l10n/app_strings.dart';
 import '../services/api_service.dart';
 
 /// Holds authentication state for KisanRider and persists it across app
@@ -181,7 +182,7 @@ class AuthProvider extends ChangeNotifier {
             token.isEmpty ||
             userRole.isEmpty ||
             userId.isEmpty) {
-          _lastError = 'Server returned an incomplete session.';
+          _lastError = AppStrings.tr('Server returned an incomplete session.');
           _isLoggingIn = false;
           notifyListeners();
           return false;
@@ -205,7 +206,10 @@ class AuthProvider extends ChangeNotifier {
         notifyListeners();
         return true;
       } else {
-        _lastError = 'Unexpected response (status ${response.statusCode}).';
+        _lastError = AppStrings.tr(
+          'Unexpected response (status {status}).',
+          args: {'status': '${response.statusCode}'},
+        );
         _isLoggingIn = false;
         notifyListeners();
         return false;
@@ -216,7 +220,7 @@ class AuthProvider extends ChangeNotifier {
       notifyListeners();
       return false;
     } catch (e) {
-      _lastError = 'Unexpected error: $e';
+      _lastError = AppStrings.tr('Unexpected error: {err}', args: {'err': '$e'});
       _isLoggingIn = false;
       notifyListeners();
       return false;
@@ -279,7 +283,7 @@ class AuthProvider extends ChangeNotifier {
       notifyListeners();
       return false;
     } catch (e) {
-      _lastError = 'Unexpected error: $e';
+      _lastError = AppStrings.tr('Unexpected error: {err}', args: {'err': '$e'});
       _isLoggingIn = false;
       notifyListeners();
       return false;
@@ -332,7 +336,7 @@ class AuthProvider extends ChangeNotifier {
       notifyListeners();
       return true;
     } catch (e) {
-      _lastError = 'Could not save session: $e';
+      _lastError = AppStrings.tr('Could not save session.') + ' $e';
       notifyListeners();
       return false;
     }
@@ -342,19 +346,23 @@ class AuthProvider extends ChangeNotifier {
     if (e.type == DioExceptionType.connectionTimeout ||
         e.type == DioExceptionType.receiveTimeout ||
         e.type == DioExceptionType.sendTimeout) {
-      return 'Connection to server timed out. Is the backend running?';
+      return AppStrings.tr('Connection to server timed out. Is the backend running?');
     }
     if (e.type == DioExceptionType.connectionError) {
-      return 'Could not connect to server at ${ApiService.baseUrl}.';
+      return AppStrings.tr(
+        'Could not connect to server at {url}.',
+        args: {'url': ApiService.baseUrl},
+      );
     }
     final status = e.response?.statusCode;
     if (status != null) {
       final detail = e.response?.data is Map
           ? (e.response?.data['detail']?.toString())
           : null;
-      return detail ?? 'Login failed (status $status).';
+      return detail ??
+          AppStrings.tr('Login failed (status {status}).', args: {'status': '$status'});
     }
-    return e.message ?? 'Login failed.';
+    return e.message ?? AppStrings.tr('Login failed.');
   }
 
   /// Clears the persisted session and resets in-memory state.

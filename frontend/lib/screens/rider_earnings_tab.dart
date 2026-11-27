@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:provider/provider.dart';
 
+import '../l10n/app_strings.dart';
 import '../providers/auth_provider.dart';
 import 'rider_common.dart';
 
@@ -67,7 +68,7 @@ class RiderEarningsTabState extends State<RiderEarningsTab>
     if (auth.token == null) {
       setState(() {
         _isLoading = false;
-        _error = 'Not signed in.';
+        _error = AppStrings.tr('Not signed in.');
       });
       return;
     }
@@ -95,14 +96,20 @@ class RiderEarningsTabState extends State<RiderEarningsTab>
       } else {
         setState(() {
           _error = _extractError(response) ??
-              'Failed to load earnings (HTTP ${response.statusCode}).';
+              AppStrings.tr(
+                'Failed to load earnings (HTTP {code}).',
+                args: {'code': '${response.statusCode}'},
+              );
           _isLoading = false;
         });
       }
     } catch (e) {
       if (!mounted) return;
       setState(() {
-        _error = 'Network error: $e';
+        _error = AppStrings.tr(
+          'Network error: {err}',
+          args: {'err': '$e'},
+        );
         _isLoading = false;
       });
     }
@@ -218,7 +225,7 @@ class RiderEarningsTabState extends State<RiderEarningsTab>
 
           // ----- Section title -----------------------------------------
           Text(
-            'Recent Trip History',
+            context.tr('Recent Trip History'),
             style: theme.textTheme.titleMedium?.copyWith(
               fontWeight: FontWeight.bold,
             ),
@@ -235,9 +242,11 @@ class RiderEarningsTabState extends State<RiderEarningsTab>
                 final kg = (s['quantity_kg'] as num?)?.round();
                 final ref = (s['payment_reference'] ?? '').toString().trim();
                 final metaParts = <String>[
-                  if (crop.isNotEmpty) kg != null ? '$crop · $kg kg' : crop,
+                  if (crop.isNotEmpty)
+                    kg != null ? '$crop · $kg ${context.tr('kg')}' : crop,
                   _formatTimestamp(s['created_at']),
-                  if (ref.isNotEmpty) 'Ref: $ref',
+                  if (ref.isNotEmpty)
+                    context.tr('Ref: {ref}', args: {'ref': ref}),
                 ];
                 return _SettlementTile(
                   payoutLabel: _formatRupees(
@@ -294,7 +303,7 @@ class _EarningsHeader extends StatelessWidget {
                   color: kRiderGreen, size: 22),
               const SizedBox(width: 8),
               Text(
-                'Today\'s Earnings',
+                context.tr("Today's Earnings"),
                 style: theme.textTheme.titleSmall?.copyWith(
                   fontWeight: FontWeight.bold,
                   color: kRiderGreen,
@@ -312,8 +321,12 @@ class _EarningsHeader extends StatelessWidget {
           ),
           const SizedBox(height: 6),
           Text(
-            '$completedTrips completed trip'
-            '${completedTrips == 1 ? "" : "s"}',
+            context.tr(
+              completedTrips == 1
+                  ? '{count} completed trip'
+                  : '{count} completed trips',
+              args: {'count': '$completedTrips'},
+            ),
             style: theme.textTheme.bodySmall?.copyWith(
               color: theme.colorScheme.onSurfaceVariant,
             ),
@@ -431,7 +444,7 @@ class _SettlementStatusBadge extends StatelessWidget {
         border: Border.all(color: fg),
       ),
       child: Text(
-        normalized,
+        context.trStatus(normalized),
         style: TextStyle(
           color: fg,
           fontWeight: FontWeight.bold,
@@ -467,15 +480,17 @@ class _EmptyEarningsState extends StatelessWidget {
               size: 56, color: Colors.grey.shade400),
           const SizedBox(height: 12),
           Text(
-            'No completed trips yet',
+            context.tr('No completed trips yet'),
             style: theme.textTheme.titleSmall?.copyWith(
               fontWeight: FontWeight.w600,
             ),
           ),
           const SizedBox(height: 4),
           Text(
-            'Completed deliveries will appear here along with their '
-            'payout amounts.',
+            context.tr(
+              'Completed deliveries will appear here along with their '
+              'payout amounts.',
+            ),
             textAlign: TextAlign.center,
             style: theme.textTheme.bodySmall?.copyWith(
               color: theme.colorScheme.onSurfaceVariant,

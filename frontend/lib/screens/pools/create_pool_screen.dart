@@ -7,6 +7,7 @@ import 'package:geolocator/geolocator.dart';
 import 'package:http/http.dart' as http;
 import 'package:provider/provider.dart';
 
+import '../../l10n/app_strings.dart';
 import '../../providers/auth_provider.dart';
 import '../../services/api_service.dart';
 import 'pool_discovery_screen.dart';
@@ -144,7 +145,9 @@ class _CreatePoolScreenState extends State<CreatePoolScreen> {
         if (!mounted) return;
         setState(() {
           _isFetchingLocation = false;
-          _gpsError = 'Location permission denied. Switch to Manual Entry.';
+          _gpsError = AppStrings.tr(
+            'Location permission denied. Switch to Manual Entry.',
+          );
         });
         return;
       }
@@ -180,7 +183,10 @@ class _CreatePoolScreenState extends State<CreatePoolScreen> {
       if (!mounted) return;
       setState(() {
         _isFetchingLocation = false;
-        _gpsError = 'Could not fetch location: $e';
+        _gpsError = AppStrings.tr(
+          'Could not fetch location: {err}',
+          args: {'err': '$e'},
+        );
       });
     }
   }
@@ -209,14 +215,17 @@ class _CreatePoolScreenState extends State<CreatePoolScreen> {
         });
       } else {
         setState(() {
-          _savedAddressesError = 'Failed to load saved addresses.';
+          _savedAddressesError = AppStrings.tr('Failed to load saved addresses.');
           _isLoadingAddresses = false;
         });
       }
     } catch (e) {
       if (!mounted) return;
       setState(() {
-        _savedAddressesError = 'Network error: $e';
+        _savedAddressesError = AppStrings.tr(
+          'Network error: {err}',
+          args: {'err': '$e'},
+        );
         _isLoadingAddresses = false;
       });
     }
@@ -247,19 +256,22 @@ class _CreatePoolScreenState extends State<CreatePoolScreen> {
           _selectedMandiIndex = null;
           _isLoadingMandis = false;
           if (_mandis.isEmpty) {
-            _mandiError = 'No markets found for "$district".';
+            _mandiError = AppStrings.tr(
+              'No markets found for "{district}".',
+              args: {'district': AppStrings.tr(district)},
+            );
           }
         });
       } else {
         setState(() {
-          _mandiError = 'Could not load markets.';
+          _mandiError = AppStrings.tr('Could not load markets.');
           _isLoadingMandis = false;
         });
       }
     } catch (e) {
       if (!mounted) return;
       setState(() {
-        _mandiError = 'Network error: $e';
+        _mandiError = AppStrings.tr('Network error: {err}', args: {'err': '$e'});
         _isLoadingMandis = false;
       });
     }
@@ -314,8 +326,8 @@ class _CreatePoolScreenState extends State<CreatePoolScreen> {
   }
 
   String _formatDateTime(DateTime? dt) {
-    if (dt == null) return 'Select Date & Time';
-    return '${dt.day}/${dt.month}/${dt.year} at ${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}';
+    if (dt == null) return context.tr('Select Date & Time');
+    return '${dt.day}/${dt.month}/${dt.year} ${context.tr('at')} ${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}';
   }
 
   void _showError(String msg) {
@@ -328,13 +340,21 @@ class _CreatePoolScreenState extends State<CreatePoolScreen> {
     switch (_pickupMode) {
       case PickupMode.gps:
         if (_gpsLat == null || _gpsLng == null) {
-          _showError('GPS location unavailable. Please tap Refresh or switch to Manual Entry / Saved Places.');
+          _showError(
+            context.trAsync(
+              'GPS location unavailable. Please tap Refresh or switch to Manual Entry / Saved Places.',
+            ),
+          );
           return null;
         }
         return (address: _gpsAddress ?? '', landmark: _pickupLandmarkController.text.trim(), lat: _gpsLat!, lng: _gpsLng!);
       case PickupMode.saved:
         if (_selectedSavedIndex == null) {
-          _showError('Please pick one of your saved places, or switch to another pickup option.');
+          _showError(
+            context.trAsync(
+              'Please pick one of your saved places, or switch to another pickup option.',
+            ),
+          );
           return null;
         }
         final a = _savedAddresses[_selectedSavedIndex!];
@@ -349,7 +369,7 @@ class _CreatePoolScreenState extends State<CreatePoolScreen> {
       case PickupMode.manual:
         final address = _manualAddressController.text.trim();
         if (address.isEmpty) {
-          _showError('Please enter the village or area name.');
+          _showError(context.trAsync('Please enter the village or area name.'));
           return null;
         }
         double lat;
@@ -373,22 +393,28 @@ class _CreatePoolScreenState extends State<CreatePoolScreen> {
     if (pickup == null) return;
 
     if (_selectedMandiIndex == null) {
-      _showError('Please select a dropoff market.');
+      _showError(context.trAsync('Please select a dropoff market.'));
       return;
     }
 
     if (_windowStart == null || _windowEnd == null) {
-      _showError('Please select both Pickup Window Starts and Ends.');
+      _showError(
+        context.trAsync('Please select both Pickup Window Starts and Ends.'),
+      );
       return;
     }
 
     if (_windowStart!.isBefore(DateTime.now().subtract(const Duration(minutes: 5)))) {
-      _showError('Pickup Window Starts cannot be in the past.');
+      _showError(context.trAsync('Pickup Window Starts cannot be in the past.'));
       return;
     }
 
     if (!_windowEnd!.isAfter(_windowStart!)) {
-      _showError('Pickup Window Ends must be later than Pickup Window Starts.');
+      _showError(
+        context.trAsync(
+          'Pickup Window Ends must be later than Pickup Window Starts.',
+        ),
+      );
       return;
     }
 
@@ -433,7 +459,10 @@ class _CreatePoolScreenState extends State<CreatePoolScreen> {
 
       if (prResp.statusCode != 201) {
         final body = jsonDecode(prResp.body);
-        throw Exception(body['detail']?.toString() ?? 'Failed to create produce request.');
+        throw Exception(
+          body['detail']?.toString() ??
+              AppStrings.tr('Failed to create produce request.'),
+        );
       }
 
       final prId = jsonDecode(prResp.body)['id'];
@@ -467,7 +496,8 @@ class _CreatePoolScreenState extends State<CreatePoolScreen> {
         final body = jsonDecode(poolResp.body);
         setState(() {
           _isSubmitting = false;
-          _error = body['detail']?.toString() ?? 'Failed to create pool.';
+          _error =
+              body['detail']?.toString() ?? AppStrings.tr('Failed to create pool.');
         });
       }
     } catch (e) {
@@ -483,7 +513,7 @@ class _CreatePoolScreenState extends State<CreatePoolScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Create a Pool'),
+        title: Text(context.tr('Create a Pool')),
         backgroundColor: _kFarmerGreen,
         foregroundColor: Colors.white,
       ),
@@ -502,17 +532,22 @@ class _CreatePoolScreenState extends State<CreatePoolScreen> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              Text('Pool Details', style: theme.textTheme.titleLarge?.copyWith(fontWeight: FontWeight.bold)),
+              Text(context.tr('Pool Details'), style: theme.textTheme.titleLarge?.copyWith(fontWeight: FontWeight.bold)),
               const SizedBox(height: 4),
-              Text('Combine your harvest with nearby farmers to share transport costs.', style: theme.textTheme.bodySmall?.copyWith(color: Colors.grey.shade600)),
+              Text(context.tr('Combine your harvest with nearby farmers to share transport costs.'), style: theme.textTheme.bodySmall?.copyWith(color: Colors.grey.shade600)),
               const SizedBox(height: 24),
 
               TextFormField(
                 controller: _cropController,
                 enabled: !_isSubmitting,
                 textCapitalization: TextCapitalization.words,
-                decoration: const InputDecoration(labelText: 'Crop Name', hintText: 'e.g. Tomatoes', border: OutlineInputBorder(), prefixIcon: Icon(Icons.eco_outlined)),
-                validator: (v) => (v == null || v.trim().isEmpty) ? 'Required' : null,
+                decoration: InputDecoration(
+                  labelText: context.tr('Crop Name'),
+                  hintText: context.tr('e.g. Tomatoes'),
+                  border: const OutlineInputBorder(),
+                  prefixIcon: const Icon(Icons.eco_outlined),
+                ),
+                validator: (v) => (v == null || v.trim().isEmpty) ? context.trAsync('Required') : null,
               ),
               const SizedBox(height: 16),
 
@@ -521,17 +556,23 @@ class _CreatePoolScreenState extends State<CreatePoolScreen> {
                 enabled: !_isSubmitting,
                 keyboardType: const TextInputType.numberWithOptions(decimal: true),
                 inputFormatters: [FilteringTextInputFormatter.allow(RegExp(r'[0-9.]'))],
-                decoration: const InputDecoration(labelText: 'Weight (kg)', hintText: 'e.g. 250', border: OutlineInputBorder(), prefixIcon: Icon(Icons.scale_outlined), suffixText: 'kg'),
+                decoration: InputDecoration(
+                  labelText: context.tr('Weight (kg)'),
+                  hintText: context.tr('e.g. 250'),
+                  border: const OutlineInputBorder(),
+                  prefixIcon: const Icon(Icons.scale_outlined),
+                  suffixText: context.tr('kg'),
+                ),
                 validator: (v) {
-                  if (v == null || v.trim().isEmpty) return 'Required';
+                  if (v == null || v.trim().isEmpty) return context.trAsync('Required');
                   final d = double.tryParse(v.trim());
-                  if (d == null || d <= 0) return 'Invalid';
+                  if (d == null || d <= 0) return context.trAsync('Invalid');
                   return null;
                 },
               ),
               const SizedBox(height: 24),
 
-              Text('Pickup Location', style: theme.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold, color: _kFarmerGreen)),
+              Text(context.tr('Pickup Location'), style: theme.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold, color: _kFarmerGreen)),
               const SizedBox(height: 12),
               _buildPickupSection(theme),
               const SizedBox(height: 24),
@@ -539,10 +580,14 @@ class _CreatePoolScreenState extends State<CreatePoolScreen> {
               DropdownButtonFormField<String>(
                 value: _selectedDistrict,
                 isExpanded: true,
-                decoration: const InputDecoration(labelText: 'Dropoff District', border: OutlineInputBorder(), prefixIcon: Icon(Icons.map_outlined)),
-                items: _kDistricts.map((d) => DropdownMenuItem<String>(value: d, child: Text(d, overflow: TextOverflow.ellipsis))).toList(),
+                decoration: InputDecoration(
+                  labelText: context.tr('Dropoff District'),
+                  border: const OutlineInputBorder(),
+                  prefixIcon: const Icon(Icons.map_outlined),
+                ),
+                items: _kDistricts.map((d) => DropdownMenuItem<String>(value: d, child: Text(context.tr(d), overflow: TextOverflow.ellipsis))).toList(),
                 onChanged: _isSubmitting ? null : _onDistrictChanged,
-                validator: (v) => v == null ? 'Select a district' : null,
+                validator: (v) => v == null ? context.trAsync('Select a district') : null,
               ),
               const SizedBox(height: 16),
 
@@ -550,10 +595,14 @@ class _CreatePoolScreenState extends State<CreatePoolScreen> {
                 value: _selectedMandiIndex,
                 isExpanded: true,
                 decoration: InputDecoration(
-                  labelText: 'Dropoff Market / APMC Yard',
+                  labelText: context.tr('Dropoff Market / APMC Yard'),
                   border: const OutlineInputBorder(),
                   prefixIcon: const Icon(Icons.storefront_outlined),
-                  hintText: _selectedDistrict == null ? 'Select a district first' : (_isLoadingMandis ? 'Loading markets…' : 'Select a market'),
+                  hintText: _selectedDistrict == null
+                      ? context.tr('Select a district first')
+                      : (_isLoadingMandis
+                          ? context.tr('Loading markets…')
+                          : context.tr('Select a market')),
                   suffixIcon: _isLoadingMandis ? const Padding(padding: EdgeInsets.all(12), child: SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))) : null,
                 ),
                 items: List<DropdownMenuItem<int>>.generate(_mandis.length, (i) {
@@ -572,7 +621,7 @@ class _CreatePoolScreenState extends State<CreatePoolScreen> {
                             borderRadius: BorderRadius.circular(4),
                             border: Border.all(color: isApmc ? Colors.blue.shade200 : Colors.orange.shade200),
                           ),
-                          child: Text(isApmc ? 'APMC' : 'Local', style: TextStyle(fontSize: 10, fontWeight: FontWeight.w600, color: isApmc ? Colors.blue.shade800 : Colors.orange.shade800)),
+                          child: Text(isApmc ? context.tr('APMC') : context.tr('Local'), style: TextStyle(fontSize: 10, fontWeight: FontWeight.w600, color: isApmc ? Colors.blue.shade800 : Colors.orange.shade800)),
                         ),
                         const SizedBox(width: 6),
                         Expanded(child: Text(name, overflow: TextOverflow.ellipsis)),
@@ -581,7 +630,7 @@ class _CreatePoolScreenState extends State<CreatePoolScreen> {
                   );
                 }),
                 onChanged: mandiDropdownEnabled ? (i) => setState(() => _selectedMandiIndex = i) : null,
-                validator: (v) => v == null ? 'Select a market' : null,
+                validator: (v) => v == null ? context.trAsync('Select a market') : null,
               ),
               if (_mandiError != null) ...[
                 const SizedBox(height: 6),
@@ -592,16 +641,25 @@ class _CreatePoolScreenState extends State<CreatePoolScreen> {
               TextFormField(
                 controller: _shopController,
                 enabled: !_isSubmitting,
-                decoration: const InputDecoration(labelText: 'Dropoff Shop / Stall Number (optional)', hintText: 'e.g. Shop #14', border: OutlineInputBorder(), prefixIcon: Icon(Icons.store_outlined)),
+                decoration: InputDecoration(
+                  labelText: context.tr('Dropoff Shop / Stall Number (optional)'),
+                  hintText: context.tr('e.g. Shop #14'),
+                  border: const OutlineInputBorder(),
+                  prefixIcon: const Icon(Icons.store_outlined),
+                ),
               ),
               const SizedBox(height: 24),
 
-              Text('Pickup Window *', style: theme.textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w600)),
+              Text(context.tr('Pickup Window *'), style: theme.textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w600)),
               const SizedBox(height: 8),
               InkWell(
                 onTap: _isSubmitting ? null : () => _pickDateTime(isStart: true),
                 child: InputDecorator(
-                  decoration: const InputDecoration(border: OutlineInputBorder(), prefixIcon: Icon(Icons.calendar_today), labelText: 'Pickup Window Starts'),
+                  decoration: InputDecoration(
+                    border: const OutlineInputBorder(),
+                    prefixIcon: const Icon(Icons.calendar_today),
+                    labelText: context.tr('Pickup Window Starts'),
+                  ),
                   child: Text(_formatDateTime(_windowStart)),
                 ),
               ),
@@ -609,7 +667,11 @@ class _CreatePoolScreenState extends State<CreatePoolScreen> {
               InkWell(
                 onTap: _isSubmitting ? null : () => _pickDateTime(isStart: false),
                 child: InputDecorator(
-                  decoration: const InputDecoration(border: OutlineInputBorder(), prefixIcon: Icon(Icons.calendar_today), labelText: 'Pickup Window Ends'),
+                  decoration: InputDecoration(
+                    border: const OutlineInputBorder(),
+                    prefixIcon: const Icon(Icons.calendar_today),
+                    labelText: context.tr('Pickup Window Ends'),
+                  ),
                   child: Text(_formatDateTime(_windowEnd)),
                 ),
               ),
@@ -625,7 +687,7 @@ class _CreatePoolScreenState extends State<CreatePoolScreen> {
                 style: FilledButton.styleFrom(backgroundColor: _kFarmerGreen, padding: const EdgeInsets.symmetric(vertical: 16)),
                 child: _isSubmitting
                     ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
-                    : const Text('Create Pool'),
+                    : Text(context.tr('Create Pool')),
               ),
             ],
           ),
@@ -646,10 +708,22 @@ class _CreatePoolScreenState extends State<CreatePoolScreen> {
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           SegmentedButton<PickupMode>(
-            segments: const [
-              ButtonSegment<PickupMode>(value: PickupMode.gps, icon: Icon(Icons.my_location, size: 16), label: Text('Current GPS', style: TextStyle(fontSize: 12.5))),
-              ButtonSegment<PickupMode>(value: PickupMode.saved, icon: Icon(Icons.bookmark_outline, size: 16), label: Text('Saved', style: TextStyle(fontSize: 12.5))),
-              ButtonSegment<PickupMode>(value: PickupMode.manual, icon: Icon(Icons.edit_location_alt_outlined, size: 16), label: Text('Manual', style: TextStyle(fontSize: 12.5))),
+            segments: [
+              ButtonSegment<PickupMode>(
+                value: PickupMode.gps,
+                icon: const Icon(Icons.my_location, size: 16),
+                label: Text(context.tr('Current GPS'), style: const TextStyle(fontSize: 12.5)),
+              ),
+              ButtonSegment<PickupMode>(
+                value: PickupMode.saved,
+                icon: const Icon(Icons.bookmark_outline, size: 16),
+                label: Text(context.tr('Saved'), style: const TextStyle(fontSize: 12.5)),
+              ),
+              ButtonSegment<PickupMode>(
+                value: PickupMode.manual,
+                icon: const Icon(Icons.edit_location_alt_outlined, size: 16),
+                label: Text(context.tr('Manual'), style: const TextStyle(fontSize: 12.5)),
+              ),
             ],
             selected: {_pickupMode},
             onSelectionChanged: _isSubmitting
@@ -704,7 +778,14 @@ class _CreatePoolScreenState extends State<CreatePoolScreen> {
                     ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
                     : Icon(_gpsError != null ? Icons.error_outline : (_gpsAddress != null ? Icons.check_circle_outline : Icons.my_location), color: _gpsError != null ? theme.colorScheme.error : _kFarmerGreen, size: 20),
                 const SizedBox(width: 12),
-                Expanded(child: Text(_isFetchingLocation ? 'Detecting your location…' : (_gpsError ?? (_gpsAddress ?? 'Tap refresh to detect location.')), style: theme.textTheme.bodySmall)),
+                Expanded(
+                  child: Text(
+                    _isFetchingLocation
+                        ? context.tr('Detecting your location…')
+                        : (_gpsError ?? (_gpsAddress ?? context.tr('Tap refresh to detect location.'))),
+                    style: theme.textTheme.bodySmall,
+                  ),
+                ),
                 if (!_isFetchingLocation) IconButton(icon: const Icon(Icons.refresh, size: 20), color: _kFarmerGreen, onPressed: _isSubmitting ? null : _fetchCurrentLocation),
               ],
             ),
@@ -713,7 +794,12 @@ class _CreatePoolScreenState extends State<CreatePoolScreen> {
           TextFormField(
             controller: _pickupLandmarkController,
             enabled: !_isSubmitting,
-            decoration: const InputDecoration(labelText: 'Landmark / Pickup Notes', border: OutlineInputBorder(), prefixIcon: Icon(Icons.signpost_outlined), isDense: true),
+            decoration: InputDecoration(
+              labelText: context.tr('Landmark / Pickup Notes'),
+              border: const OutlineInputBorder(),
+              prefixIcon: const Icon(Icons.signpost_outlined),
+              isDense: true,
+            ),
           ),
         ],
       ),
@@ -734,7 +820,7 @@ class _CreatePoolScreenState extends State<CreatePoolScreen> {
             Container(
               padding: const EdgeInsets.all(12),
               decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(10), border: Border.all(color: Colors.grey.shade300)),
-              child: Text('No saved places yet. Use Manual Entry to bookmark one.', style: theme.textTheme.bodySmall),
+              child: Text(context.tr('No saved places yet. Use Manual Entry to bookmark one.'), style: theme.textTheme.bodySmall),
             )
           else
             Wrap(
@@ -745,7 +831,7 @@ class _CreatePoolScreenState extends State<CreatePoolScreen> {
                 final title = (a['title'] ?? '').toString();
                 final selected = _selectedSavedIndex == i;
                 return ChoiceChip(
-                  label: Text(title.isEmpty ? 'Saved place' : title, style: TextStyle(fontSize: 12.5, color: selected ? Colors.white : _kFarmerGreen, fontWeight: FontWeight.w600)),
+                  label: Text(title.isEmpty ? context.tr('Saved place') : title, style: TextStyle(fontSize: 12.5, color: selected ? Colors.white : _kFarmerGreen, fontWeight: FontWeight.w600)),
                   selected: selected,
                   onSelected: _isSubmitting ? null : (_) => setState(() => _selectedSavedIndex = i),
                   selectedColor: _kFarmerGreen,
@@ -766,7 +852,12 @@ class _CreatePoolScreenState extends State<CreatePoolScreen> {
           TextFormField(
             controller: _pickupLandmarkController,
             enabled: !_isSubmitting,
-            decoration: const InputDecoration(labelText: 'Landmark / Pickup Notes (optional)', border: OutlineInputBorder(), prefixIcon: Icon(Icons.signpost_outlined), isDense: true),
+            decoration: InputDecoration(
+              labelText: context.tr('Landmark / Pickup Notes (optional)'),
+              border: const OutlineInputBorder(),
+              prefixIcon: const Icon(Icons.signpost_outlined),
+              isDense: true,
+            ),
           ),
         ],
       ),
@@ -782,13 +873,24 @@ class _CreatePoolScreenState extends State<CreatePoolScreen> {
           TextFormField(
             controller: _manualAddressController,
             enabled: !_isSubmitting,
-            decoration: const InputDecoration(labelText: 'Village / Area Name', hintText: 'e.g. Bangarpet, Kolar', border: OutlineInputBorder(), prefixIcon: Icon(Icons.holiday_village_outlined), isDense: true),
+            decoration: InputDecoration(
+              labelText: context.tr('Village / Area Name'),
+              hintText: context.tr('e.g. Bangarpet, Kolar'),
+              border: const OutlineInputBorder(),
+              prefixIcon: const Icon(Icons.holiday_village_outlined),
+              isDense: true,
+            ),
           ),
           const SizedBox(height: 12),
           TextFormField(
             controller: _pickupLandmarkController,
             enabled: !_isSubmitting,
-            decoration: const InputDecoration(labelText: 'Landmark / Pickup Notes', border: OutlineInputBorder(), prefixIcon: Icon(Icons.signpost_outlined), isDense: true),
+            decoration: InputDecoration(
+              labelText: context.tr('Landmark / Pickup Notes'),
+              border: const OutlineInputBorder(),
+              prefixIcon: const Icon(Icons.signpost_outlined),
+              isDense: true,
+            ),
           ),
         ],
       ),

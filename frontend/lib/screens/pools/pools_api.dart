@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'package:http/http.dart' as http;
 
+import '../../l10n/app_strings.dart';
 import '../../services/api_service.dart';
 import 'pool_models.dart';
 
@@ -38,7 +39,7 @@ class PoolsApi {
       final list = jsonDecode(resp.body) as List<dynamic>;
       return list.map((e) => Pool.fromJson(e)).toList();
     }
-    throw Exception(_extractError(resp) ?? 'Failed to load pools');
+    throw Exception(_extractError(resp) ?? AppStrings.tr('Failed to load pools'));
   }
 
   static Future<List<Pool>> fetchMyPools({required String token}) async {
@@ -48,7 +49,7 @@ class PoolsApi {
       final list = jsonDecode(resp.body) as List<dynamic>;
       return list.map((e) => Pool.fromJson(e)).toList();
     }
-    throw Exception(_extractError(resp) ?? 'Failed to load my pools');
+    throw Exception(_extractError(resp) ?? AppStrings.tr('Failed to load my pools'));
   }
 
   static Future<List<NearbyFarmer>> fetchNearbyFarmers({
@@ -70,7 +71,9 @@ class PoolsApi {
       final list = jsonDecode(resp.body) as List<dynamic>;
       return list.map((e) => NearbyFarmer.fromJson(e)).toList();
     }
-    throw Exception(_extractError(resp) ?? 'Failed to load nearby farmers');
+    throw Exception(
+      _extractError(resp) ?? AppStrings.tr('Failed to load nearby farmers'),
+    );
   }
 
   static Future<PoolDetail> fetchPoolDetail({
@@ -82,7 +85,9 @@ class PoolsApi {
     if (resp.statusCode == 200) {
       return PoolDetail.fromJson(jsonDecode(resp.body));
     }
-    throw Exception(_extractError(resp) ?? 'Failed to load pool details');
+    throw Exception(
+      _extractError(resp) ?? AppStrings.tr('Failed to load pool details'),
+    );
   }
 
   static Future<PoolDetail> createPool({
@@ -98,7 +103,7 @@ class PoolsApi {
     if (resp.statusCode == 201) {
       return PoolDetail.fromJson(jsonDecode(resp.body));
     }
-    throw Exception(_extractError(resp) ?? 'Failed to create pool');
+    throw Exception(_extractError(resp) ?? AppStrings.tr('Failed to create pool'));
   }
 
   static Future<PoolDetail> groupPool({
@@ -122,7 +127,7 @@ class PoolsApi {
     if (resp.statusCode == 201) {
       return PoolDetail.fromJson(jsonDecode(resp.body));
     }
-    throw Exception(_extractError(resp) ?? 'Failed to group pool');
+    throw Exception(_extractError(resp) ?? AppStrings.tr('Failed to group pool'));
   }
 
   static Future<PoolDetail> joinPool({
@@ -143,7 +148,7 @@ class PoolsApi {
     if (resp.statusCode == 200) {
       return PoolDetail.fromJson(jsonDecode(resp.body));
     }
-    throw Exception(_extractError(resp) ?? 'Failed to join pool');
+    throw Exception(_extractError(resp) ?? AppStrings.tr('Failed to join pool'));
   }
 
   static Future<void> leavePool({
@@ -153,7 +158,7 @@ class PoolsApi {
     final uri = Uri.parse('$_kApiBaseUrl/pools/$poolId/leave');
     final resp = await http.delete(uri, headers: _headers(token));
     if (resp.statusCode != 200) {
-      throw Exception(_extractError(resp) ?? 'Failed to leave pool');
+      throw Exception(_extractError(resp) ?? AppStrings.tr('Failed to leave pool'));
     }
   }
 
@@ -164,7 +169,9 @@ class PoolsApi {
     final uri = Uri.parse('$_kApiBaseUrl/pools/$poolId');
     final resp = await http.delete(uri, headers: _headers(token));
     if (resp.statusCode != 200) {
-      throw Exception(_extractError(resp) ?? 'Failed to cancel pool');
+      throw Exception(
+        _extractError(resp) ?? AppStrings.tr('Failed to cancel pool'),
+      );
     }
   }
 

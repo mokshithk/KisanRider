@@ -4,7 +4,10 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import 'package:mobile_scanner/mobile_scanner.dart';
+import 'package:provider/provider.dart';
 
+import '../l10n/app_strings.dart';
+import '../providers/language_provider.dart';
 import 'payment_qr_dialog.dart';
 import 'rider_common.dart';
 
@@ -15,19 +18,28 @@ class KisanRiderScannerApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      title: 'KisanRider Mandi Pay',
-      debugShowCheckedModeBanner: false,
-      theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(
-          seedColor: kRiderGreen,
-          primary: kRiderGreen,
-        ),
-        fontFamily: 'AppRoboto',
-        useMaterial3: true,
-        scaffoldBackgroundColor: const Color(0xFFF8FAF9),
+    return ChangeNotifierProvider.value(
+      value: LanguageProvider.instance,
+      child: Builder(
+        builder: (context) {
+          final lang = context.watch<LanguageProvider>();
+          return MaterialApp(
+            title: AppStrings.tr('KisanRider Mandi Pay', lang: lang.languageCode),
+            locale: Locale(lang.languageCode),
+            debugShowCheckedModeBanner: false,
+            theme: ThemeData(
+              colorScheme: ColorScheme.fromSeed(
+                seedColor: kRiderGreen,
+                primary: kRiderGreen,
+              ),
+              fontFamily: 'AppRoboto',
+              useMaterial3: true,
+              scaffoldBackgroundColor: const Color(0xFFF8FAF9),
+            ),
+            home: const ScannerHomeScreen(),
+          );
+        },
       ),
-      home: const ScannerHomeScreen(),
     );
   }
 }
@@ -108,7 +120,10 @@ class _ScannerHomeScreenState extends State<ScannerHomeScreen> {
           await _scannerController.start();
         } catch (_) {}
       } else {
-        String msg = 'Invalid KisanRider QR (HTTP ${resp.statusCode}).';
+        String msg = context.trAsync(
+          'Invalid KisanRider QR (HTTP {code}).',
+          args: {'code': '${resp.statusCode}'},
+        );
         try {
           final b = jsonDecode(resp.body);
           if (b is Map && b['detail'] != null) msg = b['detail'].toString();
@@ -125,7 +140,10 @@ class _ScannerHomeScreenState extends State<ScannerHomeScreen> {
       if (!mounted) return;
       setState(() {
         _isInspecting = false;
-        _scanError = 'Could not reach backend ($_baseUrl): $e';
+        _scanError = context.trAsync(
+          'Could not reach backend ({url}): {err}',
+          args: {'url': _baseUrl, 'err': '$e'},
+        );
       });
       try {
         await _scannerController.start();
@@ -139,25 +157,25 @@ class _ScannerHomeScreenState extends State<ScannerHomeScreen> {
       context: context,
       builder: (ctx) => AlertDialog(
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        title: const Text('Enter Payment QR Code'),
+        title: Text(ctx.tr('Enter Payment QR Code')),
         content: TextField(
           controller: controller,
           autofocus: true,
-          decoration: const InputDecoration(
-            labelText: 'QR Payload',
+          decoration: InputDecoration(
+            labelText: ctx.tr('QR Payload'),
             hintText: 'KISANRIDER|<id>|<amount>',
-            border: OutlineInputBorder(),
+            border: const OutlineInputBorder(),
           ),
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx),
-            child: const Text('Cancel'),
+            child: Text(ctx.tr('Cancel')),
           ),
           FilledButton(
             style: FilledButton.styleFrom(backgroundColor: kRiderGreen),
             onPressed: () => Navigator.pop(ctx, controller.text.trim()),
-            child: const Text('Inspect'),
+            child: Text(ctx.tr('Inspect')),
           ),
         ],
       ),
@@ -173,7 +191,7 @@ class _ScannerHomeScreenState extends State<ScannerHomeScreen> {
     final updated = await showDialog<String>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('Backend Server URL'),
+        title: Text(ctx.tr('Backend Server URL')),
         content: TextField(
           controller: controller,
           decoration: const InputDecoration(
@@ -184,12 +202,12 @@ class _ScannerHomeScreenState extends State<ScannerHomeScreen> {
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx),
-            child: const Text('Cancel'),
+            child: Text(ctx.tr('Cancel')),
           ),
           FilledButton(
             style: FilledButton.styleFrom(backgroundColor: kRiderGreen),
             onPressed: () => Navigator.pop(ctx, controller.text.trim()),
-            child: const Text('Save'),
+            child: Text(ctx.tr('Save')),
           ),
         ],
       ),
@@ -204,7 +222,7 @@ class _ScannerHomeScreenState extends State<ScannerHomeScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('KisanRider Mandi Pay'),
+        title: Text(context.tr('KisanRider Mandi Pay')),
         backgroundColor: kRiderGreen,
         foregroundColor: Colors.white,
         actions: [
@@ -213,19 +231,19 @@ class _ScannerHomeScreenState extends State<ScannerHomeScreen> {
             builder: (_, state, _) {
               final torchOn = state.torchState == TorchState.on;
               return IconButton(
-                tooltip: 'Toggle Flash',
+                tooltip: context.tr('Toggle Flash'),
                 onPressed: state.isRunning ? () => _scannerController.toggleTorch() : null,
                 icon: Icon(torchOn ? Icons.flash_on : Icons.flash_off),
               );
             },
           ),
           IconButton(
-            tooltip: 'Flip Camera',
+            tooltip: context.tr('Flip Camera'),
             onPressed: () => _scannerController.switchCamera(),
             icon: const Icon(Icons.cameraswitch_outlined),
           ),
           IconButton(
-            tooltip: 'Server Settings',
+            tooltip: context.tr('Server Settings'),
             onPressed: _showServerConfigDialog,
             icon: const Icon(Icons.settings_outlined),
           ),
@@ -264,7 +282,10 @@ class _ScannerHomeScreenState extends State<ScannerHomeScreen> {
                             ),
                             const SizedBox(height: 12),
                             Text(
-                              'Camera unavailable (${error.errorCode.name}).\nUse "Enter QR Code" below for demo testing.',
+                              context.tr(
+                                'Camera unavailable ({code}).\nUse "Enter QR Code" below for demo testing.',
+                                args: {'code': error.errorCode.name},
+                              ),
                               textAlign: TextAlign.center,
                               style: const TextStyle(color: Colors.white70, fontSize: 13.5),
                             ),
@@ -291,15 +312,15 @@ class _ScannerHomeScreenState extends State<ScannerHomeScreen> {
                 if (_isInspecting)
                   Container(
                     color: Colors.black54,
-                    child: const Center(
+                    child: Center(
                       child: Column(
                         mainAxisSize: MainAxisSize.min,
                         children: [
-                          CircularProgressIndicator(color: Colors.white),
-                          SizedBox(height: 12),
+                          const CircularProgressIndicator(color: Colors.white),
+                          const SizedBox(height: 12),
                           Text(
-                            'Reading KisanRider Payment QR…',
-                            style: TextStyle(color: Colors.white, fontSize: 14),
+                            context.tr('Reading KisanRider Payment QR…'),
+                            style: const TextStyle(color: Colors.white, fontSize: 14),
                           ),
                         ],
                       ),
@@ -320,14 +341,14 @@ class _ScannerHomeScreenState extends State<ScannerHomeScreen> {
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  const Row(
+                  Row(
                     children: [
-                      Icon(Icons.qr_code_scanner, color: kRiderGreen, size: 22),
-                      SizedBox(width: 10),
+                      const Icon(Icons.qr_code_scanner, color: kRiderGreen, size: 22),
+                      const SizedBox(width: 10),
                       Expanded(
                         child: Text(
-                          'Scan Rider\'s KisanRider QR Code to Pay',
-                          style: TextStyle(
+                          context.tr("Scan Rider's KisanRider QR Code to Pay"),
+                          style: const TextStyle(
                             fontSize: 15,
                             fontWeight: FontWeight.bold,
                             color: Color(0xFF1C1B1F),
@@ -337,9 +358,11 @@ class _ScannerHomeScreenState extends State<ScannerHomeScreen> {
                     ],
                   ),
                   const SizedBox(height: 6),
-                  const Text(
-                    'Amount and auto-split (Rider Fare, Platform Fee & Farmer Payout) load automatically.',
-                    style: TextStyle(fontSize: 12.5, color: Color(0xFF6B7280)),
+                  Text(
+                    context.tr(
+                      'Amount and auto-split (Rider Fare, Platform Fee & Farmer Payout) load automatically.',
+                    ),
+                    style: const TextStyle(fontSize: 12.5, color: Color(0xFF6B7280)),
                   ),
                   if (_scanError != null) ...[
                     const SizedBox(height: 10),
@@ -368,7 +391,7 @@ class _ScannerHomeScreenState extends State<ScannerHomeScreen> {
                       padding: const EdgeInsets.symmetric(vertical: 13),
                     ),
                     icon: const Icon(Icons.keyboard_alt_outlined, size: 19),
-                    label: const Text('Enter / Paste QR Code Manually'),
+                    label: Text(context.tr('Enter / Paste QR Code Manually')),
                   ),
                 ],
               ),
@@ -408,7 +431,9 @@ class _QrPaymentConfirmScreenState extends State<QrPaymentConfirmScreen> {
   Future<void> _submitPay() async {
     final pin = _pinController.text.trim();
     if (pin.isEmpty || !RegExp(r'^\d{4,8}$').hasMatch(pin)) {
-      setState(() => _error = 'Enter a numeric PIN (4 to 8 digits only).');
+      setState(
+        () => _error = context.trAsync('Enter a numeric PIN (4 to 8 digits only).'),
+      );
       return;
     }
 
@@ -444,7 +469,10 @@ class _QrPaymentConfirmScreenState extends State<QrPaymentConfirmScreen> {
           ),
         );
       } else {
-        String msg = 'Payment failed (HTTP ${resp.statusCode}).';
+        String msg = context.trAsync(
+          'Payment failed (HTTP {code}).',
+          args: {'code': '${resp.statusCode}'},
+        );
         try {
           final b = jsonDecode(resp.body);
           if (b is Map && b['detail'] != null) msg = b['detail'].toString();
@@ -458,7 +486,7 @@ class _QrPaymentConfirmScreenState extends State<QrPaymentConfirmScreen> {
       if (!mounted) return;
       setState(() {
         _isPaying = false;
-        _error = 'Network error: $e';
+        _error = context.trAsync('Network error: {err}', args: {'err': '$e'});
       });
     }
   }
@@ -467,12 +495,12 @@ class _QrPaymentConfirmScreenState extends State<QrPaymentConfirmScreen> {
   Widget build(BuildContext context) {
     final p = widget.payment;
     final rateNote = p.rateSource == 'mandi_api'
-        ? '₹${p.ratePerKg.toStringAsFixed(0)}/kg · Live Mandi API'
-        : '₹${p.ratePerKg.toStringAsFixed(0)}/kg · Standard Rate';
+        ? '₹${p.ratePerKg.toStringAsFixed(0)}/kg · ${context.tr('Live Mandi API')}'
+        : '₹${p.ratePerKg.toStringAsFixed(0)}/kg · ${context.tr('Standard Rate')}';
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Confirm Mandi Payment'),
+        title: Text(context.tr('Confirm Mandi Payment')),
         backgroundColor: kRiderGreen,
         foregroundColor: Colors.white,
       ),
@@ -510,8 +538,11 @@ class _QrPaymentConfirmScreenState extends State<QrPaymentConfirmScreen> {
                       ),
                       child: Text(
                         p.isPool
-                            ? 'POOLED DELIVERY · ${p.items.length} FARMERS'
-                            : 'INDIVIDUAL DELIVERY',
+                            ? context.tr(
+                                'POOLED DELIVERY · {count} FARMERS',
+                                args: {'count': '${p.items.length}'},
+                              )
+                            : context.tr('INDIVIDUAL DELIVERY'),
                         style: const TextStyle(
                           fontSize: 10.5,
                           fontWeight: FontWeight.bold,
@@ -521,9 +552,9 @@ class _QrPaymentConfirmScreenState extends State<QrPaymentConfirmScreen> {
                       ),
                     ),
                     const SizedBox(height: 12),
-                    const Text(
-                      'PAYABLE AMOUNT',
-                      style: TextStyle(
+                    Text(
+                      context.tr('PAYABLE AMOUNT'),
+                      style: const TextStyle(
                         fontSize: 11.5,
                         fontWeight: FontWeight.w700,
                         color: Color(0xFF4B5563),
@@ -552,7 +583,7 @@ class _QrPaymentConfirmScreenState extends State<QrPaymentConfirmScreen> {
                     if (p.mandiName != null && p.mandiName!.isNotEmpty) ...[
                       const SizedBox(height: 2),
                       Text(
-                        'Mandi: ${p.mandiName}',
+                        context.tr('Mandi: {name}', args: {'name': p.mandiName!}),
                         style: const TextStyle(
                           fontSize: 12.5,
                           color: Color(0xFF6B7280),
@@ -575,9 +606,9 @@ class _QrPaymentConfirmScreenState extends State<QrPaymentConfirmScreen> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    const Text(
-                      'AUTOMATIC PAYMENT SPLIT',
-                      style: TextStyle(
+                    Text(
+                      context.tr('AUTOMATIC PAYMENT SPLIT'),
+                      style: const TextStyle(
                         fontSize: 11,
                         fontWeight: FontWeight.w700,
                         color: Color(0xFF6B7280),
@@ -586,21 +617,31 @@ class _QrPaymentConfirmScreenState extends State<QrPaymentConfirmScreen> {
                     ),
                     const SizedBox(height: 12),
                     _ScannerRow(
-                      label: 'Rider Account (${p.riderName})',
+                      label: context.tr(
+                        'Rider Account ({name})',
+                        args: {'name': p.riderName},
+                      ),
                       value: formatIndianRupees(p.riderFare),
                       color: kRiderGreen,
                       bold: true,
                     ),
                     _ScannerRow(
-                      label: 'Platform Fee (2%)',
+                      label: context.tr('Platform Fee (2%)'),
                       value: formatIndianRupees(p.platformFee),
                       color: Colors.blueGrey.shade700,
                     ),
                     const Divider(height: 16),
                     _ScannerRow(
                       label: p.isPool
-                          ? 'Farmers Net Total'
-                          : 'Farmer Account (${p.items.isNotEmpty ? p.items.first.farmerName : "Farmer"})',
+                          ? context.tr('Farmers Net Total')
+                          : context.tr(
+                              'Farmer Account ({name})',
+                              args: {
+                                'name': p.items.isNotEmpty
+                                    ? p.items.first.farmerName
+                                    : context.tr('Farmer'),
+                              },
+                            ),
                       value: formatIndianRupees(p.farmersNetPayout),
                       color: const Color(0xFF166534),
                       bold: true,
@@ -649,17 +690,19 @@ class _QrPaymentConfirmScreenState extends State<QrPaymentConfirmScreen> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    const Text(
-                      'Enter Demo Payment PIN',
-                      style: TextStyle(
+                    Text(
+                      context.tr('Enter Demo Payment PIN'),
+                      style: const TextStyle(
                         fontSize: 14,
                         fontWeight: FontWeight.bold,
                       ),
                     ),
                     const SizedBox(height: 4),
-                    const Text(
-                      'Any 4 to 8 numeric digits accepted for demo authorization.',
-                      style: TextStyle(fontSize: 12, color: Color(0xFF6B7280)),
+                    Text(
+                      context.tr(
+                        'Any 4 to 8 numeric digits accepted for demo authorization.',
+                      ),
+                      style: const TextStyle(fontSize: 12, color: Color(0xFF6B7280)),
                     ),
                     const SizedBox(height: 12),
                     TextField(
@@ -709,8 +752,11 @@ class _QrPaymentConfirmScreenState extends State<QrPaymentConfirmScreen> {
                           : const Icon(Icons.payments_outlined),
                       label: Text(
                         _isPaying
-                            ? 'Processing Payment…'
-                            : 'PAY ${formatIndianRupees(p.totalAmount)} NOW',
+                            ? context.tr('Processing Payment…')
+                            : context.tr(
+                                'PAY {amount} NOW',
+                                args: {'amount': formatIndianRupees(p.totalAmount)},
+                              ),
                       ),
                     ),
                   ],
@@ -739,7 +785,7 @@ class PaymentSuccessReceiptScreen extends StatelessWidget {
     final r = receipt;
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Payment Receipt'),
+        title: Text(context.tr('Payment Receipt')),
         backgroundColor: kRiderGreen,
         foregroundColor: Colors.white,
       ),
@@ -765,9 +811,7 @@ class PaymentSuccessReceiptScreen extends StatelessWidget {
                     ),
                     const SizedBox(height: 12),
                     Text(
-                      alreadyPaid
-                          ? 'Already Paid'
-                          : 'Payment Successful!',
+                      context.tr(alreadyPaid ? 'Already Paid' : 'Payment Successful!'),
                       style: const TextStyle(
                         fontSize: 22,
                         fontWeight: FontWeight.bold,
@@ -795,7 +839,7 @@ class PaymentSuccessReceiptScreen extends StatelessWidget {
                           borderRadius: BorderRadius.circular(20),
                         ),
                         child: Text(
-                          'Ref: ${r.paymentReference}',
+                          context.tr('Ref: {ref}', args: {'ref': r.paymentReference!}),
                           style: const TextStyle(
                             fontSize: 12.5,
                             fontWeight: FontWeight.w700,
@@ -818,9 +862,9 @@ class PaymentSuccessReceiptScreen extends StatelessWidget {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    const Text(
-                      'SETTLED SPLIT BREAKDOWN',
-                      style: TextStyle(
+                    Text(
+                      context.tr('SETTLED SPLIT BREAKDOWN'),
+                      style: const TextStyle(
                         fontSize: 11,
                         fontWeight: FontWeight.w700,
                         color: Color(0xFF6B7280),
@@ -829,18 +873,21 @@ class PaymentSuccessReceiptScreen extends StatelessWidget {
                     ),
                     const SizedBox(height: 12),
                     _ScannerRow(
-                      label: 'Rider Credited (${r.riderName})',
+                      label: context.tr(
+                        'Rider Credited ({name})',
+                        args: {'name': r.riderName},
+                      ),
                       value: formatIndianRupees(r.riderFare),
                       color: kRiderGreen,
                       bold: true,
                     ),
                     _ScannerRow(
-                      label: 'Platform Fee (2%)',
+                      label: context.tr('Platform Fee (2%)'),
                       value: formatIndianRupees(r.platformFee),
                     ),
                     const Divider(height: 16),
                     _ScannerRow(
-                      label: 'Farmer Net Credited',
+                      label: context.tr('Farmer Net Credited'),
                       value: formatIndianRupees(r.farmersNetPayout),
                       color: const Color(0xFF166534),
                       bold: true,
@@ -885,9 +932,9 @@ class PaymentSuccessReceiptScreen extends StatelessWidget {
                   padding: const EdgeInsets.symmetric(vertical: 15),
                 ),
                 icon: const Icon(Icons.qr_code_scanner),
-                label: const Text(
-                  'Scan Next QR',
-                  style: TextStyle(fontSize: 15.5, fontWeight: FontWeight.bold),
+                label: Text(
+                  context.tr('Scan Next QR'),
+                  style: const TextStyle(fontSize: 15.5, fontWeight: FontWeight.bold),
                 ),
               ),
             ],

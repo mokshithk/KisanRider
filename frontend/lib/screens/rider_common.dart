@@ -8,6 +8,7 @@ import 'package:http_parser/http_parser.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import '../l10n/app_strings.dart';
 import '../services/api_service.dart';
 
 /// Base URL of the FastAPI backend.
@@ -39,13 +40,13 @@ Future<void> launchMaps(BuildContext context, String query) async {
     final ok = await launchUrl(url, mode: LaunchMode.externalApplication);
     if (!ok && context.mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Could not open Google Maps')),
+        SnackBar(content: Text(context.trAsync('Could not open Google Maps'))),
       );
     }
   } catch (_) {
     if (context.mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Could not open Google Maps')),
+        SnackBar(content: Text(context.trAsync('Could not open Google Maps'))),
       );
     }
   }
@@ -60,7 +61,7 @@ Future<void> launchPhoneCall(BuildContext context, String phone) async {
   if (cleaned.isEmpty) {
     if (context.mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('No phone number available')),
+        SnackBar(content: Text(context.trAsync('No phone number available'))),
       );
     }
     return;
@@ -72,13 +73,22 @@ Future<void> launchPhoneCall(BuildContext context, String phone) async {
     final ok = await launchUrl(url);
     if (!ok && context.mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Could not open dialer for $cleaned')),
+        SnackBar(
+          content: Text(
+            context.trAsync(
+              'Could not open dialer for {phone}',
+              args: {'phone': cleaned},
+            ),
+          ),
+        ),
       );
     }
   } catch (_) {
     if (context.mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Could not open the phone dialer')),
+        SnackBar(
+          content: Text(context.trAsync('Could not open the phone dialer')),
+        ),
       );
     }
   }
@@ -177,12 +187,8 @@ class AvailableRequest {
   String get displayRequestedPickup {
     if (requestedPickupAt == null) return '';
     final local = requestedPickupAt!.toLocal();
-    final months = [
-      'January', 'February', 'March', 'April', 'May', 'June',
-      'July', 'August', 'September', 'October', 'November', 'December'
-    ];
     final day = local.day.toString().padLeft(2, '0');
-    final month = months[local.month - 1];
+    final month = AppStrings.trFullMonth(local.month);
     final year = local.year;
     final hour = local.hour > 12 ? local.hour - 12 : (local.hour == 0 ? 12 : local.hour);
     final ampm = local.hour >= 12 ? 'PM' : 'AM';
@@ -349,7 +355,7 @@ class InfoRow extends StatelessWidget {
             icon: const Icon(Icons.navigation_outlined),
             iconSize: 20,
             visualDensity: VisualDensity.compact,
-            tooltip: 'Navigate',
+            tooltip: context.tr('Navigate'),
             color: theme.colorScheme.primary,
             onPressed: onNavigate,
           ),
@@ -386,7 +392,7 @@ class StatusBadge extends StatelessWidget {
         border: Border.all(color: fg),
       ),
       child: Text(
-        status.toUpperCase(),
+        context.trStatus(status.toUpperCase()),
         style: TextStyle(
           color: fg,
           fontWeight: FontWeight.bold,
@@ -430,7 +436,7 @@ class ErrorView extends StatelessWidget {
             OutlinedButton.icon(
               onPressed: onRetry,
               icon: const Icon(Icons.refresh),
-              label: const Text('Retry'),
+              label: Text(context.tr('Retry')),
             ),
           ],
         ),
@@ -521,7 +527,10 @@ Future<({String? imageUrl, String? errorMessage})> uploadDeliveryProofPhoto({
         imageUrl: null,
         errorMessage: _extractHttpErrorDetail(
           uploadResp,
-          'Photo upload failed (HTTP ${uploadResp.statusCode}).',
+          AppStrings.tr(
+            'Photo upload failed (HTTP {code}).',
+            args: {'code': '${uploadResp.statusCode}'},
+          ),
         ),
       );
     }
@@ -537,7 +546,7 @@ Future<({String? imageUrl, String? errorMessage})> uploadDeliveryProofPhoto({
     if (imageUrl == null || imageUrl.trim().isEmpty) {
       return (
         imageUrl: null,
-        errorMessage: 'Server did not return a valid photo URL.',
+        errorMessage: AppStrings.tr('Server did not return a valid photo URL.'),
       );
     }
 
@@ -546,11 +555,16 @@ Future<({String? imageUrl, String? errorMessage})> uploadDeliveryProofPhoto({
     debugPrint('Upload Error (timeout): $e');
     return (
       imageUrl: null,
-      errorMessage: 'Connection timed out. Please check backend server.',
+      errorMessage: AppStrings.tr(
+        'Connection timed out. Please check backend server.',
+      ),
     );
   } catch (e) {
     debugPrint('Upload Error: $e');
-    return (imageUrl: null, errorMessage: 'Error: $e');
+    return (
+      imageUrl: null,
+      errorMessage: AppStrings.tr('Error: {err}', args: {'err': '$e'}),
+    );
   }
 }
 
@@ -572,7 +586,7 @@ Future<DeliveryResult> deliverPoolWithProof({
 
   if (uploaded.imageUrl == null) {
     return DeliveryResult.failure(
-      uploaded.errorMessage ?? 'Photo upload failed.',
+      uploaded.errorMessage ?? AppStrings.tr('Photo upload failed.'),
     );
   }
 
@@ -600,7 +614,10 @@ Future<DeliveryResult> deliverPoolWithProof({
       return DeliveryResult.failure(
         _extractHttpErrorDetail(
           resp,
-          'Could not mark pool delivered (HTTP ${resp.statusCode}).',
+          AppStrings.tr(
+            'Could not mark pool delivered (HTTP {code}).',
+            args: {'code': '${resp.statusCode}'},
+          ),
         ),
       );
     }
@@ -608,12 +625,14 @@ Future<DeliveryResult> deliverPoolWithProof({
     return const DeliveryResult.success();
   } on TimeoutException catch (e) {
     debugPrint('Pool deliver timeout: $e');
-    return const DeliveryResult.failure(
-      'Connection timed out. Please check backend server.',
+    return DeliveryResult.failure(
+      AppStrings.tr('Connection timed out. Please check backend server.'),
     );
   } catch (e) {
     debugPrint('Pool deliver error: $e');
-    return DeliveryResult.failure('Error: $e');
+    return DeliveryResult.failure(
+      AppStrings.tr('Error: {err}', args: {'err': '$e'}),
+    );
   }
 }
 
@@ -664,17 +683,21 @@ class _DeliveryProofDialogState extends State<DeliveryProofDialog> {
     } catch (e) {
       if (!mounted) return;
       final hint = kIsWeb
-          ? ' (if using Camera, try Gallery instead — browsers often block '
-              'camera access on non-HTTPS origins or desktops without a webcam)'
+          ? AppStrings.tr(
+              ' (if using Camera, try Gallery instead — browsers often block camera access on non-HTTPS origins or desktops without a webcam)',
+            )
           : '';
-      setState(() => _error = 'Could not pick image: $e$hint');
+      setState(
+        () => _error =
+            '${AppStrings.tr('Could not pick image: {err}', args: {'err': '$e'})}$hint',
+      );
     }
   }
 
   Future<void> _submit() async {
     final bytes = _imageBytes;
     if (bytes == null || bytes.isEmpty) {
-      setState(() => _error = 'Please attach a photo first.');
+      setState(() => _error = AppStrings.tr('Please attach a photo first.'));
       return;
     }
 
@@ -697,12 +720,14 @@ class _DeliveryProofDialogState extends State<DeliveryProofDialog> {
 
       setState(() {
         _error = result.errorMessage ??
-            'Could not complete delivery. Please try again.';
+            AppStrings.tr('Could not complete delivery. Please try again.');
       });
     } catch (e) {
       debugPrint('Dialog submit error: $e');
       if (!mounted) return;
-      setState(() => _error = 'Error: $e');
+      setState(
+        () => _error = AppStrings.tr('Error: {err}', args: {'err': '$e'}),
+      );
     } finally {
       if (mounted) {
         setState(() => _isUploading = false);
@@ -715,7 +740,7 @@ class _DeliveryProofDialogState extends State<DeliveryProofDialog> {
     final theme = Theme.of(context);
 
     return AlertDialog(
-      title: const Text('Upload Delivery Proof'),
+      title: Text(context.tr('Upload Delivery Proof')),
       content: SizedBox(
         width: 320,
         child: SingleChildScrollView(
@@ -725,8 +750,9 @@ class _DeliveryProofDialogState extends State<DeliveryProofDialog> {
             children: [
               Text(
                 widget.subtitleText ??
-                    'Take a photo of the delivered crates at the mandi. '
-                        'This is required before the trip can be completed.',
+                    context.tr(
+                      'Take a photo of the delivered crates at the mandi. This is required before the trip can be completed.',
+                    ),
                 style: const TextStyle(fontSize: 13),
               ),
               const SizedBox(height: 16),
@@ -784,7 +810,7 @@ class _DeliveryProofDialogState extends State<DeliveryProofDialog> {
                         Icons.camera_alt_outlined,
                         size: 18,
                       ),
-                      label: const Text('Camera'),
+                      label: Text(context.tr('Camera')),
                     ),
                   ),
                   const SizedBox(width: 10),
@@ -797,7 +823,7 @@ class _DeliveryProofDialogState extends State<DeliveryProofDialog> {
                         Icons.photo_library_outlined,
                         size: 18,
                       ),
-                      label: const Text('Gallery'),
+                      label: Text(context.tr('Gallery')),
                     ),
                   ),
                 ],
@@ -815,7 +841,7 @@ class _DeliveryProofDialogState extends State<DeliveryProofDialog> {
                     ),
                     const SizedBox(width: 10),
                     Text(
-                      'Uploading proof of delivery…',
+                      context.tr('Uploading proof of delivery…'),
                       style: theme.textTheme.bodySmall,
                     ),
                   ],
@@ -862,7 +888,7 @@ class _DeliveryProofDialogState extends State<DeliveryProofDialog> {
         TextButton(
           onPressed:
               _isUploading ? null : () => Navigator.of(context).pop(),
-          child: const Text('Cancel'),
+          child: Text(context.tr('Cancel')),
         ),
         FilledButton.icon(
           onPressed: _isUploading ? null : _submit,
@@ -877,7 +903,9 @@ class _DeliveryProofDialogState extends State<DeliveryProofDialog> {
                 )
               : const Icon(Icons.check, size: 18),
           label: Text(
-            _isUploading ? 'Uploading…' : 'Upload Proof of Delivery',
+            context.tr(
+              _isUploading ? 'Uploading…' : 'Upload Proof of Delivery',
+            ),
           ),
           style: FilledButton.styleFrom(backgroundColor: kRiderGreen),
         ),

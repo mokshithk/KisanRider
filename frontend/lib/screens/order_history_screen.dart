@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:provider/provider.dart';
 
+import '../l10n/app_strings.dart';
 import '../providers/auth_provider.dart';
 import '../services/api_service.dart';
 import 'order_detail_screen.dart';
@@ -132,7 +133,7 @@ class _OrderHistoryScreenState extends State<OrderHistoryScreen> {
     if (auth.token == null) {
       setState(() {
         _isLoading = false;
-        _error = 'Not signed in.';
+        _error = AppStrings.tr('Not signed in.');
       });
       return;
     }
@@ -162,15 +163,20 @@ class _OrderHistoryScreenState extends State<OrderHistoryScreen> {
       } else {
         setState(() {
           _error = _extractError(response) ??
-              'Failed to load order history '
-              '(HTTP ${response.statusCode}).';
+              AppStrings.tr(
+                'Failed to load order history (HTTP {code}).',
+                args: {'code': '${response.statusCode}'},
+              );
           _isLoading = false;
         });
       }
     } catch (e) {
       if (!mounted) return;
       setState(() {
-        _error = 'Network error: $e';
+        _error = AppStrings.tr(
+          'Network error: {err}',
+          args: {'err': '$e'},
+        );
         _isLoading = false;
       });
     }
@@ -207,7 +213,7 @@ class _OrderHistoryScreenState extends State<OrderHistoryScreen> {
     return Scaffold(
       backgroundColor: Colors.grey.shade50,
       appBar: AppBar(
-        title: const Text('Order History'),
+        title: Text(context.tr('Order History')),
         backgroundColor: _kFarmerGreen,
         foregroundColor: Colors.white,
       ),
@@ -238,16 +244,16 @@ class _OrderHistoryScreenState extends State<OrderHistoryScreen> {
               color: Colors.grey.shade400,
             ),
             const SizedBox(height: 16),
-            const Center(
+            Center(
               child: Text(
-                'No past orders yet.',
-                style: TextStyle(fontSize: 15, color: Colors.black54),
+                context.tr('No past orders yet.'),
+                style: const TextStyle(fontSize: 15, color: Colors.black54),
               ),
             ),
             const SizedBox(height: 6),
             Center(
               child: Text(
-                'Completed and in-flight shipments will appear here.',
+                context.tr('Completed and in-flight shipments will appear here.'),
                 textAlign: TextAlign.center,
                 style: TextStyle(fontSize: 13, color: Colors.grey.shade600),
               ),
@@ -285,16 +291,9 @@ class _OrderSummaryCard extends StatelessWidget {
   final OrderSummary order;
   final VoidCallback onTap;
 
-  /// "12 Oct 2026" — three-letter month abbreviations so the string
-  /// stays short enough that the date + ref line never wraps on a phone.
-  static const List<String> _months = [
-    'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-    'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
-  ];
-
   String _formatDate(DateTime d) {
     final local = d.toLocal();
-    return '${local.day} ${_months[local.month - 1]} ${local.year}';
+    return '${local.day} ${AppStrings.trShortMonth(local.month)} ${local.year}';
   }
 
   @override
@@ -303,7 +302,7 @@ class _OrderSummaryCard extends StatelessWidget {
 
     // Line 1: crop · weight  |  status badge
     final header =
-        '${order.cropName} · ${order.weightKg.toStringAsFixed(0)} kg';
+        '${order.cropName} · ${order.weightKg.toStringAsFixed(0)} ${context.tr('kg')}';
 
     // Line 2: date · short reference
     final subHeader = '${_formatDate(order.createdAt)} · ${order.shortRef}';
@@ -411,7 +410,7 @@ class _StatusBadge extends StatelessWidget {
       ),
       child: Text(
         // Replace underscores so IN_TRANSIT renders as "IN TRANSIT".
-        normalized.replaceAll('_', ' '),
+        context.trStatus(normalized.replaceAll('_', ' ')),
         style: TextStyle(
           color: fg,
           fontWeight: FontWeight.bold,
@@ -446,7 +445,7 @@ class _ErrorView extends StatelessWidget {
                 size: 56, color: theme.colorScheme.error),
             const SizedBox(height: 16),
             Text(
-              'Could not load order history',
+              context.tr('Could not load order history'),
               style: theme.textTheme.titleMedium
                   ?.copyWith(fontWeight: FontWeight.w600),
             ),
@@ -461,7 +460,7 @@ class _ErrorView extends StatelessWidget {
             OutlinedButton.icon(
               onPressed: onRetry,
               icon: const Icon(Icons.refresh),
-              label: const Text('Retry'),
+              label: Text(context.tr('Retry')),
             ),
           ],
         ),

@@ -8,6 +8,7 @@ import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import 'package:provider/provider.dart';
 
+import '../l10n/app_strings.dart';
 import '../providers/auth_provider.dart';
 import 'payment_qr_dialog.dart';
 import 'rider_common.dart';
@@ -316,7 +317,7 @@ class _RiderActiveTabState extends State<RiderActiveTab>
     if (auth.token == null) {
       setState(() {
         _isLoading = false;
-        _error = 'Not signed in.';
+        _error = AppStrings.tr('Not signed in.');
       });
       return;
     }
@@ -362,14 +363,20 @@ class _RiderActiveTabState extends State<RiderActiveTab>
       } else {
         setState(() {
           _error = _extractError(response) ??
-              'Failed to load trips (HTTP ${response.statusCode}).';
+              AppStrings.tr(
+                'Failed to load trips (HTTP {code}).',
+                args: {'code': '${response.statusCode}'},
+              );
           _isLoading = false;
         });
       }
     } catch (e) {
       if (!mounted) return;
       setState(() {
-        _error = 'Network error: $e';
+        _error = AppStrings.tr(
+          'Network error: {err}',
+          args: {'err': '$e'},
+        );
         _isLoading = false;
       });
     }
@@ -448,14 +455,16 @@ class _RiderActiveTabState extends State<RiderActiveTab>
   ) async {
     if (!_kCompletableTripStatuses.contains(trip.status)) {
       return DeliveryResult.failure(
-        'Trip must be PICKED_UP before completing '
-        '(current: ${trip.status}).',
+        AppStrings.tr(
+          'Trip must be PICKED_UP before completing (current: {status}).',
+          args: {'status': trip.status},
+        ),
       );
     }
 
     final auth = context.read<AuthProvider>();
     if (auth.token == null) {
-      return const DeliveryResult.failure('Not signed in.');
+      return DeliveryResult.failure(AppStrings.tr('Not signed in.'));
     }
 
     final uploaded = await uploadDeliveryProofPhoto(
@@ -467,7 +476,7 @@ class _RiderActiveTabState extends State<RiderActiveTab>
 
     if (uploaded.imageUrl == null) {
       return DeliveryResult.failure(
-        uploaded.errorMessage ?? 'Photo upload failed.',
+        uploaded.errorMessage ?? AppStrings.tr('Photo upload failed.'),
       );
     }
 
@@ -485,7 +494,10 @@ class _RiderActiveTabState extends State<RiderActiveTab>
         return DeliveryResult.failure(
           _extractErrorDetail(
             patchResp,
-            'Could not mark trip delivered (HTTP ${patchResp.statusCode}).',
+            AppStrings.tr(
+              'Could not mark trip delivered (HTTP {code}).',
+              args: {'code': '${patchResp.statusCode}'},
+            ),
           ),
         );
       }
@@ -493,12 +505,14 @@ class _RiderActiveTabState extends State<RiderActiveTab>
       return const DeliveryResult.success();
     } on TimeoutException catch (e) {
       debugPrint('Upload Error (timeout): $e');
-      return const DeliveryResult.failure(
-        'Connection timed out. Please check backend server.',
+      return DeliveryResult.failure(
+        AppStrings.tr('Connection timed out. Please check backend server.'),
       );
     } catch (e) {
       debugPrint('Upload Error: $e');
-      return DeliveryResult.failure('Error: $e');
+      return DeliveryResult.failure(
+        AppStrings.tr('Error: {err}', args: {'err': '$e'}),
+      );
     }
   }
 
@@ -561,8 +575,10 @@ class _RiderActiveTabState extends State<RiderActiveTab>
     );
     if (paid && mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Payment received! Rider & Farmer accounts updated.'),
+        SnackBar(
+          content: Text(
+            context.trAsync('Payment received! Rider & Farmer accounts updated.'),
+          ),
           backgroundColor: kRiderGreen,
         ),
       );
@@ -581,8 +597,10 @@ class _RiderActiveTabState extends State<RiderActiveTab>
     );
     if (paid && mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Pool payment received! Auto-split complete.'),
+        SnackBar(
+          content: Text(
+            context.trAsync('Pool payment received! Auto-split complete.'),
+          ),
           backgroundColor: kRiderGreen,
         ),
       );
@@ -627,9 +645,10 @@ class _RiderActiveTabState extends State<RiderActiveTab>
       context: context,
       barrierDismissible: false,
       builder: (_) => DeliveryProofDialog(
-        subtitleText:
-            'Take a photo of the delivered pooled produce at the mandi. '
-            'This marks all pooled pickups as delivered.',
+        subtitleText: context.trAsync(
+          'Take a photo of the delivered pooled produce at the mandi. '
+          'This marks all pooled pickups as delivered.',
+        ),
         onSubmit: (bytes, filename) => deliverPoolWithProof(
           token: auth.token!,
           poolId: poolId,
@@ -641,8 +660,8 @@ class _RiderActiveTabState extends State<RiderActiveTab>
 
     if (result == true && mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Pool marked as delivered!'),
+        SnackBar(
+          content: Text(context.trAsync('Pool marked as delivered!')),
           backgroundColor: kRiderGreen,
         ),
       );
@@ -699,7 +718,7 @@ class _RiderActiveTabState extends State<RiderActiveTab>
               ),
               child: ChoiceChip(
                 label: Text(
-                  _filters[i].label,
+                  context.tr(_filters[i].label),
                   style: TextStyle(
                     fontSize: 13,
                     fontWeight: FontWeight.w600,
@@ -728,18 +747,18 @@ class _RiderActiveTabState extends State<RiderActiveTab>
       return RefreshIndicator(
         onRefresh: _fetch,
         child: ListView(
-          children: const [
-            SizedBox(height: 160),
-            Icon(
+          children: [
+            const SizedBox(height: 160),
+            const Icon(
               Icons.delivery_dining_outlined,
               size: 64,
               color: Colors.black26,
             ),
-            SizedBox(height: 12),
+            const SizedBox(height: 12),
             Center(
               child: Text(
-                'No active trips. Accept a request to get started.',
-                style: TextStyle(fontSize: 15, color: Colors.black54),
+                context.tr('No active trips. Accept a request to get started.'),
+                style: const TextStyle(fontSize: 15, color: Colors.black54),
               ),
             ),
           ],
@@ -766,7 +785,7 @@ class _RiderActiveTabState extends State<RiderActiveTab>
               const SizedBox(height: 12),
               Center(
                 child: Text(
-                  'No active pooled trips.',
+                  context.tr('No active pooled trips.'),
                   textAlign: TextAlign.center,
                   style: TextStyle(fontSize: 14, color: Colors.grey.shade700),
                 ),
@@ -825,7 +844,7 @@ class _RiderActiveTabState extends State<RiderActiveTab>
             const SizedBox(height: 12),
             Center(
               child: Text(
-                'No trips match this filter.',
+                context.tr('No trips match this filter.'),
                 textAlign: TextAlign.center,
                 style: TextStyle(
                   fontSize: 14,
@@ -871,16 +890,11 @@ class _TripCard extends StatelessWidget {
   final bool isBusy;
   final VoidCallback onTap;
 
-  static const List<String> _months = [
-    'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-    'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
-  ];
-
   /// "Oct 18, 2026" — three-letter month, comma before the year. Matches
   /// the format used on the farmer-side Order History card.
   String _formatDate(DateTime d) {
     final local = d.toLocal();
-    return '${_months[local.month - 1]} ${local.day}, ${local.year}';
+    return '${AppStrings.trShortMonth(local.month)} ${local.day}, ${local.year}';
   }
 
   @override
@@ -889,7 +903,7 @@ class _TripCard extends StatelessWidget {
 
     // Line 1: "CropName · 500 kg" + status badge
     final headerLine =
-        '${trip.cropName} · ${trip.weightKg.toStringAsFixed(0)} kg';
+        '${trip.cropName} · ${trip.weightKg.toStringAsFixed(0)} ${context.tr('kg')}';
 
     // Line 2: Dropoff label — mandi name preferred, fall back to the
     // legacy composite dropoff string.
@@ -945,7 +959,12 @@ class _TripCard extends StatelessWidget {
                     const SizedBox(width: 6),
                     Expanded(
                       child: Text(
-                        'Pickup: ${trip.riderExpectedPickupAt!.toLocal().day}/${trip.riderExpectedPickupAt!.toLocal().month} ${trip.riderExpectedPickupAt!.toLocal().hour.toString().padLeft(2, '0')}:${trip.riderExpectedPickupAt!.toLocal().minute.toString().padLeft(2, '0')}',
+                        context.tr(
+                          'Pickup: {addr}',
+                          args: {
+                            'addr': '${trip.riderExpectedPickupAt!.toLocal().day}/${trip.riderExpectedPickupAt!.toLocal().month} ${trip.riderExpectedPickupAt!.toLocal().hour.toString().padLeft(2, '0')}:${trip.riderExpectedPickupAt!.toLocal().minute.toString().padLeft(2, '0')}',
+                          },
+                        ),
                         style: const TextStyle(
                           fontSize: 12,
                           fontWeight: FontWeight.w600,
@@ -970,7 +989,10 @@ class _TripCard extends StatelessWidget {
                   const SizedBox(width: 6),
                   Expanded(
                     child: Text(
-                      'Dropoff: $dropoffLabel',
+                      context.tr(
+                        'Dropoff: {dropoff}',
+                        args: {'dropoff': dropoffLabel},
+                      ),
                       style: theme.textTheme.bodySmall?.copyWith(
                         color: const Color(0xFF1C1B1F),
                         fontSize: 13,
@@ -1021,7 +1043,7 @@ class _TripCard extends StatelessWidget {
                           ),
                         ),
                         child: Text(
-                          trip.isPaid ? 'PAID' : 'QR PAY',
+                          context.trStatus(trip.isPaid ? 'PAID' : 'QR PAY'),
                           style: TextStyle(
                             fontSize: 10,
                             fontWeight: FontWeight.bold,
@@ -1079,7 +1101,7 @@ class _TripStatusBadge extends StatelessWidget {
         border: Border.all(color: fg),
       ),
       child: Text(
-        label,
+        context.trStatus(label),
         style: TextStyle(
           color: fg,
           fontWeight: FontWeight.bold,
@@ -1151,7 +1173,7 @@ class _TripOperationalSheetState extends State<_TripOperationalSheet> {
   Future<void> _verifyOtp() async {
     final otp = _otpController.text.trim();
     if (otp.length != 4) {
-      setState(() => _error = 'Enter the 4-digit OTP.');
+      setState(() => _error = AppStrings.tr('Enter the 4-digit OTP.'));
       return;
     }
 
@@ -1171,8 +1193,8 @@ class _TripOperationalSheetState extends State<_TripOperationalSheet> {
     setState(() {
       _isSubmitting = false;
       _error = result == OtpSubmitResult.invalidOtp
-          ? 'Invalid OTP. Please check with the farmer.'
-          : 'Could not verify OTP. Please try again.';
+          ? AppStrings.tr('Invalid OTP. Please check with the farmer.')
+          : AppStrings.tr('Could not verify OTP. Please try again.');
     });
   }
 
@@ -1180,23 +1202,25 @@ class _TripOperationalSheetState extends State<_TripOperationalSheet> {
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (dialogCtx) => AlertDialog(
-        title: const Text('Cancel this trip?'),
-        content: const Text(
-          'The farmer will be notified and the request will go back to '
-          'the Available feed for another rider to accept. This cannot '
-          'be undone.',
+        title: Text(dialogCtx.tr('Cancel this trip?')),
+        content: Text(
+          dialogCtx.tr(
+            'The farmer will be notified and the request will go back to '
+            'the Available feed for another rider to accept. This cannot '
+            'be undone.',
+          ),
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(dialogCtx).pop(false),
-            child: const Text('Keep Trip'),
+            child: Text(dialogCtx.tr('Keep Trip')),
           ),
           FilledButton(
             onPressed: () => Navigator.of(dialogCtx).pop(true),
             style: FilledButton.styleFrom(
               backgroundColor: Colors.red.shade600,
             ),
-            child: const Text('Cancel Trip'),
+            child: Text(dialogCtx.tr('Cancel Trip')),
           ),
         ],
       ),
@@ -1218,7 +1242,9 @@ class _TripOperationalSheetState extends State<_TripOperationalSheet> {
 
     setState(() {
       _isSubmitting = false;
-      _error = 'Could not cancel the trip. Please try again.';
+      _error = AppStrings.tr(
+        'Could not cancel the trip. Please try again.',
+      );
     });
   }
 
@@ -1307,7 +1333,7 @@ class _TripOperationalSheetState extends State<_TripOperationalSheet> {
                         children: [
                           Text(
                             '${widget.trip.cropName} · '
-                            '${widget.trip.weightKg.toStringAsFixed(0)} kg',
+                            '${widget.trip.weightKg.toStringAsFixed(0)} ${context.tr('kg')}',
                             style: theme.textTheme.titleLarge?.copyWith(
                               fontWeight: FontWeight.bold,
                             ),
@@ -1409,7 +1435,12 @@ class _TripOperationalSheetState extends State<_TripOperationalSheet> {
                       Icon(Icons.schedule, size: 16, color: Colors.blue.shade800),
                       const SizedBox(width: 8),
                       Text(
-                        'Expected Pickup: ${exp.day}/${exp.month} at ${exp.hour.toString().padLeft(2, '0')}:${exp.minute.toString().padLeft(2, '0')}',
+                        context.tr(
+                          'Expected Pickup: {time}',
+                          args: {
+                            'time': '${exp.day}/${exp.month} ${context.tr('at')} ${exp.hour.toString().padLeft(2, '0')}:${exp.minute.toString().padLeft(2, '0')}',
+                          },
+                        ),
                         style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Colors.blue.shade900),
                       ),
                     ],
@@ -1417,7 +1448,12 @@ class _TripOperationalSheetState extends State<_TripOperationalSheet> {
                 if (winStart != null && winEnd != null) ...[
                   const SizedBox(height: 4),
                   Text(
-                    'Pickup Window: ${winStart.day}/${winStart.month} ${winStart.hour.toString().padLeft(2, '0')}:${winStart.minute.toString().padLeft(2, '0')} — ${winEnd.day}/${winEnd.month} ${winEnd.hour.toString().padLeft(2, '0')}:${winEnd.minute.toString().padLeft(2, '0')}',
+                    context.tr(
+                      'Pickup Window: {window}',
+                      args: {
+                        'window': '${winStart.day}/${winStart.month} ${winStart.hour.toString().padLeft(2, '0')}:${winStart.minute.toString().padLeft(2, '0')} — ${winEnd.day}/${winEnd.month} ${winEnd.hour.toString().padLeft(2, '0')}:${winEnd.minute.toString().padLeft(2, '0')}',
+                      },
+                    ),
                     style: TextStyle(fontSize: 12, color: Colors.blue.shade800),
                   ),
                 ],
@@ -1434,7 +1470,7 @@ class _TripOperationalSheetState extends State<_TripOperationalSheet> {
 
         // ----- Pickup OTP input --------------------------------------
         Text(
-          'PICKUP VERIFICATION',
+          context.tr('PICKUP VERIFICATION'),
           style: theme.textTheme.labelMedium?.copyWith(
             color: const Color(0xFF6B7280),
             fontWeight: FontWeight.w700,
@@ -1456,9 +1492,9 @@ class _TripOperationalSheetState extends State<_TripOperationalSheet> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              const Text(
-                'Ask the farmer for the 4-digit code on their screen.',
-                style: TextStyle(
+              Text(
+                context.tr('Ask the farmer for the 4-digit code on their screen.'),
+                style: const TextStyle(
                   fontSize: 12.5,
                   color: Color(0xFF8A5A00),
                 ),
@@ -1520,7 +1556,7 @@ class _TripOperationalSheetState extends State<_TripOperationalSheet> {
                         )
                       : const Icon(Icons.check, size: 18),
                   label: Text(
-                    _isSubmitting ? 'Verifying…' : 'Verify OTP',
+                    context.tr(_isSubmitting ? 'Verifying…' : 'Verify OTP'),
                   ),
                 ),
               ),
@@ -1544,7 +1580,7 @@ class _TripOperationalSheetState extends State<_TripOperationalSheet> {
             ),
           ),
           icon: const Icon(Icons.close, size: 18),
-          label: const Text('Reject / Cancel Trip'),
+          label: Text(context.tr('Reject / Cancel Trip')),
         ),
       ],
     );
@@ -1584,7 +1620,7 @@ class _TripOperationalSheetState extends State<_TripOperationalSheet> {
                   ),
                   const SizedBox(width: 8),
                   Text(
-                    'Dropoff — Mandi Unloading',
+                    context.tr('Dropoff — Mandi Unloading'),
                     style: theme.textTheme.titleSmall?.copyWith(
                       fontWeight: FontWeight.bold,
                       color: kRiderGreen,
@@ -1595,14 +1631,14 @@ class _TripOperationalSheetState extends State<_TripOperationalSheet> {
               const SizedBox(height: 12),
               _SheetInfoRow(
                 icon: Icons.place_outlined,
-                label: 'Mandi',
+                label: context.tr('Mandi'),
                 value: dropoffDisplay,
               ),
               if (stall.isNotEmpty) ...[
                 const SizedBox(height: 8),
                 _SheetInfoRow(
                   icon: Icons.tag,
-                  label: 'Stall',
+                  label: context.tr('Stall'),
                   value: stall,
                 ),
               ],
@@ -1624,7 +1660,7 @@ class _TripOperationalSheetState extends State<_TripOperationalSheet> {
                     padding: const EdgeInsets.symmetric(vertical: 10),
                   ),
                   icon: const Icon(Icons.navigation_outlined, size: 18),
-                  label: const Text('Navigate to Mandi'),
+                  label: Text(context.tr('Navigate to Mandi')),
                 ),
               ),
             ],
@@ -1654,7 +1690,7 @@ class _TripOperationalSheetState extends State<_TripOperationalSheet> {
               const SizedBox(width: 8),
               Expanded(
                 child: Text(
-                  'Cancellation is locked after pickup verification.',
+                  context.tr('Cancellation is locked after pickup verification.'),
                   style: theme.textTheme.bodySmall?.copyWith(
                     color: Colors.grey.shade800,
                   ),
@@ -1689,9 +1725,11 @@ class _TripOperationalSheetState extends State<_TripOperationalSheet> {
                 )
               : const Icon(Icons.check_circle_outline, size: 20),
           label: Text(
-            _isSubmitting
-                ? 'Completing…'
-                : '✅ Mark as Delivered / Unloaded',
+            context.tr(
+              _isSubmitting
+                  ? 'Completing…'
+                  : '✅ Mark as Delivered / Unloaded',
+            ),
           ),
         ),
       ],
@@ -1734,7 +1772,9 @@ class _TripOperationalSheetState extends State<_TripOperationalSheet> {
                   const SizedBox(width: 8),
                   Expanded(
                     child: Text(
-                      isPaid ? 'Delivery & Payment Complete' : 'Delivery Complete',
+                      context.tr(
+                        isPaid ? 'Delivery & Payment Complete' : 'Delivery Complete',
+                      ),
                       style: theme.textTheme.titleSmall?.copyWith(
                         fontWeight: FontWeight.bold,
                         color: const Color(0xFF166534),
@@ -1746,35 +1786,35 @@ class _TripOperationalSheetState extends State<_TripOperationalSheet> {
               const SizedBox(height: 12),
               _SheetInfoRow(
                 icon: Icons.eco_outlined,
-                label: 'Crop',
+                label: context.tr('Crop'),
                 value: '${widget.trip.cropName} · '
-                    '${widget.trip.weightKg.toStringAsFixed(0)} kg',
+                    '${widget.trip.weightKg.toStringAsFixed(0)} ${context.tr('kg')}',
               ),
               const SizedBox(height: 8),
               _SheetInfoRow(
                 icon: Icons.storefront_outlined,
-                label: 'Delivered to',
+                label: context.tr('Delivered to'),
                 value: mandi.isNotEmpty ? mandi : '—',
               ),
               if (completedAt != null) ...[
                 const SizedBox(height: 8),
                 _SheetInfoRow(
                   icon: Icons.schedule_outlined,
-                  label: 'Completed on',
+                  label: context.tr('Completed on'),
                   value: _formatCompletedAt(completedAt),
                 ),
               ],
               const SizedBox(height: 8),
               _SheetInfoRow(
                 icon: Icons.receipt_long_outlined,
-                label: 'Reference',
+                label: context.tr('Reference'),
                 value: widget.trip.shortRef,
               ),
               if (widget.trip.paymentReference != null) ...[
                 const SizedBox(height: 8),
                 _SheetInfoRow(
                   icon: Icons.qr_code_2_outlined,
-                  label: 'Payment Ref',
+                  label: context.tr('Payment Ref'),
                   value: widget.trip.paymentReference!,
                 ),
               ],
@@ -1795,10 +1835,10 @@ class _TripOperationalSheetState extends State<_TripOperationalSheet> {
               children: [
                 Row(
                   children: [
-                    const Expanded(
+                    Expanded(
                       child: Text(
-                        'PAYMENT BREAKDOWN',
-                        style: TextStyle(
+                        context.tr('PAYMENT BREAKDOWN'),
+                        style: const TextStyle(
                           fontSize: 11,
                           fontWeight: FontWeight.w700,
                           color: Color(0xFF6B7280),
@@ -1807,7 +1847,7 @@ class _TripOperationalSheetState extends State<_TripOperationalSheet> {
                       ),
                     ),
                     Text(
-                      isPaid ? 'PAID ✅' : 'PENDING QR',
+                      context.trStatus(isPaid ? 'PAID ✅' : 'PENDING QR'),
                       style: TextStyle(
                         fontSize: 11,
                         fontWeight: FontWeight.bold,
@@ -1819,25 +1859,25 @@ class _TripOperationalSheetState extends State<_TripOperationalSheet> {
                 const SizedBox(height: 8),
                 _SheetInfoRow(
                   icon: Icons.payments_outlined,
-                  label: 'Total Value',
+                  label: context.tr('Total Value'),
                   value: formatIndianRupees(gross),
                 ),
                 if (riderFare != null)
                   _SheetInfoRow(
                     icon: Icons.local_shipping_outlined,
-                    label: 'Rider Fare',
+                    label: context.tr('Rider Fare'),
                     value: formatIndianRupees(riderFare),
                   ),
                 if (platformFee != null)
                   _SheetInfoRow(
                     icon: Icons.account_balance_outlined,
-                    label: 'Platform Fee',
+                    label: context.tr('Platform Fee'),
                     value: formatIndianRupees(platformFee),
                   ),
                 if (netPayout != null)
                   _SheetInfoRow(
                     icon: Icons.agriculture_outlined,
-                    label: 'Farmer Gets',
+                    label: context.tr('Farmer Gets'),
                     value: formatIndianRupees(netPayout),
                   ),
               ],
@@ -1867,7 +1907,7 @@ class _TripOperationalSheetState extends State<_TripOperationalSheet> {
                     ),
                   )
                 : const Icon(Icons.qr_code_2_rounded, size: 22),
-            label: const Text('Generate Payment QR'),
+            label: Text(context.tr('Generate Payment QR')),
           )
         else
           Container(
@@ -1890,7 +1930,9 @@ class _TripOperationalSheetState extends State<_TripOperationalSheet> {
                 const SizedBox(width: 8),
                 Expanded(
                   child: Text(
-                    'Payment done! Earnings updated under your Earnings tab.',
+                    context.tr(
+                      'Payment done! Earnings updated under your Earnings tab.',
+                    ),
                     style: theme.textTheme.bodySmall?.copyWith(
                       color: const Color(0xFF166534),
                       fontWeight: FontWeight.w600,
@@ -1905,14 +1947,10 @@ class _TripOperationalSheetState extends State<_TripOperationalSheet> {
   }
 
   String _formatCompletedAt(DateTime d) {
-    const months = [
-      'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-      'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
-    ];
     final local = d.toLocal();
     final hh = local.hour.toString().padLeft(2, '0');
     final mm = local.minute.toString().padLeft(2, '0');
-    return '${local.day} ${months[local.month - 1]} ${local.year} · $hh:$mm';
+    return '${local.day} ${AppStrings.trShortMonth(local.month)} ${local.year} · $hh:$mm';
   }
 }
 
@@ -1932,7 +1970,7 @@ class _FarmerContactCard extends StatelessWidget {
     final name = (trip.farmerFullName != null &&
             trip.farmerFullName!.trim().isNotEmpty)
         ? trip.farmerFullName!.trim()
-        : 'Farmer';
+        : context.tr('Farmer');
 
     final pickup = (trip.pickupAddress != null &&
             trip.pickupAddress!.trim().isNotEmpty)
@@ -1960,7 +1998,7 @@ class _FarmerContactCard extends StatelessWidget {
               ),
               const SizedBox(width: 8),
               Text(
-                'Farmer Contact',
+                context.tr('Farmer Contact'),
                 style: theme.textTheme.titleSmall?.copyWith(
                   fontWeight: FontWeight.bold,
                   color: kRiderGreen,
@@ -2053,7 +2091,7 @@ class _FarmerContactCard extends StatelessWidget {
                   ),
                 ),
                 icon: const Icon(Icons.phone, size: 18),
-                label: const Text('📞 CALL FARMER'),
+                label: Text(context.tr('📞 CALL FARMER')),
               ),
             ),
           ],
@@ -2131,7 +2169,8 @@ class _GroupedPoolCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final cropName = trips.isNotEmpty ? trips.first.cropName : 'Produce';
+    final cropName =
+        trips.isNotEmpty ? trips.first.cropName : context.tr('Produce');
     final totalWeight = trips.fold<double>(0.0, (acc, t) => acc + t.weightKg);
     final totalFarmers = trips.length;
     final completedPickups = trips
@@ -2140,7 +2179,9 @@ class _GroupedPoolCard extends StatelessWidget {
             t.status == 'COMPLETED' ||
             t.status == 'DELIVERED')
         .length;
-    final dropoff = trips.isNotEmpty ? (trips.first.dropoffMandi ?? 'Mandi Destination') : '—';
+    final dropoff = trips.isNotEmpty
+        ? (trips.first.dropoffMandi ?? context.tr('Mandi Destination'))
+        : '—';
     final isDelivered =
         trips.isNotEmpty && trips.every((t) => t.status == 'COMPLETED' || t.status == 'DELIVERED');
     final allPaid =
@@ -2163,7 +2204,10 @@ class _GroupedPoolCard extends StatelessWidget {
                 children: [
                   Expanded(
                     child: Text(
-                      '$cropName (Pooled Trip)',
+                      context.tr(
+                        '{crop} (Pooled Trip)',
+                        args: {'crop': cropName},
+                      ),
                       style: theme.textTheme.titleMedium?.copyWith(
                         fontWeight: FontWeight.bold,
                         color: const Color(0xFF1C1B1F),
@@ -2178,7 +2222,7 @@ class _GroupedPoolCard extends StatelessWidget {
                       border: Border.all(color: kRiderGreen),
                     ),
                     child: Text(
-                      isDelivered ? 'DELIVERED' : 'ACTIVE POOL',
+                      context.trStatus(isDelivered ? 'DELIVERED' : 'ACTIVE POOL'),
                       style: const TextStyle(
                         color: kRiderGreen,
                         fontWeight: FontWeight.bold,
@@ -2194,14 +2238,20 @@ class _GroupedPoolCard extends StatelessWidget {
                   const Icon(Icons.inventory_2_outlined, size: 16, color: Colors.grey),
                   const SizedBox(width: 6),
                   Text(
-                    'Combined: ${totalWeight.toStringAsFixed(0)} kg',
+                    context.tr(
+                      'Combined: {weight} kg',
+                      args: {'weight': totalWeight.toStringAsFixed(0)},
+                    ),
                     style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
                   ),
                   const Spacer(),
                   const Icon(Icons.people_alt_outlined, size: 16, color: Colors.grey),
                   const SizedBox(width: 6),
                   Text(
-                    '$totalFarmers Farmer Pickups',
+                    context.tr(
+                      '{count} Farmer Pickups',
+                      args: {'count': '$totalFarmers'},
+                    ),
                     style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
                   ),
                 ],
@@ -2213,7 +2263,13 @@ class _GroupedPoolCard extends StatelessWidget {
                   const SizedBox(width: 6),
                   Expanded(
                     child: Text(
-                      'Pickup Progress: $completedPickups of $totalFarmers completed',
+                      context.tr(
+                        'Pickup Progress: {done} of {total} completed',
+                        args: {
+                          'done': '$completedPickups',
+                          'total': '$totalFarmers',
+                        },
+                      ),
                       style: TextStyle(
                         fontSize: 12.5,
                         color: completedPickups == totalFarmers ? kRiderGreen : Colors.blue.shade800,
@@ -2230,7 +2286,10 @@ class _GroupedPoolCard extends StatelessWidget {
                   const SizedBox(width: 6),
                   Expanded(
                     child: Text(
-                      'Destination: $dropoff',
+                      context.tr(
+                        'Destination: {dropoff}',
+                        args: {'dropoff': dropoff},
+                      ),
                       style: const TextStyle(fontSize: 12.5, color: Colors.black87),
                       overflow: TextOverflow.ellipsis,
                     ),
@@ -2244,9 +2303,9 @@ class _GroupedPoolCard extends StatelessWidget {
                   child: FilledButton.icon(
                     onPressed: onMarkDelivered,
                     icon: const Icon(Icons.check_circle_outline, size: 18),
-                    label: const Text(
-                      '✅ Mark as Delivered / Unloaded',
-                      style: TextStyle(fontWeight: FontWeight.bold),
+                    label: Text(
+                      context.tr('✅ Mark as Delivered / Unloaded'),
+                      style: const TextStyle(fontWeight: FontWeight.bold),
                     ),
                     style: FilledButton.styleFrom(
                       backgroundColor: kRiderGreen,
@@ -2264,9 +2323,9 @@ class _GroupedPoolCard extends StatelessWidget {
                   child: FilledButton.icon(
                     onPressed: onGeneratePaymentQr,
                     icon: const Icon(Icons.qr_code_2_rounded, size: 19),
-                    label: const Text(
-                      'Generate Payment QR',
-                      style: TextStyle(fontWeight: FontWeight.bold),
+                    label: Text(
+                      context.tr('Generate Payment QR'),
+                      style: const TextStyle(fontWeight: FontWeight.bold),
                     ),
                     style: FilledButton.styleFrom(
                       backgroundColor: kRiderGreen,
@@ -2286,14 +2345,14 @@ class _GroupedPoolCard extends StatelessWidget {
                     borderRadius: BorderRadius.circular(10),
                     border: Border.all(color: const Color(0xFFA5D6A7)),
                   ),
-                  child: const Row(
+                  child: Row(
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
-                      Icon(Icons.check_circle, size: 16, color: Color(0xFF166534)),
-                      SizedBox(width: 6),
+                      const Icon(Icons.check_circle, size: 16, color: Color(0xFF166534)),
+                      const SizedBox(width: 6),
                       Text(
-                        'Payment Done ✅',
-                        style: TextStyle(
+                        context.tr('Payment Done ✅'),
+                        style: const TextStyle(
                           fontSize: 12.5,
                           fontWeight: FontWeight.bold,
                           color: Color(0xFF166534),
@@ -2308,7 +2367,7 @@ class _GroupedPoolCard extends StatelessWidget {
                 mainAxisAlignment: MainAxisAlignment.end,
                 children: [
                   Text(
-                    'Tap to view map & stops',
+                    context.tr('Tap to view map & stops'),
                     style: TextStyle(
                       fontSize: 12,
                       fontWeight: FontWeight.w600,

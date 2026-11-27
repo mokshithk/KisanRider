@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../l10n/app_strings.dart';
 import 'rider_account_screen.dart';
 import 'rider_active_tab.dart';
 import 'rider_available_tab.dart';
@@ -44,12 +45,12 @@ class _RiderDashboardState extends State<RiderDashboard> {
     // import between this file and rider_account_screen.dart.
     return Scaffold(
       appBar: AppBar(
-        title: Text(_titles[_currentIndex]),
+        title: Text(context.tr(_titles[_currentIndex])),
         backgroundColor: kRiderGreen,
         foregroundColor: Colors.white,
         actions: [
           IconButton(
-            tooltip: 'Logout',
+            tooltip: context.tr('Logout'),
             icon: const Icon(Icons.logout),
             onPressed: () => showLogoutConfirmation(context),
           ),
@@ -75,22 +76,22 @@ class _RiderDashboardState extends State<RiderDashboard> {
         selectedItemColor: kRiderGreen,
         unselectedItemColor: Colors.grey.shade600,
         backgroundColor: Colors.white,
-        items: const [
+        items: [
           BottomNavigationBarItem(
-            icon: Icon(Icons.list_alt),
-            label: 'Available',
+            icon: const Icon(Icons.list_alt),
+            label: context.tr('Available'),
           ),
           BottomNavigationBarItem(
-            icon: Icon(Icons.local_shipping),
-            label: 'Active Trips',
+            icon: const Icon(Icons.local_shipping),
+            label: context.tr('Active Trips'),
           ),
           BottomNavigationBarItem(
-            icon: Icon(Icons.account_balance_wallet),
-            label: 'Earnings',
+            icon: const Icon(Icons.account_balance_wallet),
+            label: context.tr('Earnings'),
           ),
           BottomNavigationBarItem(
-            icon: Icon(Icons.person),
-            label: 'Account',
+            icon: const Icon(Icons.person),
+            label: context.tr('Account'),
           ),
         ],
       ),

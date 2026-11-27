@@ -7,6 +7,7 @@ import 'package:latlong2/latlong.dart';
 import 'package:provider/provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import '../../l10n/app_strings.dart';
 import '../../providers/auth_provider.dart';
 import '../payment_qr_dialog.dart';
 import '../rider_common.dart';
@@ -55,7 +56,7 @@ class _RiderPoolDetailScreenState extends State<RiderPoolDetailScreen> {
       if (!mounted) return;
       setState(() {
         _isLoading = false;
-        _error = 'Not signed in.';
+        _error = AppStrings.tr('Not signed in.');
       });
       return;
     }
@@ -119,7 +120,10 @@ class _RiderPoolDetailScreenState extends State<RiderPoolDetailScreen> {
           _isLoading = false;
         });
       } else {
-        String errMsg = 'Failed to load route optimization (HTTP ${response.statusCode}).';
+        String errMsg = AppStrings.tr(
+          'Failed to load route optimization (HTTP {code}).',
+          args: {'code': '${response.statusCode}'},
+        );
         try {
           final b = jsonDecode(response.body);
           if (b is Map && b['detail'] != null) errMsg = b['detail'].toString();
@@ -132,7 +136,7 @@ class _RiderPoolDetailScreenState extends State<RiderPoolDetailScreen> {
     } catch (e) {
       if (!mounted) return;
       setState(() {
-        _error = 'Network error: $e';
+        _error = AppStrings.tr('Network error: {err}', args: {'err': '$e'});
         _isLoading = false;
       });
     }
@@ -158,14 +162,16 @@ class _RiderPoolDetailScreenState extends State<RiderPoolDetailScreen> {
 
       if (response.statusCode == 200 || response.statusCode == 201) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Pool Accepted! Trips created for each member.'),
+          SnackBar(
+            content: Text(
+              context.trAsync('Pool Accepted! Trips created for each member.'),
+            ),
             backgroundColor: kRiderGreen,
           ),
         );
         Navigator.of(context).pop(true);
       } else {
-        String msg = 'Could not accept pool.';
+        String msg = context.trAsync('Could not accept pool.');
         try {
           final b = jsonDecode(response.body);
           if (b is Map && b['detail'] != null) msg = b['detail'].toString();
@@ -179,7 +185,12 @@ class _RiderPoolDetailScreenState extends State<RiderPoolDetailScreen> {
       if (!mounted) return;
       setState(() => _isAccepting = false);
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Network error: $e'), backgroundColor: Colors.red.shade700),
+        SnackBar(
+          content: Text(
+            context.trAsync('Network error: {err}', args: {'err': '$e'}),
+          ),
+          backgroundColor: Colors.red.shade700,
+        ),
       );
     }
   }
@@ -192,9 +203,10 @@ class _RiderPoolDetailScreenState extends State<RiderPoolDetailScreen> {
       context: context,
       barrierDismissible: false,
       builder: (_) => DeliveryProofDialog(
-        subtitleText:
-            'Take a photo of the delivered pooled produce at the mandi. '
-            'This marks all pooled pickups as delivered.',
+        subtitleText: context.trAsync(
+          'Take a photo of the delivered pooled produce at the mandi. '
+          'This marks all pooled pickups as delivered.',
+        ),
         onSubmit: (bytes, filename) => deliverPoolWithProof(
           token: auth.token!,
           poolId: widget.poolId,
@@ -207,8 +219,12 @@ class _RiderPoolDetailScreenState extends State<RiderPoolDetailScreen> {
 
     if (result == true && mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Pool marked as delivered! Tap Generate Payment QR to collect payment.'),
+        SnackBar(
+          content: Text(
+            context.trAsync(
+              'Pool marked as delivered! Tap Generate Payment QR to collect payment.',
+            ),
+          ),
           backgroundColor: kRiderGreen,
         ),
       );
@@ -226,8 +242,10 @@ class _RiderPoolDetailScreenState extends State<RiderPoolDetailScreen> {
     );
     if (paid && mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Pool payment received! Auto-split complete.'),
+        SnackBar(
+          content: Text(
+            context.trAsync('Pool payment received! Auto-split complete.'),
+          ),
           backgroundColor: kRiderGreen,
         ),
       );
@@ -236,7 +254,8 @@ class _RiderPoolDetailScreenState extends State<RiderPoolDetailScreen> {
   }
 
   Future<void> _showVerifyOtpDialog(Map<String, dynamic> stop) async {
-    final farmerName = (stop['farmer_name'] ?? 'Farmer').toString();
+    final farmerName =
+        (stop['farmer_name'] ?? context.trAsync('Farmer')).toString();
     final produceRequestId = (stop['produce_request_id'] ?? '').toString();
     if (produceRequestId.isEmpty) return;
 
@@ -258,7 +277,7 @@ class _RiderPoolDetailScreenState extends State<RiderPoolDetailScreen> {
               const SizedBox(width: 8),
               Expanded(
                 child: Text(
-                  'Verify Pickup',
+                  ctx.tr('Verify Pickup'),
                   style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
                 ),
               ),
@@ -269,7 +288,10 @@ class _RiderPoolDetailScreenState extends State<RiderPoolDetailScreen> {
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               Text(
-                'Enter the 4-digit pickup OTP provided by $farmerName to confirm produce pickup.',
+                ctx.tr(
+                  'Enter the 4-digit pickup OTP provided by {name} to confirm produce pickup.',
+                  args: {'name': farmerName},
+                ),
                 style: const TextStyle(fontSize: 13, color: Colors.black87),
               ),
               const SizedBox(height: 16),
@@ -293,7 +315,7 @@ class _RiderPoolDetailScreenState extends State<RiderPoolDetailScreen> {
           actions: [
             TextButton(
               onPressed: isVerifying ? null : () => Navigator.pop(dialogCtx),
-              child: const Text('Cancel'),
+              child: Text(ctx.tr('Cancel')),
             ),
             FilledButton(
               style: FilledButton.styleFrom(backgroundColor: kRiderGreen),
@@ -302,7 +324,11 @@ class _RiderPoolDetailScreenState extends State<RiderPoolDetailScreen> {
                   : () async {
                       final code = otpController.text.trim();
                       if (code.length != 4 || !RegExp(r'^\d{4}$').hasMatch(code)) {
-                        setDialogState(() => dialogError = 'Enter a 4-digit numeric OTP.');
+                        setDialogState(
+                          () => dialogError = AppStrings.tr(
+                            'Enter a 4-digit numeric OTP.',
+                          ),
+                        );
                         return;
                       }
 
@@ -334,13 +360,18 @@ class _RiderPoolDetailScreenState extends State<RiderPoolDetailScreen> {
                           });
                           messenger.showSnackBar(
                             SnackBar(
-                              content: Text('Pickup verified for $farmerName!'),
+                              content: Text(
+                                AppStrings.tr(
+                                  'Pickup verified for {name}!',
+                                  args: {'name': farmerName},
+                                ),
+                              ),
                               backgroundColor: kRiderGreen,
                             ),
                           );
                           _loadData();
                         } else {
-                          String msg = 'Invalid OTP.';
+                          String msg = AppStrings.tr('Invalid OTP.');
                           try {
                             final data = jsonDecode(resp.body);
                             if (data is Map && data['detail'] != null) {
@@ -355,7 +386,10 @@ class _RiderPoolDetailScreenState extends State<RiderPoolDetailScreen> {
                       } catch (e) {
                         setDialogState(() {
                           isVerifying = false;
-                          dialogError = 'Network error: $e';
+                          dialogError = AppStrings.tr(
+                            'Network error: {err}',
+                            args: {'err': '$e'},
+                          );
                         });
                       }
                     },
@@ -365,7 +399,7 @@ class _RiderPoolDetailScreenState extends State<RiderPoolDetailScreen> {
                       height: 16,
                       child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
                     )
-                  : const Text('Verify'),
+                  : Text(ctx.tr('Verify')),
             ),
           ],
         ),
@@ -402,13 +436,17 @@ class _RiderPoolDetailScreenState extends State<RiderPoolDetailScreen> {
     return Scaffold(
       backgroundColor: const Color(0xFFF9FBF9),
       appBar: AppBar(
-        title: Text(widget.isActiveTrip ? 'Active Pool Route' : 'Pool Details & Route'),
+        title: Text(
+          context.tr(
+            widget.isActiveTrip ? 'Active Pool Route' : 'Pool Details & Route',
+          ),
+        ),
         backgroundColor: kRiderGreen,
         foregroundColor: Colors.white,
         actions: [
           IconButton(
             icon: const Icon(Icons.refresh),
-            tooltip: 'Refresh Route',
+            tooltip: context.tr('Refresh Route'),
             onPressed: _isLoading ? null : _loadData,
           ),
         ],
@@ -419,15 +457,15 @@ class _RiderPoolDetailScreenState extends State<RiderPoolDetailScreen> {
 
   Widget _buildBody() {
     if (_isLoading) {
-      return const Center(
+      return Center(
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            CircularProgressIndicator(color: kRiderGreen),
-            SizedBox(height: 16),
+            const CircularProgressIndicator(color: kRiderGreen),
+            const SizedBox(height: 16),
             Text(
-              'Computing optimal road pickup sequence…',
-              style: TextStyle(color: Colors.black54, fontSize: 14),
+              context.tr('Computing optimal road pickup sequence…'),
+              style: const TextStyle(color: Colors.black54, fontSize: 14),
             ),
           ],
         ),
@@ -452,7 +490,7 @@ class _RiderPoolDetailScreenState extends State<RiderPoolDetailScreen> {
               FilledButton.icon(
                 onPressed: _loadData,
                 icon: const Icon(Icons.refresh),
-                label: const Text('Retry'),
+                label: Text(context.tr('Retry')),
                 style: FilledButton.styleFrom(backgroundColor: kRiderGreen),
               ),
             ],
@@ -478,12 +516,14 @@ class _RiderPoolDetailScreenState extends State<RiderPoolDetailScreen> {
 
     final destLat = (dest?['lat'] as num?)?.toDouble() ?? 12.9141;
     final destLng = (dest?['lng'] as num?)?.toDouble() ?? 74.8560;
-    final destName = (dest?['name'] ?? 'Mandi Destination').toString();
+    final destName =
+        (dest?['name'] ?? context.tr('Mandi Destination')).toString();
 
     final double totalDistanceKm = ((data['total_distance_km'] ?? 0) as num).toDouble();
     final double durationMins = ((data['estimated_duration_minutes'] ?? 0) as num).toDouble();
     final double totalWeightKg = ((data['total_weight_kg'] ?? 0) as num).toDouble();
-    final String cropType = (data['crop_type'] ?? 'Produce').toString();
+    final String cropType =
+        (data['crop_type'] ?? context.tr('Produce')).toString();
     final String? warning = data['warning'] as String?;
 
     // Rider registered capacity validation
@@ -634,14 +674,14 @@ class _RiderPoolDetailScreenState extends State<RiderPoolDetailScreen> {
                             borderRadius: BorderRadius.circular(8),
                             boxShadow: const [BoxShadow(color: Colors.black12, blurRadius: 4)],
                           ),
-                          child: const Row(
+                          child: Row(
                             mainAxisSize: MainAxisSize.min,
                             children: [
-                              Icon(Icons.route, size: 16, color: kRiderGreen),
-                              SizedBox(width: 6),
+                              const Icon(Icons.route, size: 16, color: kRiderGreen),
+                              const SizedBox(width: 6),
                               Text(
-                                'Road Network Route',
-                                style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Colors.black87),
+                                context.tr('Road Network Route'),
+                                style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Colors.black87),
                               ),
                             ],
                           ),
@@ -660,24 +700,24 @@ class _RiderPoolDetailScreenState extends State<RiderPoolDetailScreen> {
                       Expanded(
                         child: _MetricItem(
                           icon: Icons.alt_route,
-                          title: 'Distance',
-                          value: '${totalDistanceKm.toStringAsFixed(1)} km',
+                          title: context.tr('Distance'),
+                          value: '${totalDistanceKm.toStringAsFixed(1)} ${context.tr('km')}',
                         ),
                       ),
                       Container(height: 36, width: 1, color: Colors.grey.shade200),
                       Expanded(
                         child: _MetricItem(
                           icon: Icons.timer_outlined,
-                          title: 'Est. Time',
-                          value: durationMins > 0 ? '${durationMins.toStringAsFixed(0)} mins' : '—',
+                          title: context.tr('Est. Time'),
+                          value: durationMins > 0 ? '${durationMins.toStringAsFixed(0)} ${context.tr('mins')}' : '—',
                         ),
                       ),
                       Container(height: 36, width: 1, color: Colors.grey.shade200),
                       Expanded(
                         child: _MetricItem(
                           icon: Icons.scale_outlined,
-                          title: 'Combined',
-                          value: '${totalWeightKg.toStringAsFixed(0)} kg',
+                          title: context.tr('Combined'),
+                          value: '${totalWeightKg.toStringAsFixed(0)} ${context.tr('kg')}',
                         ),
                       ),
                     ],
@@ -723,7 +763,13 @@ class _RiderPoolDetailScreenState extends State<RiderPoolDetailScreen> {
                         const SizedBox(width: 10),
                         Expanded(
                           child: Text(
-                            'Capacity Alert: Pool total (${totalWeightKg.toStringAsFixed(0)} kg) exceeds your registered vehicle payload capacity (${riderCapKg.toStringAsFixed(0)} kg). Acceptance disabled.',
+                            context.tr(
+                              'Capacity Alert: Pool total ({total} kg) exceeds your registered vehicle payload capacity ({cap} kg). Acceptance disabled.',
+                              args: {
+                                'total': totalWeightKg.toStringAsFixed(0),
+                                'cap': riderCapKg.toStringAsFixed(0),
+                              },
+                            ),
                             style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Colors.red.shade900),
                           ),
                         ),
@@ -755,9 +801,9 @@ class _RiderPoolDetailScreenState extends State<RiderPoolDetailScreen> {
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            const Text(
-                              'COMMON DROPOFF MARKET',
-                              style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Colors.black54, letterSpacing: 0.5),
+                            Text(
+                              context.tr('COMMON DROPOFF MARKET'),
+                              style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Colors.black54, letterSpacing: 0.5),
                             ),
                             const SizedBox(height: 2),
                             Text(
@@ -768,7 +814,7 @@ class _RiderPoolDetailScreenState extends State<RiderPoolDetailScreen> {
                         ),
                       ),
                       IconButton(
-                        tooltip: 'Navigate',
+                        tooltip: context.tr('Navigate'),
                         icon: const Icon(Icons.directions, color: kRiderGreen),
                         onPressed: () => _openMaps(destLat, destLng, destName),
                       ),
@@ -798,10 +844,10 @@ class _RiderPoolDetailScreenState extends State<RiderPoolDetailScreen> {
                               color: isPoolPaid ? const Color(0xFF166534) : Colors.amber.shade900,
                             ),
                             const SizedBox(width: 8),
-                            const Expanded(
+                            Expanded(
                               child: Text(
-                                'POOL PAYMENT BREAKDOWN',
-                                style: TextStyle(
+                                context.tr('POOL PAYMENT BREAKDOWN'),
+                                style: const TextStyle(
                                   fontSize: 11,
                                   fontWeight: FontWeight.w700,
                                   color: Color(0xFF6B7280),
@@ -819,7 +865,7 @@ class _RiderPoolDetailScreenState extends State<RiderPoolDetailScreen> {
                                 ),
                               ),
                               child: Text(
-                                isPoolPaid ? 'PAID' : 'PENDING QR',
+                                context.trStatus(isPoolPaid ? 'PAID' : 'PENDING QR'),
                                 style: TextStyle(
                                   fontSize: 10,
                                   fontWeight: FontWeight.bold,
@@ -830,21 +876,25 @@ class _RiderPoolDetailScreenState extends State<RiderPoolDetailScreen> {
                           ],
                         ),
                         const SizedBox(height: 10),
-                        _PoolPayRow(label: 'Total Crop Sale', value: formatIndianRupees(totalCropValue), bold: true),
+                        _PoolPayRow(label: context.tr('Total Crop Sale'), value: formatIndianRupees(totalCropValue), bold: true),
                         if (totalRiderFare != null)
-                          _PoolPayRow(label: 'Rider Transport Fare', value: formatIndianRupees(totalRiderFare), color: kRiderGreen, bold: true),
+                          _PoolPayRow(label: context.tr('Rider Transport Fare'), value: formatIndianRupees(totalRiderFare), color: kRiderGreen, bold: true),
                         if (totalPlatformFee != null)
-                          _PoolPayRow(label: 'Platform Fee (2%)', value: '- ${formatIndianRupees(totalPlatformFee)}', color: Colors.red.shade700),
+                          _PoolPayRow(label: context.tr('Platform Fee (2%)'), value: '- ${formatIndianRupees(totalPlatformFee)}', color: Colors.red.shade700),
                         if (totalNetPayout != null) ...[
                           const Divider(height: 12),
-                          _PoolPayRow(label: 'Farmers Net Payout', value: formatIndianRupees(totalNetPayout), color: const Color(0xFF166534), bold: true),
+                          _PoolPayRow(label: context.tr('Farmers Net Payout'), value: formatIndianRupees(totalNetPayout), color: const Color(0xFF166534), bold: true),
                         ],
                         if (ratePerKg != null)
                           Padding(
                             padding: const EdgeInsets.only(top: 6),
                             child: Text(
-                              'Rate: ₹${ratePerKg.toStringAsFixed(0)}/kg (${rateSource == 'mandi_api' ? 'Mandi API Rate' : 'Standard ₹50/kg Fallback'})'
-                              '${paymentRef != null ? ' · Ref: $paymentRef' : ''}',
+                              '${context.tr('Rate: ₹{rate}/kg ({source})', args: {
+                                'rate': ratePerKg.toStringAsFixed(0),
+                                'source': rateSource == 'mandi_api'
+                                    ? context.tr('Mandi API Rate')
+                                    : context.tr('Standard ₹50/kg Fallback'),
+                              })}${paymentRef != null ? ' · ${context.tr('Ref: {ref}', args: {'ref': paymentRef})}' : ''}',
                               style: const TextStyle(fontSize: 11, color: Colors.black54),
                             ),
                           ),
@@ -859,9 +909,14 @@ class _RiderPoolDetailScreenState extends State<RiderPoolDetailScreen> {
                     children: [
                       const Icon(Icons.format_list_numbered, size: 20, color: kRiderGreen),
                       const SizedBox(width: 8),
-                      Text(
-                        'Optimized Pickup Sequence (${stops.length} Farmers)',
-                        style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.black87),
+                      Expanded(
+                        child: Text(
+                          context.tr(
+                            'Optimized Pickup Sequence ({count} Farmers)',
+                            args: {'count': '${stops.length}'},
+                          ),
+                          style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.black87),
+                        ),
                       ),
                     ],
                   ),
@@ -908,8 +963,10 @@ class _RiderPoolDetailScreenState extends State<RiderPoolDetailScreen> {
                       : const Icon(Icons.check_circle_outline),
                   label: Text(
                     exceedsCapacity
-                        ? 'Exceeds Vehicle Capacity'
-                        : (_isAccepting ? 'Accepting Pool…' : 'Accept Freight Pool'),
+                        ? context.tr('Exceeds Vehicle Capacity')
+                        : context.tr(
+                            _isAccepting ? 'Accepting Pool…' : 'Accept Freight Pool',
+                          ),
                     style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
                   ),
                   style: FilledButton.styleFrom(
@@ -946,8 +1003,11 @@ class _RiderPoolDetailScreenState extends State<RiderPoolDetailScreen> {
                               Expanded(
                                 child: Text(
                                   paymentRef != null
-                                      ? 'Pool Delivered & Paid ($paymentRef)'
-                                      : 'Pool Delivered — Payment Done',
+                                      ? context.tr(
+                                          'Pool Delivered & Paid ({ref})',
+                                          args: {'ref': paymentRef},
+                                        )
+                                      : context.tr('Pool Delivered — Payment Done'),
                                   textAlign: TextAlign.center,
                                   style: const TextStyle(
                                     color: Color(0xFF166534),
@@ -964,9 +1024,9 @@ class _RiderPoolDetailScreenState extends State<RiderPoolDetailScreen> {
                           child: FilledButton.icon(
                             onPressed: _openPoolPaymentQr,
                             icon: const Icon(Icons.qr_code_2_rounded, size: 22),
-                            label: const Text(
-                              'Generate Payment QR',
-                              style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold),
+                            label: Text(
+                              context.tr('Generate Payment QR'),
+                              style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold),
                             ),
                             style: FilledButton.styleFrom(
                               backgroundColor: kRiderGreen,
@@ -983,8 +1043,14 @@ class _RiderPoolDetailScreenState extends State<RiderPoolDetailScreen> {
                         icon: const Icon(Icons.check_circle_outline),
                         label: Text(
                           allPickedUp
-                              ? '✅ Mark as Delivered / Unloaded'
-                              : 'Verify Pickups ($pickedUpCount/${stops.length}) to Deliver',
+                              ? context.tr('✅ Mark as Delivered / Unloaded')
+                              : context.tr(
+                                  'Verify Pickups ({done}/{total}) to Deliver',
+                                  args: {
+                                    'done': '$pickedUpCount',
+                                    'total': '${stops.length}',
+                                  },
+                                ),
                           style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold),
                         ),
                         style: FilledButton.styleFrom(
@@ -1089,9 +1155,10 @@ class _FarmerStopCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final seq = stop['sequence'] ?? 1;
-    final farmerName = (stop['farmer_name'] ?? 'Farmer').toString();
+    final farmerName = (stop['farmer_name'] ?? context.tr('Farmer')).toString();
     final weight = ((stop['weight_kg'] ?? 0) as num).toDouble();
-    final address = (stop['pickup_address'] ?? 'Farm Gate').toString();
+    final address =
+        (stop['pickup_address'] ?? context.tr('Farm Gate')).toString();
     final landmark = (stop['pickup_landmark'] ?? '').toString();
     final lat = (stop['lat'] as num?)?.toDouble();
     final lng = (stop['lng'] as num?)?.toDouble();
@@ -1128,7 +1195,7 @@ class _FarmerStopCard extends StatelessWidget {
                     borderRadius: BorderRadius.circular(12),
                   ),
                   child: Text(
-                    '${weight.toStringAsFixed(0)} kg',
+                    '${weight.toStringAsFixed(0)} ${context.tr('kg')}',
                     style: const TextStyle(color: kRiderGreen, fontWeight: FontWeight.bold, fontSize: 12),
                   ),
                 ),
@@ -1146,22 +1213,36 @@ class _FarmerStopCard extends StatelessWidget {
                     children: [
                       Text(address, style: const TextStyle(fontSize: 13, color: Colors.black87)),
                       if (landmark.isNotEmpty)
-                        Text('Landmark: $landmark', style: const TextStyle(fontSize: 12, color: Colors.black54)),
+                        Text(
+                          context.tr(
+                            'Landmark: {landmark}',
+                            args: {'landmark': landmark},
+                          ),
+                          style: const TextStyle(fontSize: 12, color: Colors.black54),
+                        ),
                       if (hasCoords && lat != null && lng != null)
                         Text(
-                          'Coords: ${lat.toStringAsFixed(4)}, ${lng.toStringAsFixed(4)}',
+                          context.tr(
+                            'Coords: {lat}, {lng}',
+                            args: {
+                              'lat': lat.toStringAsFixed(4),
+                              'lng': lng.toStringAsFixed(4),
+                            },
+                          ),
                           style: TextStyle(fontSize: 11, color: Colors.grey.shade600),
                         ),
                       if (!hasCoords)
                         Text(
-                          'Location: Coordinates missing (Address provided)',
+                          context.tr(
+                            'Location: Coordinates missing (Address provided)',
+                          ),
                           style: TextStyle(fontSize: 11, color: Colors.amber.shade900, fontWeight: FontWeight.bold),
                         ),
                     ],
                   ),
                 ),
                 IconButton(
-                  tooltip: 'Navigate',
+                  tooltip: context.tr('Navigate'),
                   icon: const Icon(Icons.directions, color: Colors.blue),
                   onPressed: () => onNavigate(lat, lng, address),
                 ),
@@ -1175,7 +1256,10 @@ class _FarmerStopCard extends StatelessWidget {
                   const SizedBox(width: 8),
                   Expanded(
                     child: Text(
-                      'Requested: $requestedPickup',
+                      context.tr(
+                        'Requested: {time}',
+                        args: {'time': requestedPickup},
+                      ),
                       style: const TextStyle(fontSize: 12, color: Colors.black54),
                     ),
                   ),
@@ -1211,7 +1295,11 @@ class _FarmerStopCard extends StatelessWidget {
                             ),
                             const SizedBox(width: 4),
                             Text(
-                              isDelivered ? 'Delivered' : (isPickedUp ? 'Picked Up' : 'Pending Pickup'),
+                              context.tr(
+                                isDelivered
+                                    ? 'Delivered'
+                                    : (isPickedUp ? 'Picked Up' : 'Pending Pickup'),
+                              ),
                               style: TextStyle(
                                 fontSize: 12,
                                 fontWeight: FontWeight.bold,
@@ -1230,7 +1318,10 @@ class _FarmerStopCard extends StatelessWidget {
                             shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
                           ),
                           icon: const Icon(Icons.pin, size: 16),
-                          label: const Text('Verify OTP', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                          label: Text(
+                            context.tr('Verify OTP'),
+                            style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
+                          ),
                           onPressed: onVerifyOtp != null ? () => onVerifyOtp!(stop) : null,
                         ),
                     ],

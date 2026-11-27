@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:provider/provider.dart';
 
+import '../../l10n/app_strings.dart';
 import '../../providers/auth_provider.dart';
 import '../farmer_account_screen.dart'; // Added for Logout
 import 'create_pool_screen.dart';
@@ -83,7 +84,10 @@ class _PoolDiscoveryScreenState extends State<PoolDiscoveryScreen> {
           _locationFetched = true;
         });
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Using approximate location.'), backgroundColor: Colors.orange),
+          SnackBar(
+            content: Text(context.trAsync('Using approximate location.')),
+            backgroundColor: Colors.orange,
+          ),
         );
       }
     }
@@ -94,7 +98,7 @@ class _PoolDiscoveryScreenState extends State<PoolDiscoveryScreen> {
       if (!silent) {
         setState(() {
           _isLoading = false;
-          _error = 'Location is required to find nearby pools.';
+          _error = AppStrings.tr('Location is required to find nearby pools.');
         });
       }
       return;
@@ -165,12 +169,12 @@ class _PoolDiscoveryScreenState extends State<PoolDiscoveryScreen> {
     return Scaffold(
       backgroundColor: _kBackground,
       appBar: AppBar(
-        title: const Text('Find Pools'),
+        title: Text(context.tr('Find Pools')),
         backgroundColor: _kFarmerGreen,
         foregroundColor: Colors.white,
         actions: [
           IconButton(
-            tooltip: 'Logout',
+            tooltip: context.tr('Logout'),
             icon: const Icon(Icons.logout),
             onPressed: () => showLogoutConfirmation(context),
           ),
@@ -182,10 +186,19 @@ class _PoolDiscoveryScreenState extends State<PoolDiscoveryScreen> {
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
             color: Colors.white,
             child: SegmentedButton<PoolTab>(
-              segments: const [
-                ButtonSegment<PoolTab>(value: PoolTab.browse, label: Text('Browse')),
-                ButtonSegment<PoolTab>(value: PoolTab.created, label: Text('Created')),
-                ButtonSegment<PoolTab>(value: PoolTab.joined, label: Text('Joined')),
+              segments: [
+                ButtonSegment<PoolTab>(
+                  value: PoolTab.browse,
+                  label: Text(context.tr('Browse')),
+                ),
+                ButtonSegment<PoolTab>(
+                  value: PoolTab.created,
+                  label: Text(context.tr('Created')),
+                ),
+                ButtonSegment<PoolTab>(
+                  value: PoolTab.joined,
+                  label: Text(context.tr('Joined')),
+                ),
               ],
               selected: {_currentTab},
               onSelectionChanged: (Set<PoolTab> newSelection) {
@@ -210,7 +223,7 @@ class _PoolDiscoveryScreenState extends State<PoolDiscoveryScreen> {
         backgroundColor: _kFarmerGreen,
         foregroundColor: Colors.white,
         icon: const Icon(Icons.add),
-        label: const Text('Create Pool'),
+        label: Text(context.tr('Create Pool')),
       ),
     );
   }
@@ -234,7 +247,7 @@ class _PoolDiscoveryScreenState extends State<PoolDiscoveryScreen> {
               OutlinedButton.icon(
                 onPressed: () => _loadPools(silent: false),
                 icon: const Icon(Icons.refresh),
-                label: const Text('Retry'),
+                label: Text(context.tr('Retry')),
               ),
             ],
           ),
@@ -272,21 +285,25 @@ class _PoolDiscoveryScreenState extends State<PoolDiscoveryScreen> {
                     ),
                     const SizedBox(height: 24),
                     Text(
-                      _currentTab == PoolTab.browse 
-                          ? 'No pools found nearby.' 
-                          : _currentTab == PoolTab.created 
-                              ? 'You haven\'t created any pools yet.' 
-                              : 'You haven\'t joined any pools yet.',
+                      context.tr(
+                        _currentTab == PoolTab.browse
+                            ? 'No pools found nearby.'
+                            : _currentTab == PoolTab.created
+                                ? "You haven't created any pools yet."
+                                : "You haven't joined any pools yet.",
+                      ),
                       style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600, color: _kTextPrimary),
                       textAlign: TextAlign.center,
                     ),
                     const SizedBox(height: 8),
                     Text(
-                      _currentTab == PoolTab.browse 
-                          ? 'Start a new pool and invite nearby farmers to share transport!'
-                          : _currentTab == PoolTab.created
-                              ? 'Tap the button below to create your first pool.'
-                              : 'Browse nearby pools to join other farmers.',
+                      context.tr(
+                        _currentTab == PoolTab.browse
+                            ? 'Start a new pool and invite nearby farmers to share transport!'
+                            : _currentTab == PoolTab.created
+                                ? 'Tap the button below to create your first pool.'
+                                : 'Browse nearby pools to join other farmers.',
+                      ),
                       textAlign: TextAlign.center, 
                       style: const TextStyle(fontSize: 13, color: _kTextSecondary)
                     ),
@@ -325,7 +342,10 @@ class _PoolDiscoveryScreenState extends State<PoolDiscoveryScreen> {
                       boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.1), blurRadius: 8, offset: const Offset(0, 2))],
                     ),
                     child: Text(
-                      '${_pools.length} pools within 10 km',
+                      context.tr(
+                        '{count} pools within 10 km',
+                        args: {'count': '${_pools.length}'},
+                      ),
                       style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: _kTextPrimary),
                     ),
                   ),
@@ -401,7 +421,10 @@ class _PoolCard extends StatelessWidget {
                 children: [
                   Expanded(
                     child: Text(
-                      '${pool.creatorFullName ?? 'Farmer'}\'s Pool',
+                      context.tr(
+                        "{name}'s Pool",
+                        args: {'name': pool.creatorFullName ?? context.tr('Farmer')},
+                      ),
                       style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: _kTextPrimary),
                     ),
                   ),
@@ -413,9 +436,9 @@ class _PoolCard extends StatelessWidget {
                         borderRadius: BorderRadius.circular(20),
                         border: Border.all(color: const Color(0xFF166534)),
                       ),
-                      child: const Text(
-                        'DELIVERED',
-                        style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Color(0xFF166534)),
+                      child: Text(
+                        context.trStatus('DELIVERED'),
+                        style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Color(0xFF166534)),
                       ),
                     )
                   else if (isFull)
@@ -426,7 +449,7 @@ class _PoolCard extends StatelessWidget {
                         borderRadius: BorderRadius.circular(20),
                         border: Border.all(color: Colors.red.shade300),
                       ),
-                      child: Text('FULL', style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Colors.red.shade800)),
+                      child: Text(context.trStatus('FULL'), style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Colors.red.shade800)),
                     )
                   else
                     Container(
@@ -436,7 +459,7 @@ class _PoolCard extends StatelessWidget {
                         borderRadius: BorderRadius.circular(20),
                         border: Border.all(color: Colors.green.shade300),
                       ),
-                      child: Text(pool.status, style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Colors.green.shade800)),
+                      child: Text(context.trStatus(pool.status), style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Colors.green.shade800)),
                     ),
                 ],
               ),
@@ -447,7 +470,7 @@ class _PoolCard extends StatelessWidget {
                   const SizedBox(width: 6),
                   Expanded(
                     child: Text(
-                      pool.dropoffMandiName ?? 'Unknown Destination',
+                      pool.dropoffMandiName ?? context.tr('Unknown Destination'),
                       style: const TextStyle(fontSize: 13, color: _kTextPrimary),
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
@@ -458,10 +481,16 @@ class _PoolCard extends StatelessWidget {
               const SizedBox(height: 12),
               Row(
                 children: [
-                  _buildInfoChip(Icons.scale, '${pool.currentQty.toStringAsFixed(0)} kg'),
+                  _buildInfoChip(Icons.scale, '${pool.currentQty.toStringAsFixed(0)} ${context.tr('kg')}'),
                   const SizedBox(width: 8),
                   if (pool.distanceKm != null)
-                    _buildInfoChip(Icons.directions_car, '${pool.distanceKm!.toStringAsFixed(1)} km away'),
+                    _buildInfoChip(
+                      Icons.directions_car,
+                      context.tr(
+                        '{dist} km away',
+                        args: {'dist': pool.distanceKm!.toStringAsFixed(1)},
+                      ),
+                    ),
                 ],
               ),
               const SizedBox(height: 10),
@@ -469,7 +498,13 @@ class _PoolCard extends StatelessWidget {
                 children: [
                   const Icon(Icons.access_time, size: 14, color: _kTextSecondary),
                   const SizedBox(width: 6),
-                  Text('Starts ${_formatDate(pool.pickupWindowStart)}', style: const TextStyle(fontSize: 12, color: _kTextSecondary)),
+                  Text(
+                    context.tr(
+                      'Starts {date}',
+                      args: {'date': _formatDate(context, pool.pickupWindowStart)},
+                    ),
+                    style: const TextStyle(fontSize: 12, color: _kTextSecondary),
+                  ),
                 ],
               ),
             ],
@@ -497,8 +532,8 @@ class _PoolCard extends StatelessWidget {
     );
   }
 
-  String _formatDate(DateTime dt) {
+  String _formatDate(BuildContext context, DateTime dt) {
     final local = dt.toLocal();
-    return '${local.day}/${local.month} at ${local.hour.toString().padLeft(2, '0')}:${local.minute.toString().padLeft(2, '0')}';
+    return '${local.day}/${local.month} ${context.tr('at')} ${local.hour.toString().padLeft(2, '0')}:${local.minute.toString().padLeft(2, '0')}';
   }
 }

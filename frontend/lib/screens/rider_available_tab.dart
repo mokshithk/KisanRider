@@ -1,4 +1,3 @@
-import 'package:intl/intl.dart';
 import 'dart:async';
 import 'dart:convert';
 
@@ -7,6 +6,7 @@ import 'package:geolocator/geolocator.dart';
 import 'package:http/http.dart' as http;
 import 'package:provider/provider.dart';
 
+import '../l10n/app_strings.dart';
 import '../providers/auth_provider.dart';
 import 'rider_common.dart';
 import 'pools/pool_models.dart';
@@ -110,7 +110,12 @@ class _RiderAvailableTabState extends State<RiderAvailableTab>
   Future<void> _fetch({bool silent = false}) async {
     final auth = context.read<AuthProvider>();
     if (auth.token == null) {
-      if (!silent) setState(() { _isLoading = false; _error = 'Not signed in.'; });
+      if (!silent) {
+        setState(() {
+          _isLoading = false;
+          _error = AppStrings.tr('Not signed in.');
+        });
+      }
       return;
     }
 
@@ -122,7 +127,9 @@ class _RiderAvailableTabState extends State<RiderAvailableTab>
       if (!silent) {
         setState(() {
           _isLoading = false;
-          if (!_permissionDenied) _error = 'Could not determine your location.';
+          if (!_permissionDenied) {
+            _error = AppStrings.tr('Could not determine your location.');
+          }
         });
       }
       return;
@@ -164,16 +171,40 @@ class _RiderAvailableTabState extends State<RiderAvailableTab>
       } else {
         if (!silent) {
           setState(() {
-            _error = _extractError(response) ?? 'Failed to load (HTTP ${response.statusCode}).';
+            _error = _extractError(response) ??
+                AppStrings.tr(
+                  'Failed to load (HTTP {code}).',
+                  args: {'code': '${response.statusCode}'},
+                );
             _isLoading = false;
           });
         }
       }
     } catch (e) {
       if (!mounted) return;
-      if (!silent) setState(() { _error = 'Network error: $e'; _isLoading = false; });
+      if (!silent) {
+        setState(() {
+          _error = AppStrings.tr(
+            'Network error: {err}',
+            args: {'err': '$e'},
+          );
+          _isLoading = false;
+        });
+      }
     }
   }
+
+  String _fmtDate(DateTime d) =>
+      '${d.day.toString().padLeft(2, '0')} ${AppStrings.trShortMonth(d.month)}';
+
+  String _fmtTime(DateTime d) {
+    final h12 = d.hour == 0 ? 12 : (d.hour > 12 ? d.hour - 12 : d.hour);
+    final mm = d.minute.toString().padLeft(2, '0');
+    final ampm = d.hour >= 12 ? 'PM' : 'AM';
+    return '${h12.toString().padLeft(2, '0')}:$mm $ampm';
+  }
+
+  String _fmtDateTime(DateTime d) => '${_fmtDate(d)}, ${_fmtTime(d)}';
 
   Future<DateTime?> _promptExpectedPickup(DateTime windowStart, DateTime windowEnd) async {
     final now = DateTime.now();
@@ -182,8 +213,12 @@ class _RiderAvailableTabState extends State<RiderAvailableTab>
 
     if (localEnd.isBefore(now)) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('This request has expired as the pickup window has ended.'),
+        SnackBar(
+          content: Text(
+            context.trAsync(
+              'This request has expired as the pickup window has ended.',
+            ),
+          ),
           backgroundColor: Colors.red,
         ),
       );
@@ -192,7 +227,6 @@ class _RiderAvailableTabState extends State<RiderAvailableTab>
 
     DateTime selected = now.isAfter(localStart) ? now : localStart;
     selected = DateTime(selected.year, selected.month, selected.day, selected.hour, selected.minute);
-    final format = DateFormat('dd MMM, hh:mm a');
 
     final result = await showDialog<DateTime>(
       context: context,
@@ -204,13 +238,16 @@ class _RiderAvailableTabState extends State<RiderAvailableTab>
           builder: (context, setDialogState) {
             return AlertDialog(
               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-              title: const Text('Set Expected Pickup Time', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
+              title: Text(
+                context.tr('Set Expected Pickup Time'),
+                style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
+              ),
               content: Column(
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    'Farmer\'s Pickup Window:',
+                    context.tr("Farmer's Pickup Window:"),
                     style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: Colors.grey.shade700),
                   ),
                   const SizedBox(height: 4),
@@ -222,13 +259,13 @@ class _RiderAvailableTabState extends State<RiderAvailableTab>
                       border: Border.all(color: Colors.green.shade200),
                     ),
                     child: Text(
-                      '${format.format(localStart)} — ${format.format(localEnd)}',
+                      '${_fmtDateTime(localStart)} — ${_fmtDateTime(localEnd)}',
                       style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Colors.green.shade900),
                     ),
                   ),
                   const SizedBox(height: 16),
                   Text(
-                    'Your Expected Arrival:',
+                    context.tr('Your Expected Arrival:'),
                     style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: Colors.grey.shade800),
                   ),
                   const SizedBox(height: 8),
@@ -257,7 +294,7 @@ class _RiderAvailableTabState extends State<RiderAvailableTab>
                             }
                           },
                           icon: const Icon(Icons.calendar_today, size: 16),
-                          label: Text(DateFormat('dd MMM').format(currentSelection)),
+                          label: Text(_fmtDate(currentSelection)),
                         ),
                       ),
                       const SizedBox(width: 8),
@@ -282,7 +319,7 @@ class _RiderAvailableTabState extends State<RiderAvailableTab>
                             }
                           },
                           icon: const Icon(Icons.access_time, size: 16),
-                          label: Text(DateFormat('hh:mm a').format(currentSelection)),
+                          label: Text(_fmtTime(currentSelection)),
                         ),
                       ),
                     ],
@@ -299,26 +336,32 @@ class _RiderAvailableTabState extends State<RiderAvailableTab>
               actions: [
                 TextButton(
                   onPressed: () => Navigator.pop(ctx, null),
-                  child: const Text('Cancel'),
+                  child: Text(context.tr('Cancel')),
                 ),
                 FilledButton(
                   style: FilledButton.styleFrom(backgroundColor: kRiderGreen),
                   onPressed: () {
                     if (currentSelection.isBefore(localStart.subtract(const Duration(seconds: 59)))) {
                       setDialogState(() {
-                        errorText = 'Cannot be earlier than window start (${format.format(localStart)}).';
+                        errorText = context.trAsync(
+                          'Cannot be earlier than window start ({time}).',
+                          args: {'time': _fmtDateTime(localStart)},
+                        );
                       });
                       return;
                     }
                     if (currentSelection.isAfter(localEnd.add(const Duration(seconds: 59)))) {
                       setDialogState(() {
-                        errorText = 'Cannot be later than window end (${format.format(localEnd)}).';
+                        errorText = context.trAsync(
+                          'Cannot be later than window end ({time}).',
+                          args: {'time': _fmtDateTime(localEnd)},
+                        );
                       });
                       return;
                     }
                     Navigator.pop(ctx, currentSelection);
                   },
-                  child: const Text('Confirm & Accept'),
+                  child: Text(context.tr('Confirm & Accept')),
                 ),
               ],
             );
@@ -349,7 +392,10 @@ class _RiderAvailableTabState extends State<RiderAvailableTab>
 
       if (response.statusCode == 200 || response.statusCode == 201) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Trip Accepted!'), backgroundColor: kRiderGreen),
+          SnackBar(
+            content: Text(context.trAsync('Trip Accepted!')),
+            backgroundColor: kRiderGreen,
+          ),
         );
         setState(() {
           _requests.removeWhere((r) => r.id == request.id);
@@ -358,7 +404,12 @@ class _RiderAvailableTabState extends State<RiderAvailableTab>
       } else {
         setState(() => _acceptingId = null);
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(_extractError(response) ?? 'Could not accept.'), backgroundColor: Colors.red.shade700),
+          SnackBar(
+            content: Text(
+              _extractError(response) ?? context.trAsync('Could not accept.'),
+            ),
+            backgroundColor: Colors.red.shade700,
+          ),
         );
         await _fetch();
       }
@@ -366,7 +417,12 @@ class _RiderAvailableTabState extends State<RiderAvailableTab>
       if (!mounted) return;
       setState(() => _acceptingId = null);
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Network error: $e'), backgroundColor: Colors.red.shade700),
+        SnackBar(
+          content: Text(
+            context.trAsync('Network error: {err}', args: {'err': '$e'}),
+          ),
+          backgroundColor: Colors.red.shade700,
+        ),
       );
     }
   }
@@ -390,7 +446,10 @@ class _RiderAvailableTabState extends State<RiderAvailableTab>
 
       if (response.statusCode == 201 || response.statusCode == 200) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Pool Accepted!'), backgroundColor: kRiderGreen),
+          SnackBar(
+            content: Text(context.trAsync('Pool Accepted!')),
+            backgroundColor: kRiderGreen,
+          ),
         );
         setState(() {
           _pools.removeWhere((p) => p.id == pool.id);
@@ -399,7 +458,12 @@ class _RiderAvailableTabState extends State<RiderAvailableTab>
       } else {
         setState(() => _acceptingId = null);
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(_extractError(response) ?? 'Could not accept pool.'), backgroundColor: Colors.red.shade700),
+          SnackBar(
+            content: Text(
+              _extractError(response) ?? context.trAsync('Could not accept pool.'),
+            ),
+            backgroundColor: Colors.red.shade700,
+          ),
         );
         await _fetch();
       }
@@ -407,7 +471,12 @@ class _RiderAvailableTabState extends State<RiderAvailableTab>
       if (!mounted) return;
       setState(() => _acceptingId = null);
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Network error: $e'), backgroundColor: Colors.red.shade700),
+        SnackBar(
+          content: Text(
+            context.trAsync('Network error: {err}', args: {'err': '$e'}),
+          ),
+          backgroundColor: Colors.red.shade700,
+        ),
       );
     }
   }
@@ -424,9 +493,9 @@ class _RiderAvailableTabState extends State<RiderAvailableTab>
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 12.0, vertical: 8.0),
       child: SegmentedButton<bool>(
-        segments: const [
-          ButtonSegment(value: false, label: Text('Individual')),
-          ButtonSegment(value: true, label: Text('Pooled')),
+        segments: [
+          ButtonSegment(value: false, label: Text(context.tr('Individual'))),
+          ButtonSegment(value: true, label: Text(context.tr('Pooled'))),
         ],
         selected: {_showPools},
         onSelectionChanged: (Set<bool> newSelection) {
@@ -474,7 +543,9 @@ class _RiderAvailableTabState extends State<RiderAvailableTab>
             ),
             const SizedBox(height: 16),
             Text(
-              _showPools ? 'No open pools nearby' : 'No requests found nearby',
+              context.tr(
+                _showPools ? 'No open pools nearby' : 'No requests found nearby',
+              ),
               textAlign: TextAlign.center,
               style: const TextStyle(
                 fontSize: 18,
@@ -484,9 +555,11 @@ class _RiderAvailableTabState extends State<RiderAvailableTab>
             ),
             const SizedBox(height: 8),
             Text(
-              _showPools
-                  ? 'There are currently no available pooled transportation requests in your area. Please check again later.'
-                  : 'There are currently no available transportation requests in your area. Please check again later.',
+              context.tr(
+                _showPools
+                    ? 'There are currently no available pooled transportation requests in your area. Please check again later.'
+                    : 'There are currently no available transportation requests in your area. Please check again later.',
+              ),
               textAlign: TextAlign.center,
               style: TextStyle(
                 fontSize: 14,
@@ -499,7 +572,7 @@ class _RiderAvailableTabState extends State<RiderAvailableTab>
               child: FilledButton.icon(
                 onPressed: _fetch,
                 icon: const Icon(Icons.refresh, size: 18),
-                label: const Text('Refresh'),
+                label: Text(context.tr('Refresh')),
                 style: FilledButton.styleFrom(
                   backgroundColor: kRiderGreen,
                   foregroundColor: Colors.white,
@@ -570,7 +643,7 @@ class _LocationPermissionDeniedState extends StatelessWidget {
           const SizedBox(height: 16),
           Center(
             child: Text(
-              'Location needed to show nearby requests',
+              context.tr('Location needed to show nearby requests'),
               textAlign: TextAlign.center,
               style: theme.textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w600),
             ),
@@ -581,14 +654,14 @@ class _LocationPermissionDeniedState extends StatelessWidget {
               onPressed: _openSettings,
               style: FilledButton.styleFrom(backgroundColor: kRiderGreen),
               icon: const Icon(Icons.settings_outlined, size: 18),
-              label: const Text('Open Settings'),
+              label: Text(context.tr('Open Settings')),
             ),
           ),
           const SizedBox(height: 12),
           Center(
             child: TextButton(
               onPressed: () => onRetry(),
-              child: const Text('I have enabled it — retry'),
+              child: Text(context.tr('I have enabled it — retry')),
             ),
           ),
         ],
@@ -598,7 +671,7 @@ class _LocationPermissionDeniedState extends StatelessWidget {
 }
 
 class _AvailableRequestCard extends StatelessWidget {
-  Widget _buildPickupTimeRow(AvailableRequest request) {
+  Widget _buildPickupTimeRow(BuildContext context, AvailableRequest request) {
     final now = DateTime.now();
     final pickupTime = request.requestedPickupAt?.toLocal();
     final isUrgent = pickupTime != null && pickupTime.isAfter(now) && pickupTime.difference(now).inHours <= 3;
@@ -640,9 +713,9 @@ class _AvailableRequestCard extends StatelessWidget {
                 color: Colors.orange.shade700,
                 borderRadius: BorderRadius.circular(4),
               ),
-              child: const Text(
-                'SOON',
-                style: TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.bold),
+              child: Text(
+                context.tr('SOON'),
+                style: const TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.bold),
               ),
             ),
         ],
@@ -690,28 +763,37 @@ class _AvailableRequestCard extends StatelessWidget {
                     border: Border.all(color: Colors.blue.shade700),
                   ),
                   child: Text(
-                    '${request.distanceKm.toStringAsFixed(1)} km',
+                    '${request.distanceKm.toStringAsFixed(1)} ${context.tr('km')}',
                     style: TextStyle(color: Colors.blue.shade800, fontWeight: FontWeight.bold, fontSize: 12),
                   ),
                 ),
               ],
             ),
             const SizedBox(height: 12),
-            InfoRow(icon: Icons.inventory_2_outlined, label: '${request.weightKg.toStringAsFixed(0)} kg'),
+            InfoRow(
+              icon: Icons.inventory_2_outlined,
+              label: '${request.weightKg.toStringAsFixed(0)} ${context.tr('kg')}',
+            ),
             if (request.displayRequestedPickup.isNotEmpty) ...[
               const SizedBox(height: 6),
-              _buildPickupTimeRow(request),
+              _buildPickupTimeRow(context, request),
             ],
             const SizedBox(height: 6),
             InfoRow(
               icon: Icons.location_on_outlined,
-              label: 'Pickup: ${request.displayPickup}',
+              label: context.tr(
+                'Pickup: {addr}',
+                args: {'addr': request.displayPickup},
+              ),
               onNavigate: () => launchMaps(context, request.mapsQuery),
             ),
             const SizedBox(height: 6),
             InfoRow(
               icon: Icons.flag_outlined,
-              label: 'Dropoff: ${dropoff.isEmpty ? "—" : dropoff}',
+              label: context.tr(
+                'Dropoff: {dropoff}',
+                args: {'dropoff': dropoff.isEmpty ? '—' : dropoff},
+              ),
               onNavigate: dropoff.isEmpty ? null : () => launchMaps(context, dropoff),
             ),
             const SizedBox(height: 16),
@@ -722,7 +804,9 @@ class _AvailableRequestCard extends StatelessWidget {
                 icon: isAccepting
                     ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
                     : const Icon(Icons.check),
-                label: Text(isAccepting ? 'Accepting…' : 'Accept Request'),
+                label: Text(
+                  context.tr(isAccepting ? 'Accepting…' : 'Accept Request'),
+                ),
                 style: FilledButton.styleFrom(backgroundColor: kRiderGreen, padding: const EdgeInsets.symmetric(vertical: 14)),
               ),
             ),
@@ -774,7 +858,10 @@ class _PoolCard extends StatelessWidget {
                 children: [
                   Expanded(
                     child: Text(
-                      '${pool.cropType} Pool',
+                      context.tr(
+                        '{crop} Pool',
+                        args: {'crop': pool.cropType},
+                      ),
                       style: theme.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold),
                     ),
                   ),
@@ -786,18 +873,41 @@ class _PoolCard extends StatelessWidget {
                       border: Border.all(color: Colors.green.shade700),
                     ),
                     child: Text(
-                      'Pooled',
+                      context.tr('Pooled'),
                       style: TextStyle(color: Colors.green.shade800, fontWeight: FontWeight.bold, fontSize: 12),
                     ),
                   ),
                 ],
               ),
               const SizedBox(height: 12),
-              InfoRow(icon: Icons.scale, label: 'Capacity: ${pool.currentQty.toStringAsFixed(0)} / ${pool.maxQty.toStringAsFixed(0)} kg'),
+              InfoRow(
+                icon: Icons.scale,
+                label: context.tr(
+                  'Capacity: {cur} / {max} kg',
+                  args: {
+                    'cur': pool.currentQty.toStringAsFixed(0),
+                    'max': pool.maxQty.toStringAsFixed(0),
+                  },
+                ),
+              ),
               const SizedBox(height: 6),
-              InfoRow(icon: Icons.storefront, label: 'To: ${pool.dropoffMandiName ?? "Unknown"}'),
+              InfoRow(
+                icon: Icons.storefront,
+                label: context.tr(
+                  'To: {dropoff}',
+                  args: {
+                    'dropoff': pool.dropoffMandiName ?? context.tr('Unknown'),
+                  },
+                ),
+              ),
               const SizedBox(height: 6),
-              InfoRow(icon: Icons.access_time, label: 'Window: $windowStr'),
+              InfoRow(
+                icon: Icons.access_time,
+                label: context.tr(
+                  'Window: {window}',
+                  args: {'window': windowStr},
+                ),
+              ),
               const SizedBox(height: 12),
               Row(
                 children: [
@@ -811,7 +921,7 @@ class _PoolCard extends StatelessWidget {
                         );
                       },
                       icon: const Icon(Icons.map_outlined, size: 16),
-                      label: const Text('View Route'),
+                      label: Text(context.tr('View Route')),
                       style: OutlinedButton.styleFrom(
                         foregroundColor: kRiderGreen,
                         side: const BorderSide(color: kRiderGreen),
@@ -825,7 +935,9 @@ class _PoolCard extends StatelessWidget {
                       icon: isAccepting
                           ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
                           : const Icon(Icons.check_circle_outline, size: 16),
-                      label: Text(isAccepting ? 'Accepting…' : 'Accept Pool'),
+                      label: Text(
+                        context.tr(isAccepting ? 'Accepting…' : 'Accept Pool'),
+                      ),
                       style: FilledButton.styleFrom(backgroundColor: kRiderGreen),
                     ),
                   ),

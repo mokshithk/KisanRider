@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import 'package:qr_flutter/qr_flutter.dart';
 
+import '../l10n/app_strings.dart';
 import 'rider_common.dart';
 
 /// Formats rupees with Indian digit grouping (e.g. ₹12,345).
@@ -259,14 +260,20 @@ class _PaymentQrDialogState extends State<PaymentQrDialog> {
       } else {
         setState(() {
           _error = _extractErr(resp) ??
-              'Could not generate QR (HTTP ${resp.statusCode}).';
+              AppStrings.tr(
+                'Could not generate QR (HTTP {code}).',
+                args: {'code': '${resp.statusCode}'},
+              );
           _isLoading = false;
         });
       }
     } catch (e) {
       if (!mounted) return;
       setState(() {
-        _error = 'Network error: $e';
+        _error = AppStrings.tr(
+          'Network error: {err}',
+          args: {'err': '$e'},
+        );
         _isLoading = false;
       });
     }
@@ -335,7 +342,7 @@ class _PaymentQrDialogState extends State<PaymentQrDialog> {
           const SizedBox(width: 8),
           Expanded(
             child: Text(
-              isPaid ? 'Payment Done!' : widget.title,
+              isPaid ? context.tr('Payment Done!') : context.tr(widget.title),
               style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
             ),
           ),
@@ -350,16 +357,16 @@ class _PaymentQrDialogState extends State<PaymentQrDialog> {
         width: 340,
         child: SingleChildScrollView(
           child: _isLoading
-              ? const Padding(
-                  padding: EdgeInsets.symmetric(vertical: 40),
+              ? Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 40),
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      CircularProgressIndicator(color: kRiderGreen),
-                      SizedBox(height: 14),
+                      const CircularProgressIndicator(color: kRiderGreen),
+                      const SizedBox(height: 14),
                       Text(
-                        'Fetching live mandi rate & generating QR…',
-                        style: TextStyle(fontSize: 13, color: Colors.black54),
+                        context.tr('Fetching live mandi rate & generating QR…'),
+                        style: const TextStyle(fontSize: 13, color: Colors.black54),
                         textAlign: TextAlign.center,
                       ),
                     ],
@@ -399,7 +406,7 @@ class _PaymentQrDialogState extends State<PaymentQrDialog> {
             onPressed: _generateQr,
             style: FilledButton.styleFrom(backgroundColor: kRiderGreen),
             icon: const Icon(Icons.refresh, size: 18),
-            label: const Text('Retry'),
+            label: Text(context.tr('Retry')),
           )
         else if (isPaid)
           SizedBox(
@@ -411,13 +418,13 @@ class _PaymentQrDialogState extends State<PaymentQrDialog> {
                 padding: const EdgeInsets.symmetric(vertical: 12),
               ),
               icon: const Icon(Icons.check_circle_outline, size: 18),
-              label: const Text('Done'),
+              label: Text(context.tr('Done')),
             ),
           )
         else
           TextButton(
             onPressed: () => Navigator.of(context).pop(false),
-            child: const Text('Close'),
+            child: Text(context.tr('Close')),
           ),
       ],
     );
@@ -425,8 +432,8 @@ class _PaymentQrDialogState extends State<PaymentQrDialog> {
 
   Widget _buildQrWaitingView(ThemeData theme, PaymentQrData d) {
     final rateLabel = d.rateSource == 'mandi_api'
-        ? '₹${d.ratePerKg.toStringAsFixed(0)}/kg (Live Mandi Rate)'
-        : '₹${d.ratePerKg.toStringAsFixed(0)}/kg (Standard Rate)';
+        ? '₹${d.ratePerKg.toStringAsFixed(0)}/${context.tr('kg')} (${context.tr('Live Mandi Rate')})'
+        : '₹${d.ratePerKg.toStringAsFixed(0)}/${context.tr('kg')} (${context.tr('Standard Rate')})';
 
     return Column(
       mainAxisSize: MainAxisSize.min,
@@ -442,9 +449,11 @@ class _PaymentQrDialogState extends State<PaymentQrDialog> {
           child: Column(
             children: [
               Text(
-                d.isPool
-                    ? 'TOTAL POOL AMOUNT TO PAY'
-                    : 'TOTAL CROP AMOUNT TO PAY',
+                context.tr(
+                  d.isPool
+                      ? 'TOTAL POOL AMOUNT TO PAY'
+                      : 'TOTAL CROP AMOUNT TO PAY',
+                ),
                 style: const TextStyle(
                   fontSize: 11,
                   fontWeight: FontWeight.w700,
@@ -463,7 +472,7 @@ class _PaymentQrDialogState extends State<PaymentQrDialog> {
               ),
               const SizedBox(height: 4),
               Text(
-                '${d.cropName} · ${d.totalWeightKg.toStringAsFixed(0)} kg · $rateLabel',
+                '${d.cropName} · ${d.totalWeightKg.toStringAsFixed(0)} ${context.tr('kg')} · $rateLabel',
                 style: const TextStyle(fontSize: 12, color: Colors.black87),
                 textAlign: TextAlign.center,
               ),
@@ -508,9 +517,11 @@ class _PaymentQrDialogState extends State<PaymentQrDialog> {
             await Clipboard.setData(ClipboardData(text: d.qrData));
             if (!mounted) return;
             ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(
-                content: Text('QR payload copied for demo testing.'),
-                duration: Duration(seconds: 2),
+              SnackBar(
+                content: Text(
+                  context.trAsync('QR payload copied for demo testing.'),
+                ),
+                duration: const Duration(seconds: 2),
               ),
             );
           },
@@ -564,7 +575,9 @@ class _PaymentQrDialogState extends State<PaymentQrDialog> {
               const SizedBox(width: 10),
               Expanded(
                 child: Text(
-                  'Ask Mandi Owner to scan using KisanRider Scanner. Auto-checking every 3s…',
+                  context.tr(
+                    'Ask Mandi Owner to scan using KisanRider Scanner. Auto-checking every 3s…',
+                  ),
                   style: TextStyle(
                     fontSize: 11.5,
                     color: Colors.amber.shade900,
@@ -599,9 +612,9 @@ class _PaymentQrDialogState extends State<PaymentQrDialog> {
                 size: 50,
               ),
               const SizedBox(height: 8),
-              const Text(
-                'Payment Received!',
-                style: TextStyle(
+              Text(
+                context.tr('Payment Received!'),
+                style: const TextStyle(
                   fontSize: 19,
                   fontWeight: FontWeight.bold,
                   color: Color(0xFF166534),
@@ -619,7 +632,10 @@ class _PaymentQrDialogState extends State<PaymentQrDialog> {
               if (d.paymentReference != null) ...[
                 const SizedBox(height: 4),
                 Text(
-                  'Ref: ${d.paymentReference}',
+                  context.tr(
+                    'Ref: {ref}',
+                    args: {'ref': d.paymentReference!},
+                  ),
                   style: const TextStyle(
                     fontSize: 12,
                     fontWeight: FontWeight.w600,
@@ -656,7 +672,9 @@ class _SplitSummaryCard extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
-            paid ? 'PAYMENT AUTO-SPLIT SUMMARY' : 'AUTO-SPLIT PREVIEW',
+            context.tr(
+              paid ? 'PAYMENT AUTO-SPLIT SUMMARY' : 'AUTO-SPLIT PREVIEW',
+            ),
             style: const TextStyle(
               fontSize: 10.5,
               fontWeight: FontWeight.w700,
@@ -666,26 +684,32 @@ class _SplitSummaryCard extends StatelessWidget {
           ),
           const SizedBox(height: 8),
           _SplitRow(
-            label: 'Total Crop Sale',
+            label: context.tr('Total Crop Sale'),
             value: formatIndianRupees(data.totalAmount),
             bold: true,
           ),
           _SplitRow(
-            label: 'Rider Fare (${data.riderName})',
+            label: context.tr(
+              'Rider Fare ({name})',
+              args: {'name': data.riderName},
+            ),
             value: '- ${formatIndianRupees(data.riderFare)}',
             valueColor: kRiderGreen,
             bold: true,
           ),
           _SplitRow(
-            label: 'Platform Fee (2%)',
+            label: context.tr('Platform Fee (2%)'),
             value: '- ${formatIndianRupees(data.platformFee)}',
             valueColor: Colors.red.shade700,
           ),
           const Divider(height: 14),
           _SplitRow(
             label: data.isPool
-                ? 'Farmers Net (${data.items.length} Farmers)'
-                : 'Farmer Net Payout',
+                ? context.tr(
+                    'Farmers Net ({count} Farmers)',
+                    args: {'count': '${data.items.length}'},
+                  )
+                : context.tr('Farmer Net Payout'),
             value: formatIndianRupees(data.farmersNetPayout),
             valueColor: const Color(0xFF166534),
             bold: true,
@@ -699,7 +723,7 @@ class _SplitSummaryCard extends StatelessWidget {
                   children: [
                     Expanded(
                       child: Text(
-                        '· ${it.farmerName} (${it.weightKg.toStringAsFixed(0)} kg)',
+                        '· ${it.farmerName} (${it.weightKg.toStringAsFixed(0)} ${context.tr('kg')})',
                         style: const TextStyle(
                           fontSize: 11.5,
                           color: Colors.black54,

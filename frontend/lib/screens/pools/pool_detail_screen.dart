@@ -8,6 +8,7 @@ import 'package:http/http.dart' as http;
 import 'package:provider/provider.dart';
 import 'package:url_launcher/url_launcher.dart'; // Needed for Call Driver
 
+import '../../l10n/app_strings.dart';
 import '../../providers/auth_provider.dart';
 import '../../services/api_service.dart';
 import 'pool_models.dart';
@@ -136,7 +137,10 @@ class _PoolDetailScreenState extends State<PoolDetailScreen> {
     if (result == true) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Successfully joined the pool!'), backgroundColor: _kFarmerGreen),
+          SnackBar(
+            content: Text(context.trAsync('Successfully joined the pool!')),
+            backgroundColor: _kFarmerGreen,
+          ),
         );
         _loadDetail();
       }
@@ -147,14 +151,21 @@ class _PoolDetailScreenState extends State<PoolDetailScreen> {
     final confirm = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('Leave Pool?'),
-        content: const Text('Are you sure you want to leave this pool? Your produce will not be included in the shared truck.'),
+        title: Text(ctx.tr('Leave Pool?')),
+        content: Text(
+          ctx.tr(
+            'Are you sure you want to leave this pool? Your produce will not be included in the shared truck.',
+          ),
+        ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: Text(ctx.tr('Cancel')),
+          ),
           FilledButton(
             onPressed: () => Navigator.pop(ctx, true),
             style: FilledButton.styleFrom(backgroundColor: Colors.red),
-            child: const Text('Leave'),
+            child: Text(ctx.tr('Leave')),
           ),
         ],
       ),
@@ -168,7 +179,10 @@ class _PoolDetailScreenState extends State<PoolDetailScreen> {
       await PoolsApi.leavePool(token: auth.token!, poolId: widget.poolId);
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('You have left the pool.'), backgroundColor: _kFarmerGreen),
+        SnackBar(
+          content: Text(context.trAsync('You have left the pool.')),
+          backgroundColor: _kFarmerGreen,
+        ),
       );
       Navigator.of(context).pop();
     } catch (e) {
@@ -184,14 +198,21 @@ class _PoolDetailScreenState extends State<PoolDetailScreen> {
     final confirm = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('Cancel Pool?'),
-        content: const Text('Are you sure you want to cancel this pool? All joined farmers will be removed and the pool will be closed.'),
+        title: Text(ctx.tr('Cancel Pool?')),
+        content: Text(
+          ctx.tr(
+            'Are you sure you want to cancel this pool? All joined farmers will be removed and the pool will be closed.',
+          ),
+        ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Keep Pool')),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: Text(ctx.tr('Keep Pool')),
+          ),
           FilledButton(
             onPressed: () => Navigator.pop(ctx, true),
             style: FilledButton.styleFrom(backgroundColor: Colors.red),
-            child: const Text('Cancel Pool'),
+            child: Text(ctx.tr('Cancel Pool')),
           ),
         ],
       ),
@@ -205,7 +226,10 @@ class _PoolDetailScreenState extends State<PoolDetailScreen> {
       await PoolsApi.cancelPool(token: auth.token!, poolId: widget.poolId);
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Pool cancelled successfully.'), backgroundColor: _kFarmerGreen),
+        SnackBar(
+          content: Text(context.trAsync('Pool cancelled successfully.')),
+          backgroundColor: _kFarmerGreen,
+        ),
       );
       Navigator.of(context).pop();
     } catch (e) {
@@ -223,13 +247,17 @@ class _PoolDetailScreenState extends State<PoolDetailScreen> {
       final ok = await launchUrl(uri);
       if (!ok && mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Could not open the dialer.')),
+          SnackBar(
+            content: Text(context.trAsync('Could not open the dialer.')),
+          ),
         );
       }
     } catch (_) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Could not open the phone dialer')),
+          SnackBar(
+            content: Text(context.trAsync('Could not open the phone dialer')),
+          ),
         );
       }
     }
@@ -240,7 +268,7 @@ class _PoolDetailScreenState extends State<PoolDetailScreen> {
     return Scaffold(
       backgroundColor: _kBackground,
       appBar: AppBar(
-        title: const Text('Pool Details'),
+        title: Text(context.tr('Pool Details')),
         backgroundColor: _kFarmerGreen,
         foregroundColor: Colors.white,
         actions: [
@@ -265,7 +293,10 @@ class _PoolDetailScreenState extends State<PoolDetailScreen> {
           children: [
             Text(_error!),
             const SizedBox(height: 16),
-            OutlinedButton(onPressed: () => _loadDetail(silent: false), child: const Text('Retry')),
+            OutlinedButton(
+              onPressed: () => _loadDetail(silent: false),
+              child: Text(context.tr('Retry')),
+            ),
           ],
         ),
       );
@@ -347,16 +378,27 @@ class _PoolDetailScreenState extends State<PoolDetailScreen> {
                   ],
 
                   const SizedBox(height: 16),
-                  _buildInfoCard('Members (${pool.members.length})', [
+                  _buildInfoCard(
+                    context.tr(
+                      'Members ({count})',
+                      args: {'count': '${pool.members.length}'},
+                    ),
+                    [
                     ...pool.members.map((m) {
                       final memberIsMe = currentUserId != null && m.farmerId.trim().toLowerCase() == currentUserId;
                       final memberIsCreator = m.farmerId.trim().toLowerCase() == pool.creatorId.trim().toLowerCase();
                       
-                      String displayName = m.farmerFullName ?? 'Farmer';
+                      String displayName = m.farmerFullName ?? context.tr('Farmer');
                       if (memberIsMe) {
-                        displayName = 'You ($displayName)';
+                        displayName = context.tr(
+                          'You ({name})',
+                          args: {'name': displayName},
+                        );
                       } else if (memberIsCreator) {
-                        displayName = '$displayName (Creator)';
+                        displayName = context.tr(
+                          '{name} (Creator)',
+                          args: {'name': displayName},
+                        );
                       }
 
                       return ListTile(
@@ -368,7 +410,10 @@ class _PoolDetailScreenState extends State<PoolDetailScreen> {
                           displayName,
                           style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
                         ),
-                        subtitle: Text('${m.weightKg.toStringAsFixed(0)} kg · ${m.status}', style: const TextStyle(fontSize: 12)),
+                        subtitle: Text(
+                          '${m.weightKg.toStringAsFixed(0)} ${context.tr('kg')} · ${context.trStatus(m.status)}',
+                          style: const TextStyle(fontSize: 12),
+                        ),
                         dense: true,
                       );
                     }),
@@ -395,7 +440,7 @@ class _PoolDetailScreenState extends State<PoolDetailScreen> {
                         side: BorderSide(color: Colors.red.shade200),
                         padding: const EdgeInsets.symmetric(vertical: 16),
                       ),
-                      child: const Text('Cancel My Pool'),
+                      child: Text(context.tr('Cancel My Pool')),
                     )
                   : isMember
                     ? OutlinedButton(
@@ -405,7 +450,7 @@ class _PoolDetailScreenState extends State<PoolDetailScreen> {
                           side: BorderSide(color: Colors.red.shade300),
                           padding: const EdgeInsets.symmetric(vertical: 16),
                         ),
-                        child: const Text('Leave Pool'),
+                        child: Text(context.tr('Leave Pool')),
                       )
                     : ElevatedButton(
                         onPressed: canJoin ? _showJoinSheet : null,
@@ -414,7 +459,9 @@ class _PoolDetailScreenState extends State<PoolDetailScreen> {
                           foregroundColor: Colors.white,
                           padding: const EdgeInsets.symmetric(vertical: 16),
                         ),
-                        child: Text(isFull ? 'Pool is Full' : 'Join Pool'),
+                        child: Text(
+                          context.tr(isFull ? 'Pool is Full' : 'Join Pool'),
+                        ),
                       ),
               ),
             ),
@@ -438,7 +485,10 @@ class _PoolDetailScreenState extends State<PoolDetailScreen> {
             children: [
               Expanded(
                 child: Text(
-                  '${pool.creatorFullName ?? 'Farmer'}\'s Pool',
+                  context.tr(
+                    "{name}'s Pool",
+                    args: {'name': pool.creatorFullName ?? context.tr('Farmer')},
+                  ),
                   style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: _kTextPrimary),
                 ),
               ),
@@ -456,9 +506,11 @@ class _PoolDetailScreenState extends State<PoolDetailScreen> {
                   ),
                 ),
                 child: Text(
-                  (pool.status.toUpperCase() == 'COMPLETED' || pool.status.toUpperCase() == 'DELIVERED')
-                      ? 'DELIVERED'
-                      : (isFull ? 'FULL' : pool.status),
+                  context.trStatus(
+                    (pool.status.toUpperCase() == 'COMPLETED' || pool.status.toUpperCase() == 'DELIVERED')
+                        ? 'DELIVERED'
+                        : (isFull ? 'FULL' : pool.status),
+                  ),
                   style: TextStyle(
                     color: (pool.status.toUpperCase() == 'COMPLETED' || pool.status.toUpperCase() == 'DELIVERED')
                         ? const Color(0xFF166534)
@@ -471,15 +523,15 @@ class _PoolDetailScreenState extends State<PoolDetailScreen> {
             ],
           ),
           const SizedBox(height: 16),
-          _buildRow(Icons.eco, 'Crop Type', pool.cropType),
+          _buildRow(Icons.eco, context.tr('Crop Type'), pool.cropType),
           const SizedBox(height: 12),
-          _buildRow(Icons.location_on, 'Pickup Area', pool.pickupAddress ?? 'Unknown Location'),
+          _buildRow(Icons.location_on, context.tr('Pickup Area'), pool.pickupAddress ?? context.tr('Unknown Location')),
           const SizedBox(height: 12),
-          _buildRow(Icons.storefront, 'Destination', pool.dropoffMandiName ?? 'Unknown'),
+          _buildRow(Icons.storefront, context.tr('Destination'), pool.dropoffMandiName ?? context.tr('Unknown')),
           const SizedBox(height: 12),
-          _buildRow(Icons.scale, 'Capacity', '${pool.currentQty.toStringAsFixed(0)} / ${pool.maxQty.toStringAsFixed(0)} kg'),
+          _buildRow(Icons.scale, context.tr('Capacity'), '${pool.currentQty.toStringAsFixed(0)} / ${pool.maxQty.toStringAsFixed(0)} ${context.tr('kg')}'),
           const SizedBox(height: 12),
-          _buildRow(Icons.access_time, 'Window', '${_formatDate(pool.pickupWindowStart)} - ${_formatDate(pool.pickupWindowEnd)}'),
+          _buildRow(Icons.access_time, context.tr('Window'), '${_formatDate(pool.pickupWindowStart)} - ${_formatDate(pool.pickupWindowEnd)}'),
         ],
       ),
     );
@@ -505,9 +557,9 @@ class _PoolDetailScreenState extends State<PoolDetailScreen> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Text(
-                  'YOUR PICKUP OTP',
-                  style: TextStyle(
+                Text(
+                  context.tr('YOUR PICKUP OTP'),
+                  style: const TextStyle(
                     fontSize: 11,
                     fontWeight: FontWeight.w700,
                     color: Color(0xFF8A5A00),
@@ -525,9 +577,9 @@ class _PoolDetailScreenState extends State<PoolDetailScreen> {
                   ),
                 ),
                 const SizedBox(height: 4),
-                const Text(
-                  'Share this code with the rider when they arrive at your farm.',
-                  style: TextStyle(
+                Text(
+                  context.tr('Share this code with the rider when they arrive at your farm.'),
+                  style: const TextStyle(
                     fontSize: 11,
                     color: Color(0xFF8A5A00),
                   ),
@@ -584,10 +636,10 @@ class _PoolDetailScreenState extends State<PoolDetailScreen> {
               const Icon(Icons.account_balance_wallet_outlined,
                   size: 18, color: _kFarmerGreen),
               const SizedBox(width: 8),
-              const Expanded(
+              Expanded(
                 child: Text(
-                  'Your Pool Payout Breakdown',
-                  style: TextStyle(
+                  context.tr('Your Pool Payout Breakdown'),
+                  style: const TextStyle(
                     fontSize: 15,
                     fontWeight: FontWeight.bold,
                     color: _kTextPrimary,
@@ -602,7 +654,7 @@ class _PoolDetailScreenState extends State<PoolDetailScreen> {
                   border: Border.all(color: badgeColor),
                 ),
                 child: Text(
-                  isPaid ? 'SETTLED' : 'PENDING QR',
+                  context.trStatus(isPaid ? 'SETTLED' : 'PENDING QR'),
                   style: TextStyle(
                     color: badgeColor,
                     fontWeight: FontWeight.bold,
@@ -614,14 +666,14 @@ class _PoolDetailScreenState extends State<PoolDetailScreen> {
             ],
           ),
           const SizedBox(height: 12),
-          _poolBreakdownRow('Gross Sale Amount', _rs(s.grossAmount)),
+          _poolBreakdownRow(context.tr('Gross Sale Amount'), _rs(s.grossAmount)),
           _poolBreakdownRow(
-            'Your Transport Share',
+            context.tr('Your Transport Share'),
             s.riderFare == null ? '—' : '- ${_rs(s.riderFare)}',
             color: Colors.red.shade700,
           ),
           _poolBreakdownRow(
-            'Platform Fee (2%)',
+            context.tr('Platform Fee (2%)'),
             s.platformFee == null ? '—' : '- ${_rs(s.platformFee)}',
             color: Colors.red.shade700,
           ),
@@ -630,7 +682,7 @@ class _PoolDetailScreenState extends State<PoolDetailScreen> {
             child: Divider(height: 1),
           ),
           _poolBreakdownRow(
-            'Your Net Payout',
+            context.tr('Your Net Payout'),
             _rs(s.netPayout),
             color: _kFarmerGreen,
             bold: true,
@@ -638,8 +690,8 @@ class _PoolDetailScreenState extends State<PoolDetailScreen> {
           if (s.ratePerKg != null) ...[
             const SizedBox(height: 6),
             _poolBreakdownRow(
-              'Crop Rate Applied',
-              '₹${s.ratePerKg!.toStringAsFixed(0)}/kg (${s.rateSource == 'mandi_api' ? 'Mandi API Rate' : 'Standard ₹50/kg'})',
+              context.tr('Crop Rate Applied'),
+              '₹${s.ratePerKg!.toStringAsFixed(0)}/${context.tr('kg')} (${s.rateSource == 'mandi_api' ? context.tr('Mandi API Rate') : context.tr('Standard ₹50/kg')})',
             ),
           ],
           if (isPaid) ...[
@@ -658,8 +710,8 @@ class _PoolDetailScreenState extends State<PoolDetailScreen> {
                   Expanded(
                     child: Text(
                       ref != null
-                          ? 'Payment Received ($ref)'
-                          : 'Payment Received & Credited',
+                          ? context.tr('Payment Received ({ref})', args: {'ref': ref})
+                          : context.tr('Payment Received & Credited'),
                       style: const TextStyle(
                         fontSize: 12.5,
                         fontWeight: FontWeight.w600,
@@ -710,7 +762,7 @@ class _PoolDetailScreenState extends State<PoolDetailScreen> {
   }
 
   Widget _buildDeliveredCard(PoolDetail pool) {
-    final dest = pool.dropoffMandiName ?? 'Mandi Destination';
+    final dest = pool.dropoffMandiName ?? context.tr('Mandi Destination');
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
@@ -726,9 +778,9 @@ class _PoolDetailScreenState extends State<PoolDetailScreen> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Text(
-                  'Delivered',
-                  style: TextStyle(
+                Text(
+                  context.tr('Delivered'),
+                  style: const TextStyle(
                     fontSize: 16,
                     fontWeight: FontWeight.bold,
                     color: Color(0xFF166534),
@@ -737,8 +789,14 @@ class _PoolDetailScreenState extends State<PoolDetailScreen> {
                 const SizedBox(height: 4),
                   Text(
                     (pool.mySettlement?.isPaid ?? false)
-                        ? 'Delivered & settled to your account at $dest.'
-                        : 'Your pooled produce has been delivered to $dest.',
+                        ? context.tr(
+                            'Delivered & settled to your account at {dest}.',
+                            args: {'dest': dest},
+                          )
+                        : context.tr(
+                            'Your pooled produce has been delivered to {dest}.',
+                            args: {'dest': dest},
+                          ),
                     style: const TextStyle(fontSize: 12.5, color: Color(0xFF166534)),
                   ),
               ],
@@ -750,7 +808,7 @@ class _PoolDetailScreenState extends State<PoolDetailScreen> {
   }
 
   Widget _buildInTransitCard(PoolDetail pool) {
-    final dest = pool.dropoffMandiName ?? 'Mandi Destination';
+    final dest = pool.dropoffMandiName ?? context.tr('Mandi Destination');
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
@@ -766,9 +824,9 @@ class _PoolDetailScreenState extends State<PoolDetailScreen> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Text(
-                  'In Transit to Mandi',
-                  style: TextStyle(
+                Text(
+                  context.tr('In Transit to Mandi'),
+                  style: const TextStyle(
                     fontSize: 15,
                     fontWeight: FontWeight.bold,
                     color: Color(0xFF6D28D9),
@@ -776,7 +834,10 @@ class _PoolDetailScreenState extends State<PoolDetailScreen> {
                 ),
                 const SizedBox(height: 4),
                 Text(
-                  'Your produce was picked up and is on the way to $dest.',
+                  context.tr(
+                    'Your produce was picked up and is on the way to {dest}.',
+                    args: {'dest': dest},
+                  ),
                   style: const TextStyle(fontSize: 12.5, color: Color(0xFF6D28D9)),
                 ),
               ],
@@ -803,15 +864,15 @@ class _PoolDetailScreenState extends State<PoolDetailScreen> {
               Icon(Icons.local_shipping, color: Colors.blue.shade800, size: 20),
               const SizedBox(width: 8),
               Text(
-                isDelivered ? 'Delivered By' : 'Driver Assigned',
+                context.tr(isDelivered ? 'Delivered By' : 'Driver Assigned'),
                 style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: Colors.blue.shade800),
               ),
             ],
           ),
           const SizedBox(height: 12),
-          _buildRow(Icons.person, 'Name', pool.driverName ?? 'Driver'),
+          _buildRow(Icons.person, context.tr('Name'), pool.driverName ?? context.tr('Driver')),
           const SizedBox(height: 8),
-          _buildRow(Icons.directions_car, 'Vehicle', pool.driverVehicle ?? 'Unknown'),
+          _buildRow(Icons.directions_car, context.tr('Vehicle'), pool.driverVehicle ?? context.tr('Unknown')),
           const SizedBox(height: 12),
           SizedBox(
             width: double.infinity,
@@ -820,7 +881,7 @@ class _PoolDetailScreenState extends State<PoolDetailScreen> {
                 ? () => _callDriver(pool.driverPhone!) 
                 : null,
               icon: const Icon(Icons.phone, size: 18),
-              label: const Text('CALL DRIVER'),
+              label: Text(context.tr('CALL DRIVER')),
               style: FilledButton.styleFrom(backgroundColor: Colors.blue.shade800),
             ),
           ),
@@ -840,12 +901,12 @@ class _PoolDetailScreenState extends State<PoolDetailScreen> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text('Estimated Cost', style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: _kTextPrimary)),
+          Text(context.tr('Estimated Cost'), style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: _kTextPrimary)),
           const SizedBox(height: 12),
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              const Text('Total Pool Freight', style: TextStyle(fontSize: 13, color: _kTextSecondary)),
+              Text(context.tr('Total Pool Freight'), style: const TextStyle(fontSize: 13, color: _kTextSecondary)),
               Text('₹${pool.estimatedFreight!.toStringAsFixed(0)}', style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
             ],
           ),
@@ -857,7 +918,7 @@ class _PoolDetailScreenState extends State<PoolDetailScreen> {
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                const Text('Your Estimated Share', style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: _kTextPrimary)),
+                Text(context.tr('Your Estimated Share'), style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: _kTextPrimary)),
                 Text('₹${myShare.toStringAsFixed(0)}', style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: _kFarmerGreen)),
               ],
             ),
@@ -991,7 +1052,9 @@ class _JoinPoolSheetState extends State<_JoinPoolSheet> {
         if (!mounted) return;
         setState(() {
           _isFetchingLocation = false;
-          _gpsError = 'Location permission denied. Switch to Manual Entry.';
+          _gpsError = AppStrings.tr(
+            'Location permission denied. Switch to Manual Entry.',
+          );
         });
         return;
       }
@@ -1025,7 +1088,10 @@ class _JoinPoolSheetState extends State<_JoinPoolSheet> {
       if (!mounted) return;
       setState(() {
         _isFetchingLocation = false;
-        _gpsError = 'Could not fetch location: $e';
+        _gpsError = AppStrings.tr(
+          'Could not fetch location: {err}',
+          args: {'err': '$e'},
+        );
       });
     }
   }
@@ -1043,14 +1109,17 @@ class _JoinPoolSheetState extends State<_JoinPoolSheet> {
         });
       } else {
         setState(() {
-          _savedAddressesError = 'Failed to load saved addresses.';
+          _savedAddressesError = AppStrings.tr('Failed to load saved addresses.');
           _isLoadingAddresses = false;
         });
       }
     } catch (e) {
       if (!mounted) return;
       setState(() {
-        _savedAddressesError = 'Network error: $e';
+        _savedAddressesError = AppStrings.tr(
+          'Network error: {err}',
+          args: {'err': '$e'},
+        );
         _isLoadingAddresses = false;
       });
     }
@@ -1066,13 +1135,17 @@ class _JoinPoolSheetState extends State<_JoinPoolSheet> {
     switch (_pickupMode) {
       case PickupMode.gps:
         if (_gpsLat == null || _gpsLng == null) {
-          _showError('GPS location unavailable. Please tap Refresh or switch to Manual Entry / Saved Places.');
+          _showError(
+            context.trAsync(
+              'GPS location unavailable. Please tap Refresh or switch to Manual Entry / Saved Places.',
+            ),
+          );
           return null;
         }
         return (address: _gpsAddress ?? '', landmark: _pickupLandmarkController.text.trim(), lat: _gpsLat!, lng: _gpsLng!);
       case PickupMode.saved:
         if (_selectedSavedIndex == null) {
-          _showError('Please pick one of your saved places.');
+          _showError(context.trAsync('Please pick one of your saved places.'));
           return null;
         }
         final a = _savedAddresses[_selectedSavedIndex!];
@@ -1087,7 +1160,7 @@ class _JoinPoolSheetState extends State<_JoinPoolSheet> {
       case PickupMode.manual:
         final address = _manualAddressController.text.trim();
         if (address.isEmpty) {
-          _showError('Please enter the village or area name.');
+          _showError(context.trAsync('Please enter the village or area name.'));
           return null;
         }
         double lat;
@@ -1136,7 +1209,10 @@ class _JoinPoolSheetState extends State<_JoinPoolSheet> {
 
       if (prResp.statusCode != 201) {
         final body = jsonDecode(prResp.body);
-        throw Exception(body['detail']?.toString() ?? 'Failed to create produce request.');
+        throw Exception(
+          body['detail']?.toString() ??
+              AppStrings.tr('Failed to create produce request.'),
+        );
       }
 
       final prId = jsonDecode(prResp.body)['id'];
@@ -1178,25 +1254,34 @@ class _JoinPoolSheetState extends State<_JoinPoolSheet> {
                 ),
               ),
               const SizedBox(height: 16),
-              const Text('Join Pool', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+              Text(context.tr('Join Pool'), style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
               const SizedBox(height: 16),
 
               TextFormField(
                 controller: _cropController,
                 enabled: !_isLoading,
-                decoration: const InputDecoration(labelText: 'Crop Name', hintText: 'e.g. Tomatoes', border: OutlineInputBorder()),
-                validator: (v) => (v == null || v.trim().isEmpty) ? 'Required' : null,
+                decoration: InputDecoration(
+                  labelText: context.tr('Crop Name'),
+                  hintText: context.tr('e.g. Tomatoes'),
+                  border: const OutlineInputBorder(),
+                ),
+                validator: (v) => (v == null || v.trim().isEmpty) ? context.trAsync('Required') : null,
               ),
               const SizedBox(height: 12),
               TextFormField(
                 controller: _weightController,
                 enabled: !_isLoading,
                 keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                decoration: const InputDecoration(labelText: 'Weight (kg)', hintText: 'e.g. 250', border: OutlineInputBorder(), suffixText: 'kg'),
+                decoration: InputDecoration(
+                  labelText: context.tr('Weight (kg)'),
+                  hintText: context.tr('e.g. 250'),
+                  border: const OutlineInputBorder(),
+                  suffixText: context.tr('kg'),
+                ),
                 validator: (v) {
-                  if (v == null || v.trim().isEmpty) return 'Required';
+                  if (v == null || v.trim().isEmpty) return context.trAsync('Required');
                   final d = double.tryParse(v.trim());
-                  if (d == null || d <= 0) return 'Invalid';
+                  if (d == null || d <= 0) return context.trAsync('Invalid');
                   return null;
                 },
               ),
@@ -1210,7 +1295,7 @@ class _JoinPoolSheetState extends State<_JoinPoolSheet> {
                 style: FilledButton.styleFrom(backgroundColor: _kFarmerGreen, padding: const EdgeInsets.symmetric(vertical: 14)),
                 child: _isLoading
                     ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
-                    : const Text('Confirm & Join'),
+                    : Text(context.tr('Confirm & Join')),
               ),
               const SizedBox(height: 20),
             ],
@@ -1232,10 +1317,22 @@ class _JoinPoolSheetState extends State<_JoinPoolSheet> {
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           SegmentedButton<PickupMode>(
-            segments: const [
-              ButtonSegment<PickupMode>(value: PickupMode.gps, icon: Icon(Icons.my_location, size: 16), label: Text('GPS', style: TextStyle(fontSize: 12.5))),
-              ButtonSegment<PickupMode>(value: PickupMode.saved, icon: Icon(Icons.bookmark_outline, size: 16), label: Text('Saved', style: TextStyle(fontSize: 12.5))),
-              ButtonSegment<PickupMode>(value: PickupMode.manual, icon: Icon(Icons.edit_location_alt_outlined, size: 16), label: Text('Manual', style: TextStyle(fontSize: 12.5))),
+            segments: [
+              ButtonSegment<PickupMode>(
+                value: PickupMode.gps,
+                icon: const Icon(Icons.my_location, size: 16),
+                label: Text(context.tr('GPS'), style: const TextStyle(fontSize: 12.5)),
+              ),
+              ButtonSegment<PickupMode>(
+                value: PickupMode.saved,
+                icon: const Icon(Icons.bookmark_outline, size: 16),
+                label: Text(context.tr('Saved'), style: const TextStyle(fontSize: 12.5)),
+              ),
+              ButtonSegment<PickupMode>(
+                value: PickupMode.manual,
+                icon: const Icon(Icons.edit_location_alt_outlined, size: 16),
+                label: Text(context.tr('Manual'), style: const TextStyle(fontSize: 12.5)),
+              ),
             ],
             selected: {_pickupMode},
             onSelectionChanged: _isLoading
@@ -1284,7 +1381,14 @@ class _JoinPoolSheetState extends State<_JoinPoolSheet> {
                   ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
                   : Icon(_gpsError != null ? Icons.error_outline : (_gpsAddress != null ? Icons.check_circle_outline : Icons.my_location), color: _gpsError != null ? Colors.red : _kFarmerGreen, size: 20),
               const SizedBox(width: 12),
-              Expanded(child: Text(_isFetchingLocation ? 'Detecting…' : (_gpsError ?? (_gpsAddress ?? 'Tap refresh.')), style: const TextStyle(fontSize: 12))),
+              Expanded(
+                child: Text(
+                  _isFetchingLocation
+                      ? context.tr('Detecting…')
+                      : (_gpsError ?? (_gpsAddress ?? context.tr('Tap refresh.'))),
+                  style: const TextStyle(fontSize: 12),
+                ),
+              ),
               if (!_isFetchingLocation) IconButton(icon: const Icon(Icons.refresh, size: 20), color: _kFarmerGreen, onPressed: _isLoading ? null : _fetchCurrentLocation),
             ],
           ),
@@ -1293,7 +1397,7 @@ class _JoinPoolSheetState extends State<_JoinPoolSheet> {
         TextFormField(
           controller: _pickupLandmarkController,
           enabled: !_isLoading,
-          decoration: const InputDecoration(labelText: 'Landmark (optional)', border: OutlineInputBorder(), isDense: true),
+          decoration: InputDecoration(labelText: context.tr('Landmark (optional)'), border: const OutlineInputBorder(), isDense: true),
         ),
       ],
     );
@@ -1307,14 +1411,14 @@ class _JoinPoolSheetState extends State<_JoinPoolSheet> {
         if (_isLoadingAddresses)
           const Center(child: CircularProgressIndicator(strokeWidth: 2))
         else if (_savedAddresses.isEmpty)
-          const Text('No saved places.', style: TextStyle(fontSize: 12))
+          Text(context.tr('No saved places.'), style: const TextStyle(fontSize: 12))
         else
           Wrap(
             spacing: 8,
             runSpacing: 8,
             children: List.generate(_savedAddresses.length, (i) {
               final a = _savedAddresses[i];
-              final title = (a['title'] ?? 'Saved').toString();
+              final title = (a['title'] ?? context.tr('Saved')).toString();
               final selected = _selectedSavedIndex == i;
               return ChoiceChip(
                 label: Text(title, style: TextStyle(fontSize: 12.5, color: selected ? Colors.white : _kFarmerGreen)),
@@ -1330,7 +1434,7 @@ class _JoinPoolSheetState extends State<_JoinPoolSheet> {
         TextFormField(
           controller: _pickupLandmarkController,
           enabled: !_isLoading,
-          decoration: const InputDecoration(labelText: 'Landmark (optional)', border: OutlineInputBorder(), isDense: true),
+          decoration: InputDecoration(labelText: context.tr('Landmark (optional)'), border: const OutlineInputBorder(), isDense: true),
         ),
       ],
     );
@@ -1344,13 +1448,13 @@ class _JoinPoolSheetState extends State<_JoinPoolSheet> {
         TextFormField(
           controller: _manualAddressController,
           enabled: !_isLoading,
-          decoration: const InputDecoration(labelText: 'Village / Area Name', border: OutlineInputBorder(), isDense: true),
+          decoration: InputDecoration(labelText: context.tr('Village / Area Name'), border: const OutlineInputBorder(), isDense: true),
         ),
         const SizedBox(height: 12),
         TextFormField(
           controller: _pickupLandmarkController,
           enabled: !_isLoading,
-          decoration: const InputDecoration(labelText: 'Landmark (optional)', border: OutlineInputBorder(), isDense: true),
+          decoration: InputDecoration(labelText: context.tr('Landmark (optional)'), border: const OutlineInputBorder(), isDense: true),
         ),
       ],
     );

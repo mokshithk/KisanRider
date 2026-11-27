@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:provider/provider.dart';
 
+import '../l10n/app_strings.dart';
 import '../providers/auth_provider.dart';
 import '../services/api_service.dart';
 
@@ -69,7 +70,7 @@ class FarmerEarningsTabState extends State<FarmerEarningsTab>
     if (auth.token == null) {
       setState(() {
         _isLoading = false;
-        _error = 'Not signed in.';
+        _error = AppStrings.tr('Not signed in.');
       });
       return;
     }
@@ -97,14 +98,20 @@ class FarmerEarningsTabState extends State<FarmerEarningsTab>
       } else {
         setState(() {
           _error = _extractError(response) ??
-              'Failed to load settlements (HTTP ${response.statusCode}).';
+              AppStrings.tr(
+                'Failed to load settlements (HTTP {code}).',
+                args: {'code': '${response.statusCode}'},
+              );
           _isLoading = false;
         });
       }
     } catch (e) {
       if (!mounted) return;
       setState(() {
-        _error = 'Network error: $e';
+        _error = AppStrings.tr(
+          'Network error: {err}',
+          args: {'err': '$e'},
+        );
         _isLoading = false;
       });
     }
@@ -207,7 +214,7 @@ class FarmerEarningsTabState extends State<FarmerEarningsTab>
           _FinancialSummaryCard(totalNetSales: _totalNetSales),
           const SizedBox(height: 24),
           _SectionTitle(
-            title: 'Sales Settlement History',
+            title: context.tr('Sales Settlement History'),
             count: _settlements.length,
           ),
           const SizedBox(height: 12),
@@ -239,8 +246,9 @@ class FarmerEarningsTabState extends State<FarmerEarningsTab>
 
     final subtitleParts = <String>[
       _shortDate(createdAt),
-      if (ratePerKg != null) '₹${ratePerKg.round()}/kg',
-      if (paymentRef != null && paymentRef.isNotEmpty) 'Ref: $paymentRef',
+      if (ratePerKg != null) '₹${ratePerKg.round()}/${context.tr('kg')}',
+      if (paymentRef != null && paymentRef.isNotEmpty)
+        context.tr('Ref: {ref}', args: {'ref': paymentRef}),
     ];
 
     return _SettlementCard(
@@ -299,7 +307,7 @@ class _FinancialSummaryCard extends StatelessWidget {
                   color: _kFarmerGreen, size: 22),
               const SizedBox(width: 8),
               Text(
-                'Total Net Sales',
+                context.tr('Total Net Sales'),
                 style: theme.textTheme.titleSmall?.copyWith(
                   fontWeight: FontWeight.bold,
                   color: _kFarmerGreen,
@@ -317,7 +325,7 @@ class _FinancialSummaryCard extends StatelessWidget {
           ),
           const SizedBox(height: 6),
           Text(
-            'Sum of credited payouts after transport & platform fees',
+            context.tr('Sum of credited payouts after transport & platform fees'),
             style: theme.textTheme.bodySmall?.copyWith(
               color: theme.colorScheme.onSurfaceVariant,
             ),
@@ -409,10 +417,10 @@ class _SettlementCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
 
-    final headerCrop = cropName.isEmpty ? 'Crop' : cropName;
+    final headerCrop = cropName.isEmpty ? context.tr('Crop') : cropName;
     final qtyLabel = quantityKg == null
         ? '—'
-        : '${quantityKg!.round()} kg';
+        : '${quantityKg!.round()} ${context.tr('kg')}';
     final header = '$headerCrop • $qtyLabel';
 
     final grossKnown = grossAmount != null;
@@ -472,7 +480,7 @@ class _SettlementCard extends StatelessWidget {
                   const SizedBox(width: 8),
                   Expanded(
                     child: Text(
-                      'Pending Calculation — breakdown not yet available.',
+                      context.tr('Pending Calculation — breakdown not yet available.'),
                       style: theme.textTheme.bodySmall?.copyWith(
                         color: Colors.grey.shade800,
                       ),
@@ -483,21 +491,23 @@ class _SettlementCard extends StatelessWidget {
             )
           else ...[
             _AmountRow(
-              label: 'Gross Sale Amount',
-              value: grossKnown ? rupees(grossAmount) : 'Pending Calculation',
+              label: context.tr('Gross Sale Amount'),
+              value: grossKnown
+                  ? rupees(grossAmount)
+                  : context.tr('Pending Calculation'),
               valueColor: grossKnown
                   ? theme.colorScheme.onSurface
                   : Colors.grey.shade600,
             ),
             const SizedBox(height: 6),
             _AmountRow(
-              label: 'Transport Fee',
+              label: context.tr('Transport Fee'),
               value: riderFare == null ? '—' : '- ${rupees(riderFare)}',
               valueColor: Colors.red.shade700,
             ),
             const SizedBox(height: 6),
             _AmountRow(
-              label: 'Platform Fee',
+              label: context.tr('Platform Fee'),
               value: platformFee == null ? '—' : '- ${rupees(platformFee)}',
               valueColor: Colors.red.shade700,
             ),
@@ -506,11 +516,11 @@ class _SettlementCard extends StatelessWidget {
               child: Divider(height: 1),
             ),
             _AmountRow(
-              label: 'Net Credited Payout',
+              label: context.tr('Net Credited Payout'),
               value: netPayout == null ? '—' : rupees(netPayout),
               valueColor: _kFarmerGreen,
               bold: true,
-              trailingHint: isNetEstimated ? 'estimated' : null,
+              trailingHint: isNetEstimated ? context.tr('estimated') : null,
             ),
           ],
         ],
@@ -609,7 +619,7 @@ class _SettlementStatusBadge extends StatelessWidget {
         border: Border.all(color: fg),
       ),
       child: Text(
-        normalized,
+        context.trStatus(normalized),
         style: TextStyle(
           color: fg,
           fontWeight: FontWeight.bold,
@@ -645,15 +655,17 @@ class _EmptyEarningsState extends StatelessWidget {
               size: 56, color: Colors.grey.shade400),
           const SizedBox(height: 12),
           Text(
-            'No sales settlements found',
+            context.tr('No sales settlements found'),
             style: theme.textTheme.titleSmall?.copyWith(
               fontWeight: FontWeight.w600,
             ),
           ),
           const SizedBox(height: 4),
           Text(
-            'Completed deliveries and their mandi payouts will appear here '
-            'once the trip is settled.',
+            context.tr(
+              'Completed deliveries and their mandi payouts will appear here '
+              'once the trip is settled.',
+            ),
             textAlign: TextAlign.center,
             style: theme.textTheme.bodySmall?.copyWith(
               color: theme.colorScheme.onSurfaceVariant,
@@ -684,7 +696,7 @@ class _ErrorView extends StatelessWidget {
                 size: 56, color: theme.colorScheme.error),
             const SizedBox(height: 16),
             Text(
-              'Could not load earnings',
+              context.tr('Could not load earnings'),
               style: theme.textTheme.titleMedium
                   ?.copyWith(fontWeight: FontWeight.w600),
             ),
@@ -699,7 +711,7 @@ class _ErrorView extends StatelessWidget {
             OutlinedButton.icon(
               onPressed: onRetry,
               icon: const Icon(Icons.refresh),
-              label: const Text('Retry'),
+              label: Text(context.tr('Retry')),
             ),
           ],
         ),
