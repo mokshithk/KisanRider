@@ -40,3 +40,9 @@ SMTP_PASSWORD: str | None = os.environ.get("SMTP_PASSWORD") or None
 SMTP_SERVER: str = (os.environ.get("SMTP_SERVER") or "smtp.gmail.com").strip()
 # Port as int. 587 → STARTTLS (the standard); 465 → implicit TLS.
 SMTP_PORT: int = int(os.environ.get("SMTP_PORT") or "587")
+
+# HTTPS (Port 443) email transports for cloud hosts like Render Free Tier
+# where outbound SMTP ports (25, 465, 587) are firewall-blocked.
+BREVO_API_KEY: str | None = (os.environ.get("BREVO_API_KEY") or "").strip() or None
+BREVO_SENDER_EMAIL: str | None = (os.environ.get("BREVO_SENDER_EMAIL") or "").strip() or None
+EMAIL_WEBHOOK_URL: str | None = (os.environ.get("EMAIL_WEBHOOK_URL") or "").strip() or None
