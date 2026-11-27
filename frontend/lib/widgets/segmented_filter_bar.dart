@@ -53,6 +53,7 @@ class SegmentedFilterBar<T> extends StatelessWidget {
                       ),
                   ],
                   selected: {selectedValue},
+                  showSelectedIcon: false,
                   onSelectionChanged: (selection) {
                     if (selection.isNotEmpty) {
                       onChanged(selection.first);
@@ -64,7 +65,7 @@ class SegmentedFilterBar<T> extends StatelessWidget {
                     foregroundColor: accentColor,
                     side: BorderSide(color: accentColor.withValues(alpha: 0.4)),
                     visualDensity: VisualDensity.compact,
-                    padding: const EdgeInsets.symmetric(horizontal: 10),
+                    padding: const EdgeInsets.symmetric(horizontal: 8),
                   ),
                 ),
               ),

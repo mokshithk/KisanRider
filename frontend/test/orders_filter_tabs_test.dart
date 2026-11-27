@@ -91,13 +91,23 @@ void main() {
 
       expect(find.byType(SegmentedButton<int>), findsOneWidget);
       expect(find.byType(ChoiceChip), findsNothing);
+      expect(find.byIcon(Icons.check), findsNothing);
       for (final label in labels) {
         expect(find.text(label), findsOneWidget);
       }
 
+      final initialButtonSize = tester.getSize(find.byType(SegmentedButton<int>));
+
+      await tester.tap(find.text('Accepted'));
+      await tester.pump();
+      expect(selected, 1);
+      expect(find.byIcon(Icons.check), findsNothing);
+      expect(tester.getSize(find.byType(SegmentedButton<int>)), initialButtonSize);
+
       await tester.tap(find.text('Pooled'));
       await tester.pump();
       expect(selected, 3);
+      expect(tester.getSize(find.byType(SegmentedButton<int>)), initialButtonSize);
 
       await tester.runAsync(() => LanguageProvider.instance.setLanguage('kn'));
       await tester.pump();
