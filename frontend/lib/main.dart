@@ -27,6 +27,7 @@ class KisanRiderApp extends StatelessWidget {
           colorScheme: ColorScheme.fromSeed(
             seedColor: const Color(0xFF2E7D32), // agricultural green
           ),
+          fontFamily: 'AppRoboto',
           useMaterial3: true,
         ),
         home: const _AuthGate(),

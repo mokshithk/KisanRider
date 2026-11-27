@@ -23,6 +23,7 @@ class KisanRiderScannerApp extends StatelessWidget {
           seedColor: kRiderGreen,
           primary: kRiderGreen,
         ),
+        fontFamily: 'AppRoboto',
         useMaterial3: true,
         scaffoldBackgroundColor: const Color(0xFFF8FAF9),
       ),
